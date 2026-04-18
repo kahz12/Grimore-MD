@@ -1,0 +1,12 @@
+watchdog
+python-frontmatter
+markdown-it-py
+typer[all]
+structlog
+rich
+python-dotenv
+pyyaml
+gitpython
+pydantic
+pytest
+pytest-mock

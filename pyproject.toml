@@ -1,0 +1,24 @@
+[project]
+name = "grimoire"
+version = "0.1.0"
+description = "Automated Knowledge Engine for your Markdown Vault"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "watchdog>=4.0.0",
+    "python-frontmatter>=1.1.0",
+    "markdown-it-py>=3.0.0",
+    "typer[all]>=0.12.0",
+    "structlog>=24.1.0",
+    "rich>=13.7.0",
+    "python-dotenv>=1.0.1",
+    "pyyaml>=6.0.1",
+    "gitpython>=3.1.43",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+grimoire = "grimoire.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

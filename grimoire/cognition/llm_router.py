@@ -1,0 +1,45 @@
+import os
+import requests
+import json
+from typing import Optional, Any
+from grimoire.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+class LLMRouter:
+    def __init__(self, config):
+        self.config = config
+        self.ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+    def complete(self, prompt: str, system_prompt: str = "", model_override: str = None, json_format: bool = True) -> Any:
+        """
+        Routes the completion request to the appropriate backend.
+        Default is local Ollama.
+        """
+        # For now, only Ollama is implemented as per Phase 2 local-first focus
+        model = model_override or self.config.cognition.model_llm_local
+        
+        try:
+            url = f"{self.ollama_host}/api/generate"
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "system": system_prompt,
+                "stream": False
+            }
+            if json_format:
+                payload["format"] = "json"
+            
+            response = requests.post(url, json=payload, timeout=60) # Increased timeout for reasoning
+            response.raise_for_status()
+            
+            result = response.json()
+            raw_response = result.get("response", "{}")
+            
+            if json_format:
+                return json.loads(raw_response)
+            return raw_response
+            
+        except Exception as e:
+            logger.error("llm_call_failed", model=model, error=str(e))
+            return None
