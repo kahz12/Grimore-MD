@@ -4,6 +4,7 @@ from grimoire.cognition.embedder import Embedder
 from grimoire.cognition.connector import Connector
 from grimoire.memory.db import Database
 from grimoire.utils.logger import get_logger
+from grimoire.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
@@ -49,7 +50,11 @@ class Oracle:
             with self.db._get_connection() as conn:
                 title = conn.execute("SELECT title FROM notes WHERE id = ?", (item['note_id'],)).fetchone()[0]
             
-            context_parts.append(f"--- Source: [[{title}]] ---\n{item['text']}")
+            safe_text = SecurityGuard.wrap_untrusted(
+                SecurityGuard("").sanitize_prompt(item['text']),
+                label="source",
+            )
+            context_parts.append(f"--- Source: [[{title}]] ---\n{safe_text}")
             sources.append(title)
         
         full_context = "\n\n".join(context_parts)

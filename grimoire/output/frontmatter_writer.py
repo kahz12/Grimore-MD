@@ -1,6 +1,7 @@
 import frontmatter
 from pathlib import Path
 from typing import Any
+from grimoire.utils.atomic import atomic_write
 from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -17,10 +18,9 @@ class FrontmatterWriter:
         try:
             post = frontmatter.load(file_path)
             post.metadata.update(metadata_updates)
-            
-            with open(file_path, 'wb') as f:
-                frontmatter.dump(post, f)
-            
+
+            atomic_write(file_path, lambda fh: frontmatter.dump(post, fh), mode="wb")
+
             logger.info("metadata_updated", path=str(file_path))
         except Exception as e:
             logger.error("metadata_update_failed", path=str(file_path), error=str(e))

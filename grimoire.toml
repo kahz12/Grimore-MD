@@ -14,4 +14,4 @@ db_path = "grimoire.db"
 
 [output]
 auto_commit = true
-dry_run = false
+dry_run = true

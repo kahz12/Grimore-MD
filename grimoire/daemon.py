@@ -38,10 +38,17 @@ class GrimoireDaemon:
         self.embedder = Embedder(config)
         self.connector = Connector(self.db, self.embedder)
         
+        self.vault_root = Path(config.vault.path).resolve()
         self.observer = None
         self.processed_count = 0
         self.last_batch_time = time.time()
         self.last_backup_time = time.time()
+
+    def _log_path(self, file_path: Path) -> str:
+        try:
+            return str(Path(file_path).resolve().relative_to(self.vault_root))
+        except (ValueError, OSError):
+            return Path(file_path).name
 
     def start(self):
         logger.info("daemon_starting", vault=self.config.vault.path)
@@ -76,29 +83,32 @@ class GrimoireDaemon:
             self.observer.stop()
 
     def process_file(self, file_path: Path):
-        logger.info("processing_file", path=str(file_path))
-        
+        rel = self._log_path(file_path)
+        logger.info("processing_file", path=rel)
+
         try:
             # 1. Parse file
             note = self.parser.parse_file(file_path)
-            
+
             # 2. Security & Policy Check
             privacy = note.metadata.get("privacy", "local")
             if privacy == "never_process":
-                logger.info("policy_skip", path=str(file_path), reason="privacy: never_process")
+                logger.info("policy_skip", path=rel, reason="privacy: never_process")
                 return
 
-            # Scan for sensitive data
+            # Scan for sensitive data — if found, force local-only processing.
             sensitive_findings = self.security.scan_for_sensitive_data(note.content)
-            if sensitive_findings:
-                logger.warning("sensitive_data_detected", path=str(file_path), types=sensitive_findings)
-                # If sensitive data is found, we FORCE local processing regardless of global config
-                # and skip remote APIs if they were enabled.
-            
+            force_local = bool(sensitive_findings)
+            if force_local:
+                logger.warning("sensitive_data_detected", path=rel, types=sensitive_findings)
+                if self.config.cognition.allow_remote:
+                    logger.warning("remote_disabled_for_note", path=rel,
+                                   reason="sensitive_data_detected")
+
             # 3. Check hash idempotency
             existing_note = self.db.get_note_by_path(str(file_path))
             if existing_note and existing_note[3] == note.content_hash:
-                logger.info("file_unchanged", path=str(file_path))
+                logger.info("file_unchanged", path=rel)
                 return
 
             # 4. Git Guard: commit current state
@@ -128,12 +138,12 @@ class GrimoireDaemon:
             if vector:
                 self.db.delete_note_embeddings(note_id)
                 vector_blob = self.embedder.serialize_vector(vector)
-                self.db.store_embedding(note_id, 0, note.content[:500], vector_blob)
+                self.db.store_embedding(note_id, 0, clean_content[:500], vector_blob)
             
             self.processed_count += 1
             self.last_batch_time = time.time()
-            logger.info("file_processed_complete", path=str(file_path))
-            
+            logger.info("file_processed_complete", path=rel)
+
         except Exception as e:
-            logger.error("processing_failed", path=str(file_path), error=str(e))
+            logger.error("processing_failed", path=rel, error=str(e))
             self.notifier.notify("Grimorio: Error Crítico", f"Error al procesar {file_path.name}")

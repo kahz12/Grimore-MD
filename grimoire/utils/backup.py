@@ -1,3 +1,4 @@
+import os
 import shutil
 import time
 from pathlib import Path
@@ -11,6 +12,10 @@ class BackupManager:
         self.backup_dir = Path(backup_dir)
         self.max_backups = max_backups
         self.backup_dir.mkdir(exist_ok=True)
+        try:
+            os.chmod(self.backup_dir, 0o700)
+        except OSError as e:
+            logger.warning("backup_dir_chmod_failed", error=str(e))
 
     def create_backup(self):
         """
@@ -21,9 +26,13 @@ class BackupManager:
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         backup_path = self.backup_dir / f"grimoire_{timestamp}.db"
-        
+
         try:
             shutil.copy2(self.db_path, backup_path)
+            try:
+                os.chmod(backup_path, 0o600)
+            except OSError as e:
+                logger.warning("backup_chmod_failed", path=str(backup_path), error=str(e))
             logger.info("backup_created", path=str(backup_path))
             self._rotate_backups()
         except Exception as e:

@@ -1,8 +1,23 @@
 import re
 from pathlib import Path
+from grimoire.utils.atomic import atomic_write
 from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Characters that would let a malicious title escape a wikilink or markdown list item.
+_WIKILINK_FORBIDDEN = re.compile(r"[\[\]\|\r\n]+")
+
+
+def _safe_wikilink_title(raw: str) -> str:
+    title = _WIKILINK_FORBIDDEN.sub(" ", str(raw))
+    return title.strip()[:200] or "Untitled"
+
+
+def _safe_reason(raw: str) -> str:
+    text = re.sub(r"[\r\n]+", " ", str(raw))
+    return text.strip()[:300]
+
 
 class LinkInjector:
     def inject_links(self, file_path: Path, connections: list[dict], dry_run: bool = True):
@@ -14,7 +29,10 @@ class LinkInjector:
             return
 
         section_header = "## 🔗 Suggested Connections"
-        links_content = "\n".join([f"- [[{c['title']}]] — {c.get('reason', 'Semantic connection found.')}" for c in connections])
+        links_content = "\n".join([
+            f"- [[{_safe_wikilink_title(c['title'])}]] — {_safe_reason(c.get('reason', 'Semantic connection found.'))}"
+            for c in connections
+        ])
         new_section = f"\n\n{section_header}\n{links_content}\n"
 
         if dry_run:
@@ -35,9 +53,12 @@ class LinkInjector:
                 # Append new section
                 new_content = content.rstrip() + new_section
             
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(new_content)
-                
+            atomic_write(
+                file_path,
+                lambda fh: fh.write(new_content.encode("utf-8")),
+                mode="wb",
+            )
+
             logger.info("links_injected", path=str(file_path))
         except Exception as e:
             logger.error("link_injection_failed", path=str(file_path), error=str(e))

@@ -8,7 +8,7 @@ class GitGuard:
     def __init__(self, vault_path: str):
         self.vault_path = Path(vault_path).absolute()
         try:
-            self.repo = git.Repo(self.vault_path, search_parent_directories=True)
+            self.repo = git.Repo(self.vault_path, search_parent_directories=False)
         except git.InvalidGitRepositoryError:
             logger.warning("git_not_found", path=str(self.vault_path))
             self.repo = None

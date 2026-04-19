@@ -1,30 +1,46 @@
 import os
-import requests
 import json
 import struct
 from typing import List, Optional
+from grimoire.utils.http import build_session
 from grimoire.utils.logger import get_logger
+from grimoire.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
+
+# Hard cap on payload to the embedder to prevent memory/DoS issues
+# from extremely large notes. Roughly ~8k tokens worst case.
+EMBED_MAX_CHARS = 32_000
+
 
 class Embedder:
     def __init__(self, config):
         self.config = config
-        self.ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        raw_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        self.ollama_host = SecurityGuard.validate_llm_host(
+            raw_host, allow_remote=config.cognition.allow_remote
+        )
         self.model = config.cognition.model_embeddings_local
+        self.session = build_session()
 
     def embed(self, text: str) -> Optional[list[float]]:
         """
         Generates an embedding vector using Ollama.
         """
+        if not isinstance(text, str) or not text.strip():
+            return None
+        if len(text) > EMBED_MAX_CHARS:
+            logger.warning("embed_input_truncated", original=len(text), kept=EMBED_MAX_CHARS)
+            text = text[:EMBED_MAX_CHARS]
+
         try:
             url = f"{self.ollama_host}/api/embeddings"
             payload = {
                 "model": self.model,
                 "prompt": text
             }
-            
-            response = requests.post(url, json=payload, timeout=30)
+
+            response = self.session.post(url, json=payload, timeout=30)
             response.raise_for_status()
             
             return response.json().get("embedding")

@@ -14,6 +14,7 @@ from grimoire.cognition.embedder import Embedder
 from grimoire.cognition.connector import Connector
 from grimoire.output.link_injector import LinkInjector
 from grimoire.cognition.oracle import Oracle
+from grimoire.utils.security import SecurityGuard
 import time
 
 app = typer.Typer(help="Grimoire v2.0 - Automated Knowledge Engine")
@@ -53,6 +54,7 @@ def scan(
     tagger = Tagger(config, router, taxonomy)
     writer = FrontmatterWriter()
     embedder = Embedder(config)
+    security = SecurityGuard(str(actual_vault_path))
 
     files = list(actual_vault_path.glob("**/*.md"))
     logger.info("scan_complete", files_found=len(files))
@@ -62,17 +64,30 @@ def scan(
             continue
         
         note = parser.parse_file(file)
+
+        if note.metadata.get("privacy") == "never_process":
+            logger.info("policy_skip", path=str(file), reason="privacy: never_process")
+            console.print(f"[dim]🔒 {file.relative_to(actual_vault_path)} (skipped: privacy)[/dim]")
+            continue
+
         existing = db.get_note_by_path(str(file))
-        
+
         if existing and existing[3] == note.content_hash:
             console.print(f"[dim]✓ {file.relative_to(actual_vault_path)} (unchanged)[/dim]")
         else:
             console.print(f"[yellow]⚡ {file.relative_to(actual_vault_path)} (processing...)[/yellow]")
-            
-            # Cognition: Tagging & Summary
-            cognition_data = tagger.tag_note(note.content)
-            
+
+            sensitive_findings = security.scan_for_sensitive_data(note.content)
+            if sensitive_findings:
+                logger.warning("sensitive_data_detected", path=str(file), types=sensitive_findings)
+
+            clean_content = security.sanitize_prompt(note.content)
+            cognition_data = tagger.tag_note(clean_content)
+
             if not is_dry_run:
+                if config.output.auto_commit and git_guard.is_repo_ready():
+                    git_guard.commit_pre_change(str(file))
+
                 # Update Frontmatter
                 metadata_updates = {
                     "tags": cognition_data["tags"],
@@ -84,10 +99,10 @@ def scan(
                 note_id = db.upsert_note(str(file), note.title, note.content_hash)
                 db.update_last_tagged(str(file))
 
-                vector = embedder.embed(note.content)
+                vector = embedder.embed(clean_content)
                 if vector and note_id is not None:
                     db.delete_note_embeddings(note_id)
-                    db.store_embedding(note_id, 0, note.content[:500], embedder.serialize_vector(vector))
+                    db.store_embedding(note_id, 0, clean_content[:500], embedder.serialize_vector(vector))
                 else:
                     logger.warning("embedding_skipped", path=str(file))
 
@@ -171,7 +186,14 @@ def ask(
             console.print(f"  - [[{source}]]")
 
     if export:
-        export_path = Path(config.vault.path) / export
+        vault_root = Path(config.vault.path).resolve()
+        export_path = (vault_root / export).resolve()
+        try:
+            export_path.relative_to(vault_root)
+        except ValueError:
+            logger.error("export_path_outside_vault", path=str(export_path))
+            raise typer.BadParameter("--export must resolve to a path inside the vault")
+        export_path.parent.mkdir(parents=True, exist_ok=True)
         with open(export_path, "w", encoding="utf-8") as f:
             f.write(f"---\ntitle: \"Oracle: {question[:30]}...\"\ndate: {time.strftime('%Y-%m-%d')}\ntype: oracle_response\n---\n\n")
             f.write(f"# 🔮 Question: {question}\n\n")
