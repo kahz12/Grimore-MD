@@ -1,51 +1,74 @@
-import typer
+import time
 from pathlib import Path
-from rich.console import Console
-from grimoire.utils.config import load_config
-from grimoire.utils.logger import setup_logger, get_logger
-from grimoire.output.git_guard import GitGuard
-from grimoire.memory.db import Database
-from grimoire.ingest.parser import MarkdownParser
+
+import typer
+from rich.text import Text
+
+from grimoire.cognition.connector import Connector
+from grimoire.cognition.embedder import Embedder
 from grimoire.cognition.llm_router import LLMRouter
+from grimoire.cognition.oracle import Oracle
 from grimoire.cognition.tagger import Tagger
+from grimoire.ingest.parser import MarkdownParser
+from grimoire.memory.db import Database
 from grimoire.memory.taxonomy import Taxonomy
 from grimoire.output.frontmatter_writer import FrontmatterWriter
-from grimoire.cognition.embedder import Embedder
-from grimoire.cognition.connector import Connector
+from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
-from grimoire.cognition.oracle import Oracle
+from grimoire.utils import ui
+from grimoire.utils.config import load_config
+from grimoire.utils.logger import get_logger, setup_logger
 from grimoire.utils.security import SecurityGuard
-import time
 
-app = typer.Typer(help="Grimoire v2.0 - Automated Knowledge Engine")
-console = Console()
+
+app = typer.Typer(
+    help="🔮 [bold medium_purple3]Grimoire v2.0[/] — Automated Knowledge Engine",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+    add_completion=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    epilog="[italic grey50]Sense the vault · surface connections · wake the Oracle[/]",
+)
+
+console = ui.console
 logger = get_logger(__name__)
 
-@app.command()
+
+def _mode_badge(is_dry_run: bool) -> Text:
+    return ui.dry_run_badge() if is_dry_run else ui.live_mode_badge()
+
+
+@app.command(rich_help_panel="Knowledge ops")
 def scan(
-    vault_path: Path = typer.Option(None, help="Path to the vault"),
+    vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
     dry_run: bool = typer.Option(None, "--dry-run/--no-dry-run", help="Simulate changes without writing"),
-    json_logs: bool = typer.Option(False, "--json", help="Output logs in JSON format")
+    json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format"),
 ):
-    """
-    Scan the vault and identify files to process.
-    """
+    """📖 Scan the vault, tag new or changed notes and index their embeddings."""
     setup_logger(json_format=json_logs)
     config = load_config()
-    
+
     actual_vault_path = vault_path or Path(config.vault.path)
-    # If dry_run is None (not passed), use config. If passed, use CLI value.
     is_dry_run = dry_run if dry_run is not None else config.output.dry_run
-    
-    logger.info("scan_start", path=str(actual_vault_path), dry_run=is_dry_run)
-    
+
+    ui.command_header("scan", f"→ {actual_vault_path}")
+    console.print(Text.assemble("  ", _mode_badge(is_dry_run)))
+
     if not actual_vault_path.exists():
-        logger.error("vault_not_found", path=str(actual_vault_path))
+        console.print(ui.error_panel(
+            f"Vault not found at [bold]{actual_vault_path}[/]\n"
+            f"Comprueba la ruta o ajusta [cyan]grimoire.toml[/].",
+            title="Vault missing",
+        ))
         raise typer.Exit(code=1)
 
     git_guard = GitGuard(str(actual_vault_path))
     if not git_guard.is_repo_ready():
-        logger.warning("git_not_ready", message="Operations will continue without git safety")
+        console.print(ui.warn_panel(
+            "El directorio no es un repositorio git. El escaneo continuará sin red de seguridad.\n"
+            "Inicialízalo con [cyan]git init[/] dentro del vault para activar snapshots automáticos.",
+            title="Git no detectado",
+        ))
 
     db = Database(config.memory.db_path)
     parser = MarkdownParser()
@@ -56,26 +79,45 @@ def scan(
     embedder = Embedder(config, cache=db)
     security = SecurityGuard(str(actual_vault_path))
 
-    files = list(actual_vault_path.glob("**/*.md"))
-    logger.info("scan_complete", files_found=len(files))
-    
-    for file in files:
-        if any(part in str(file) for part in config.vault.ignored_dirs):
-            continue
-        
-        note = parser.parse_file(file)
+    files = [
+        f for f in actual_vault_path.glob("**/*.md")
+        if not any(part in str(f) for part in config.vault.ignored_dirs)
+    ]
 
-        if note.metadata.get("privacy") == "never_process":
-            logger.info("policy_skip", path=str(file), reason="privacy: never_process")
-            console.print(f"[dim]🔒 {file.relative_to(actual_vault_path)} (skipped: privacy)[/dim]")
-            continue
+    if not files:
+        console.print(ui.info_panel(
+            f"No se encontraron notas [bold].md[/] en [cyan]{actual_vault_path}[/].",
+            title="Vault vacío",
+        ))
+        return
 
-        existing = db.get_note_by_path(str(file))
+    stats = {"unchanged": 0, "processed": 0, "skipped": 0, "errors": 0, "chunks": 0}
+    ui.section(f"Analizando {len(files)} notas")
 
-        if existing and existing[3] == note.content_hash:
-            console.print(f"[dim]✓ {file.relative_to(actual_vault_path)} (unchanged)[/dim]")
-        else:
-            console.print(f"[yellow]⚡ {file.relative_to(actual_vault_path)} (processing...)[/yellow]")
+    with ui.progress_bar() as progress:
+        task = progress.add_task("Escaneando", total=len(files))
+        for file in files:
+            rel = file.relative_to(actual_vault_path)
+            progress.update(task, description=f"[grimoire.muted]{rel}[/]")
+
+            try:
+                note = parser.parse_file(file)
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error("parse_failed", path=str(file), error=str(e))
+                progress.advance(task)
+                continue
+
+            if note.metadata.get("privacy") == "never_process":
+                stats["skipped"] += 1
+                progress.advance(task)
+                continue
+
+            existing = db.get_note_by_path(str(file))
+            if existing and existing[3] == note.content_hash:
+                stats["unchanged"] += 1
+                progress.advance(task)
+                continue
 
             sensitive_findings = security.scan_for_sensitive_data(note.content)
             if sensitive_findings:
@@ -84,15 +126,25 @@ def scan(
             clean_content = security.sanitize_prompt(note.content)
             cognition_data = tagger.tag_note(clean_content)
 
-            if not is_dry_run:
+            if is_dry_run:
+                stats["processed"] += 1
+                logger.info(
+                    "dry_run_preview",
+                    path=str(file),
+                    tags=cognition_data["tags"],
+                    summary=cognition_data["summary"][:80],
+                )
+                progress.advance(task)
+                continue
+
+            try:
                 if config.output.auto_commit and git_guard.is_repo_ready():
                     git_guard.commit_pre_change(str(file))
 
-                # Update Frontmatter
                 metadata_updates = {
                     "tags": cognition_data["tags"],
                     "summary": cognition_data["summary"],
-                    "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%S")
+                    "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 }
                 writer.write_metadata(file, metadata_updates, dry_run=False)
 
@@ -109,112 +161,166 @@ def scan(
                             chunk_text[:500],
                             embedder.serialize_vector(vector),
                         )
-                    logger.info("note_embedded", path=str(file), chunks=len(embedded))
-                else:
-                    logger.warning("embedding_skipped", path=str(file))
+                    stats["chunks"] += len(embedded)
 
-                logger.info("note_processed", path=str(file))
-            else:
-                console.print(f"  [blue]Tags:[/blue] {cognition_data['tags']}")
-                console.print(f"  [blue]Summary:[/blue] {cognition_data['summary']}")
+                stats["processed"] += 1
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error("processing_failed", path=str(file), error=str(e))
 
-@app.command()
+            progress.advance(task)
+
+    # ── Summary ────────────────────────────────────────────────────────────
+    summary_rows = [
+        ("Procesadas",  Text(str(stats["processed"]), style="grimoire.success")),
+        ("Sin cambios", Text(str(stats["unchanged"]), style="grimoire.muted")),
+        ("Omitidas",    Text(str(stats["skipped"]),   style="grimoire.warning")),
+        ("Errores",     Text(str(stats["errors"]),    style="grimoire.danger" if stats["errors"] else "grimoire.muted")),
+        ("Chunks",      Text(str(stats["chunks"]),    style="grimoire.accent")),
+    ]
+    console.print()
+    console.print(ui.success_panel(ui.kv_table(summary_rows), title="Resumen del escaneo"))
+
+    if is_dry_run and stats["processed"] > 0:
+        ui.tip("Fue un ensayo. Ejecuta [cyan]grimoire scan --no-dry-run[/] para aplicar cambios.")
+
+
+@app.command(rich_help_panel="Knowledge ops")
 def connect(
     dry_run: bool = typer.Option(None, "--dry-run/--no-dry-run", help="Simulate link injection"),
 ):
-    """
-    Discover semantic connections between notes and inject links.
-    """
+    """🕸️  Discover semantic connections between notes and inject [[wikilinks]]."""
     setup_logger()
     config = load_config()
     is_dry_run = dry_run if dry_run is not None else config.output.dry_run
-    
+
+    ui.command_header("connect", "Tejiendo hilos entre ideas")
+    console.print(Text.assemble("  ", _mode_badge(is_dry_run)))
+
     db = Database(config.memory.db_path)
     embedder = Embedder(config, cache=db)
     connector = Connector(db, embedder)
     injector = LinkInjector()
-    
+
     all_embeddings = db.get_all_embeddings()
-    logger.info("connection_discovery_start", total_chunks=len(all_embeddings))
-    
-    # Simple algorithm: for each note, find top similar notes
-    processed_notes = set()
-    for note_id, text, vector_blob in all_embeddings:
-        if note_id in processed_notes: continue
-        processed_notes.add(note_id)
+    if not all_embeddings:
+        console.print(ui.warn_panel(
+            "No hay embeddings aún. Ejecuta [cyan]grimoire scan --no-dry-run[/] primero.",
+            title="Sin memoria vectorial",
+        ))
+        return
 
-        # Get path for this note_id
-        with db._get_connection() as conn:
-            row = conn.execute(
-                "SELECT path, title FROM notes WHERE id = ?", (note_id,)
-            ).fetchone()
-        if not row:
-            logger.warning("orphan_embedding", note_id=note_id)
-            continue
-        path, title = row
+    ui.section(f"Buscando conexiones entre {len(all_embeddings)} fragmentos")
 
-        vector = embedder.deserialize_vector(vector_blob)
-        # Ask for a wider pool so we can still keep top_k after per-note dedupe.
-        similar = connector.find_similar_notes(vector, top_k=12, exclude_note_id=note_id)
+    processed_notes: set[int] = set()
+    total_links = 0
+    unique_sources = 0
 
-        # Threshold + dedupe by note_id (chunks of the same note shouldn't
-        # appear as multiple connections).
-        seen_note_ids: set[int] = set()
-        candidates = []
-        for s in similar:
-            if s["score"] <= 0.7:
+    with ui.progress_bar() as progress:
+        task = progress.add_task("Conectando", total=len(all_embeddings))
+        for note_id, _text, vector_blob in all_embeddings:
+            progress.advance(task)
+            if note_id in processed_notes:
                 continue
-            if s["note_id"] in seen_note_ids:
-                continue
-            seen_note_ids.add(s["note_id"])
-            candidates.append(s)
-            if len(candidates) >= 3:
-                break
+            processed_notes.add(note_id)
 
-        if candidates:
-            console.print(f"[bold]Connections for {title}:[/bold]")
+            with db._get_connection() as conn:
+                row = conn.execute(
+                    "SELECT path, title FROM notes WHERE id = ?", (note_id,)
+                ).fetchone()
+            if not row:
+                logger.warning("orphan_embedding", note_id=note_id)
+                continue
+            path, title = row
+
+            vector = embedder.deserialize_vector(vector_blob)
+            similar = connector.find_similar_notes(vector, top_k=12, exclude_note_id=note_id)
+
+            seen_ids: set[int] = set()
+            candidates = []
+            for s in similar:
+                if s["score"] <= 0.7 or s["note_id"] in seen_ids:
+                    continue
+                seen_ids.add(s["note_id"])
+                candidates.append(s)
+                if len(candidates) >= 3:
+                    break
+
+            if not candidates:
+                continue
+
             connections_to_inject = []
+            bullet_lines = []
             for c in candidates:
                 with db._get_connection() as conn:
                     c_row = conn.execute(
-                        "SELECT title FROM notes WHERE id = ?", (c['note_id'],)
+                        "SELECT title FROM notes WHERE id = ?", (c["note_id"],)
                     ).fetchone()
                 if not c_row:
                     continue
                 c_title = c_row[0]
-                console.print(f"  - {c_title} (score: {c['score']:.2f})")
+                bullet_lines.append(f"  ↳ [cyan]{c_title}[/]  [grimoire.muted](score {c['score']:.2f})[/]")
                 connections_to_inject.append({"title": c_title, "reason": "High semantic similarity."})
 
             if connections_to_inject:
+                unique_sources += 1
+                total_links += len(connections_to_inject)
+                progress.console.print(Text.assemble(
+                    ("◆ ", "grimoire.rune"),
+                    (str(title), "grimoire.primary"),
+                ))
+                for line in bullet_lines:
+                    progress.console.print(line)
                 injector.inject_links(Path(path), connections_to_inject, dry_run=is_dry_run)
 
-@app.command()
+    console.print()
+    console.print(ui.success_panel(
+        ui.kv_table([
+            ("Notas conectadas", Text(str(unique_sources), style="grimoire.success")),
+            ("Enlaces sugeridos", Text(str(total_links), style="grimoire.accent")),
+        ]),
+        title="Resumen de conexiones",
+    ))
+
+
+@app.command(rich_help_panel="Knowledge ops")
 def ask(
-    question: str = typer.Argument(..., help="The question to ask the Oracle"),
-    top_k: int = typer.Option(5, help="Number of context chunks to retrieve"),
-    export: Path = typer.Option(None, "--export", help="Save the answer to a new markdown file")
+    question: str = typer.Argument(..., help="La pregunta al Oráculo"),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Fragmentos de contexto a recuperar"),
+    export: Path = typer.Option(None, "--export", "-e", help="Guardar la respuesta como nota markdown"),
 ):
-    """
-    Consult the Grimoire Oracle about your vault's knowledge.
-    """
+    """🔮 Consult the Grimoire Oracle about your vault's knowledge."""
     setup_logger()
     config = load_config()
-    
+
+    ui.command_header("ask", "Consultando al Oráculo")
+
     db = Database(config.memory.db_path)
     router = LLMRouter(config)
     embedder = Embedder(config, cache=db)
     oracle = Oracle(config, db, router, embedder)
-    
-    with console.status("[bold green]The Oracle is consulting the whispers..."):
+
+    console.print()
+    console.print(ui.info_panel(
+        Text(question, style="bold white"),
+        title="Pregunta",
+    ))
+
+    with console.status("[grimoire.mystic]El Oráculo escucha los susurros...[/]", spinner="dots12"):
         result = oracle.ask(question, top_k=top_k)
-    
-    console.print("\n[bold purple]🔮 Oracle Response:[/bold purple]")
-    console.print(result["answer"])
-    
+
+    console.print()
+    console.print(ui.oracle_panel(result["answer"]))
+
     if result["sources"]:
-        console.print("\n[bold blue]📚 Sources:[/bold blue]")
+        ui.section("Fuentes citadas")
         for source in result["sources"]:
-            console.print(f"  - [[{source}]]")
+            console.print(Text.assemble(
+                ("  • ", "grimoire.muted"),
+                (f"[[{source}]]", "grimoire.accent"),
+            ))
+    else:
+        ui.tip("El Oráculo no ha encontrado notas relevantes. ¿Has ejecutado [cyan]grimoire scan[/]?")
 
     if export:
         vault_root = Path(config.vault.path).resolve()
@@ -222,72 +328,137 @@ def ask(
         try:
             export_path.relative_to(vault_root)
         except ValueError:
-            logger.error("export_path_outside_vault", path=str(export_path))
+            console.print(ui.error_panel(
+                f"[bold]--export[/] debe apuntar dentro del vault ({vault_root}).",
+                title="Ruta inválida",
+            ))
             raise typer.BadParameter("--export must resolve to a path inside the vault")
+
         export_path.parent.mkdir(parents=True, exist_ok=True)
         with open(export_path, "w", encoding="utf-8") as f:
-            f.write(f"---\ntitle: \"Oracle: {question[:30]}...\"\ndate: {time.strftime('%Y-%m-%d')}\ntype: oracle_response\n---\n\n")
+            f.write(f'---\ntitle: "Oracle: {question[:30]}..."\n')
+            f.write(f"date: {time.strftime('%Y-%m-%d')}\ntype: oracle_response\n---\n\n")
             f.write(f"# 🔮 Question: {question}\n\n")
             f.write(result["answer"])
             f.write("\n\n## Sources\n")
             for source in result["sources"]:
                 f.write(f"- [[{source}]]\n")
-        console.print(f"\n[green]✓ Response exported to {export_path}[/green]")
 
-@app.command()
+        console.print()
+        console.print(ui.success_panel(
+            f"Respuesta guardada en [bold cyan]{export_path}[/].",
+            title="Exportado",
+        ))
+
+
+@app.command(rich_help_panel="Daemon")
 def daemon(
-    action: str = typer.Argument("run", help="Action: run (foreground), start (background), stop, status"),
-    json_logs: bool = typer.Option(False, "--json", help="Output logs in JSON format")
+    action: str = typer.Argument("run", help="Acción: run · start · stop · status"),
+    json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format"),
 ):
-    """
-    Manage the Grimoire daemon.
-    """
-    from grimoire.utils.system import start_daemon_background, stop_daemon, is_running
-    
+    """🧿 Manage the Grimoire daemon (foreground / background / status)."""
+    from grimoire.utils.system import is_running, start_daemon_background, stop_daemon
+
     pid_file = "grimoire.pid"
     log_file = "grimoire.log"
+
+    ui.command_header("daemon", action)
 
     if action == "run":
         setup_logger(json_format=json_logs)
         config = load_config()
         from grimoire.daemon import GrimoireDaemon
+
+        console.print(ui.info_panel(
+            "El daemon correrá en primer plano. [bold]Ctrl-C[/] para detener.",
+            title="Foreground mode",
+        ))
         instance = GrimoireDaemon(config)
         instance.start()
     elif action == "start":
-        start_daemon_background(pid_file, log_file)
-    elif action == "stop":
-        stop_daemon(pid_file)
-    elif action == "status":
         if is_running(pid_file):
-            console.print("[green]Daemon is running.[/green]")
-        else:
-            console.print("[red]Daemon is stopped.[/red]")
+            console.print(ui.warn_panel(
+                f"Ya hay un daemon activo. PID file: [cyan]{pid_file}[/].",
+                title="Ya está corriendo",
+            ))
+            return
+        start_daemon_background(pid_file, log_file)
+        console.print(ui.success_panel(
+            f"Daemon en segundo plano. Logs → [cyan]{log_file}[/].",
+            title="Arrancado",
+        ))
+    elif action == "stop":
+        if not is_running(pid_file):
+            console.print(ui.info_panel("No hay daemon corriendo.", title="Nada que detener"))
+            return
+        stop_daemon(pid_file)
+        console.print(ui.success_panel("Daemon detenido.", title="Stop"))
+    elif action == "status":
+        active = is_running(pid_file)
+        console.print(Text.assemble("  ", ui.daemon_badge(active)))
+    else:
+        console.print(ui.error_panel(
+            f"Acción desconocida: [bold]{action}[/]\nUsa [cyan]run · start · stop · status[/].",
+            title="Comando inválido",
+        ))
+        raise typer.Exit(code=2)
 
-@app.command()
+
+@app.command(rich_help_panel="System")
 def status():
-    """
-    Show Grimoire status, configuration and vault metrics.
-    """
+    """🧭 Full dashboard: vault, cognition, daemon."""
+    from grimoire.utils.system import is_running
+
     config = load_config()
     db = Database(config.memory.db_path)
-    
+
     with db._get_connection() as conn:
         total_notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-        tagged_notes = conn.execute("SELECT COUNT(*) FROM notes WHERE last_tagged IS NOT NULL").fetchone()[0]
+        tagged_notes = conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE last_tagged IS NOT NULL"
+        ).fetchone()[0]
         total_embeddings = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        cached_embeddings = conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0]
 
-    console.print("[bold blue]Grimoire v2.0 Dashboard[/bold blue]")
-    console.print(f"Vault Path:  {config.vault.path}")
-    console.print(f"Notes:       {total_notes} total ({tagged_notes} tagged)")
-    console.print(f"Embeddings:  {total_embeddings} chunks indexed")
-    console.print(f"Dry Run:     {config.output.dry_run}")
-    console.print(f"Local LLM:   {config.cognition.model_llm_local}")
-    
-    from grimoire.utils.system import is_running
-    if is_running("grimoire.pid"):
-        console.print("Daemon:      [green]ACTIVE[/green]")
-    else:
-        console.print("Daemon:      [red]INACTIVE[/red]")
+    console.print()
+    console.print(ui.render_banner())
+
+    ui.section("Vault")
+    console.print(ui.kv_table([
+        ("Ruta",          Text(config.vault.path, style="grimoire.accent")),
+        ("Notas",         ui.coverage_bar(tagged_notes, total_notes)),
+        ("Chunks",        Text(str(total_embeddings), style="grimoire.accent")),
+        ("Cache",         Text(f"{cached_embeddings} vectores", style="grimoire.accent")),
+        ("Modo",          _mode_badge(config.output.dry_run)),
+        ("Auto-commit",   Text("sí" if config.output.auto_commit else "no", style="grimoire.accent")),
+    ]))
+
+    ui.section("Cognición")
+    console.print(ui.kv_table([
+        ("LLM",         Text(config.cognition.model_llm_local,        style="grimoire.accent")),
+        ("Embeddings",  Text(config.cognition.model_embeddings_local, style="grimoire.accent")),
+        ("Remoto",      Text("permitido" if config.cognition.allow_remote else "local-first",
+                             style="grimoire.warning" if config.cognition.allow_remote else "grimoire.success")),
+    ]))
+
+    ui.section("Daemon")
+    active = is_running("grimoire.pid")
+    console.print(ui.kv_table([
+        ("Estado", ui.daemon_badge(active)),
+        ("PID file", Text("grimoire.pid", style="grimoire.muted")),
+    ]))
+
+    # ── Hints ───────────────────────────────────────────────────────────────
+    if total_notes == 0:
+        console.print()
+        ui.tip("El vault está vacío. Añade notas [bold].md[/] y lanza [cyan]grimoire scan[/].")
+    elif total_embeddings == 0:
+        console.print()
+        ui.tip("Hay notas pero ninguna indexada. Prueba [cyan]grimoire scan --no-dry-run[/].")
+    elif config.output.dry_run:
+        console.print()
+        ui.tip("Estás en modo ensayo. Ajusta [cyan]dry_run = false[/] en [cyan]grimoire.toml[/] para escribir.")
+
 
 if __name__ == "__main__":
     app()
