@@ -6,17 +6,23 @@ from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Conservative whitelist for tag tokens written into YAML frontmatter.
-_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-/]{0,63}$")
+# Upper bound after normalisation (normalise already guarantees
+# [a-z0-9-] so no character whitelist is needed here).
+_TAG_MAX_LEN = 64
 _SUMMARY_MAX = 300
 _TAG_LIMIT = 16
 
 
-def _sanitize_tag(raw) -> str | None:
+def _sanitize_tag(raw, taxonomy: Taxonomy) -> str | None:
+    """
+    Normalise an LLM-emitted tag and reject it if nothing usable remains.
+    Delegating to ``taxonomy.normalize`` means "Ocultismo Clásico" becomes
+    "ocultismo-clasico" instead of being dropped.
+    """
     if not isinstance(raw, str):
         return None
-    candidate = raw.strip().lstrip("#")
-    if not _TAG_RE.match(candidate):
+    candidate = taxonomy.normalize(raw.lstrip("#"))
+    if not candidate or len(candidate) > _TAG_MAX_LEN:
         return None
     return candidate
 
@@ -60,7 +66,9 @@ class Tagger:
         raw_tags = result.get("tags", [])
         if not isinstance(raw_tags, list):
             raw_tags = []
-        clean_tags = [t for t in (_sanitize_tag(r) for r in raw_tags) if t]
+        clean_tags = [
+            t for t in (_sanitize_tag(r, self.taxonomy) for r in raw_tags) if t
+        ]
         clean_tags = clean_tags[:_TAG_LIMIT]
         reconciled_tags = self.taxonomy.reconcile(clean_tags)
 

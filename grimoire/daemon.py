@@ -9,7 +9,7 @@ from grimoire.output.git_guard import GitGuard
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.cognition.llm_router import LLMRouter
 from grimoire.cognition.tagger import Tagger
-from grimoire.memory.taxonomy import Taxonomy
+from grimoire.memory.taxonomy import load_taxonomy_from_vault
 from grimoire.cognition.embedder import Embedder
 from grimoire.cognition.connector import Connector
 from grimoire.output.link_injector import LinkInjector
@@ -33,7 +33,7 @@ class GrimoireDaemon:
         
         # Cognition setup
         self.router = LLMRouter(config)
-        self.taxonomy = Taxonomy()
+        self.taxonomy = load_taxonomy_from_vault(Path(config.vault.path))
         self.tagger = Tagger(config, self.router, self.taxonomy)
         self.embedder = Embedder(config, cache=self.db)
         self.connector = Connector(self.db, self.embedder)
@@ -134,6 +134,8 @@ class GrimoireDaemon:
             # 8. Update Database & Embeddings
             note_id = self.db.upsert_note(str(file_path), note.title, note.content_hash)
             self.db.update_last_tagged(str(file_path))
+            if note_id is not None:
+                self.db.upsert_tags(note_id, cognition_data["tags"])
 
             if embedded:
                 self.db.delete_note_embeddings(note_id)

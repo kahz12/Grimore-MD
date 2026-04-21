@@ -23,10 +23,23 @@ wheels/
 
 # Project Grimoire Specifics
 grimoire.db
+grimoire.db-wal
+grimoire.db-shm
 grimoire.pid
 grimoire.log
 backups/
 test_vault/
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
 
 # Environment and Secrets
 .env

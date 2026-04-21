@@ -1,7 +1,7 @@
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Iterable, Optional
 from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -126,3 +126,106 @@ class Database:
                 (key, vector_blob),
             )
             conn.commit()
+
+    # ── Tags ────────────────────────────────────────────────────────────────
+
+    def upsert_tags(self, note_id: int, tag_names: list[str]) -> None:
+        """
+        Replace the association set of tags for a note. Creates new tag rows
+        as needed; old rows are left in the ``tags`` table (they surface with
+        zero frequency and can be purged separately).
+        """
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+            for name in tag_names:
+                if not name:
+                    continue
+                conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+                row = conn.execute(
+                    "SELECT id FROM tags WHERE name = ?", (name,)
+                ).fetchone()
+                if row is None:
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
+                    (note_id, row[0]),
+                )
+            conn.commit()
+
+    def get_tag_frequency(self, limit: int = 50) -> list[tuple[str, int]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT t.name, COUNT(nt.note_id) AS freq
+                FROM tags t
+                JOIN note_tags nt ON nt.tag_id = t.id
+                GROUP BY t.id
+                ORDER BY freq DESC, t.name ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [(name, count) for name, count in rows]
+
+    def get_tag_count(self) -> int:
+        """Number of distinct tags currently associated with at least one note."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT nt.tag_id)
+                FROM note_tags nt
+                """
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_notes_by_tag(self, tag_name: str) -> list[tuple[int, str, str]]:
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT n.id, n.path, n.title
+                FROM notes n
+                JOIN note_tags nt ON nt.note_id = n.id
+                JOIN tags t ON t.id = nt.tag_id
+                WHERE t.name = ?
+                ORDER BY n.title
+                """,
+                (tag_name,),
+            ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def purge_unused_tags(self) -> int:
+        """Remove tag rows that no longer belong to any note."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM note_tags)"
+            )
+            conn.commit()
+            return cursor.rowcount or 0
+
+    # ── Prune ───────────────────────────────────────────────────────────────
+
+    def find_stale_notes(self, existing_paths: Iterable[str]) -> list[tuple[int, str]]:
+        """
+        Return (note_id, path) for every note whose ``path`` is not in
+        ``existing_paths``. The caller supplies the live filesystem set.
+        """
+        existing = set(existing_paths)
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT id, path FROM notes").fetchall()
+        return [(nid, path) for nid, path in rows if path not in existing]
+
+    def prune_missing_notes(self, existing_paths: Iterable[str]) -> int:
+        """
+        Delete notes whose path is no longer on disk, along with their
+        cascading rows in note_tags and embeddings.
+        """
+        stale = self.find_stale_notes(existing_paths)
+        if not stale:
+            return 0
+        with self._get_connection() as conn:
+            for note_id, _ in stale:
+                conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+                conn.execute("DELETE FROM embeddings WHERE note_id = ?", (note_id,))
+                conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            conn.commit()
+        return len(stale)

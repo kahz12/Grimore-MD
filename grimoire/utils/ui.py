@@ -147,6 +147,36 @@ def kv_table(rows: list[tuple[str, object]]) -> Table:
     return t
 
 
+def tag_frequency_table(rows: list[tuple[str, int]], width: int = 20) -> Table:
+    """
+    Three-column table: Tag · Usos · relative-frequency bar.
+    ``rows`` is expected to arrive pre-sorted (most frequent first).
+    """
+    t = Table(
+        box=box.SIMPLE,
+        show_header=True,
+        header_style="grimoire.muted",
+        padding=(0, 2),
+        pad_edge=False,
+    )
+    t.add_column("Tag", style="grimoire.primary", no_wrap=True)
+    t.add_column("Usos", justify="right", style="grimoire.accent", no_wrap=True)
+    t.add_column("Frecuencia")
+
+    if not rows:
+        return t
+
+    peak = max((count for _, count in rows), default=1) or 1
+    for name, count in rows:
+        ratio = count / peak if peak else 0.0
+        filled = max(1, int(round(ratio * width))) if count else 0
+        bar = Text()
+        bar.append("█" * filled, style="grimoire.secondary")
+        bar.append("░" * (width - filled), style="grimoire.muted")
+        t.add_row(name, str(count), bar)
+    return t
+
+
 def coverage_bar(done: int, total: int, width: int = 20) -> Text:
     if total <= 0:
         return Text("—", style="grimoire.muted")

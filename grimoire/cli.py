@@ -11,7 +11,7 @@ from grimoire.cognition.oracle import Oracle
 from grimoire.cognition.tagger import Tagger
 from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
-from grimoire.memory.taxonomy import Taxonomy
+from grimoire.memory.taxonomy import load_taxonomy_from_vault
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
@@ -73,7 +73,7 @@ def scan(
     db = Database(config.memory.db_path)
     parser = MarkdownParser()
     router = LLMRouter(config)
-    taxonomy = Taxonomy()
+    taxonomy = load_taxonomy_from_vault(actual_vault_path)
     tagger = Tagger(config, router, taxonomy)
     writer = FrontmatterWriter()
     embedder = Embedder(config, cache=db)
@@ -150,6 +150,8 @@ def scan(
 
                 note_id = db.upsert_note(str(file), note.title, note.content_hash)
                 db.update_last_tagged(str(file))
+                if note_id is not None:
+                    db.upsert_tags(note_id, cognition_data["tags"])
 
                 embedded = embedder.embed_chunks(clean_content)
                 if embedded and note_id is not None:
@@ -404,6 +406,102 @@ def daemon(
         raise typer.Exit(code=2)
 
 
+@app.command(rich_help_panel="Knowledge ops")
+def tags(
+    limit: int = typer.Option(30, "--limit", "-n", help="Cuántos tags mostrar (por frecuencia)"),
+):
+    """🏷️  List the most-used tags and how many notes each one labels."""
+    setup_logger()
+    config = load_config()
+    db = Database(config.memory.db_path)
+
+    ui.command_header("tags", f"top {limit}")
+
+    rows = db.get_tag_frequency(limit=limit)
+    if not rows:
+        console.print(ui.info_panel(
+            "Todavía no hay tags registrados. Ejecuta [cyan]grimoire scan --no-dry-run[/] primero.",
+            title="Sin tags",
+        ))
+        return
+
+    console.print()
+    console.print(ui.tag_frequency_table(rows))
+    console.print()
+    console.print(Text.assemble(
+        ("  ", ""),
+        (f"{len(rows)} tags", "grimoire.accent"),
+        ("  ·  ", "grimoire.muted"),
+        (f"{db.get_tag_count()} únicos en uso", "grimoire.muted"),
+    ))
+
+
+@app.command(rich_help_panel="System")
+def prune(
+    vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
+    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Solo listar, no borrar"),
+):
+    """🧹 Remove DB entries for notes that no longer exist on disk."""
+    setup_logger()
+    config = load_config()
+    actual_vault_path = vault_path or Path(config.vault.path)
+
+    ui.command_header("prune", f"→ {actual_vault_path}")
+    console.print(Text.assemble("  ", _mode_badge(dry_run)))
+
+    if not actual_vault_path.exists():
+        console.print(ui.error_panel(
+            f"Vault not found at [bold]{actual_vault_path}[/]",
+            title="Vault missing",
+        ))
+        raise typer.Exit(code=1)
+
+    db = Database(config.memory.db_path)
+
+    existing_paths = {
+        str(f) for f in actual_vault_path.glob("**/*.md")
+        if not any(part in str(f) for part in config.vault.ignored_dirs)
+    }
+
+    stale = db.find_stale_notes(existing_paths)
+    if not stale:
+        console.print(ui.success_panel(
+            "Ninguna nota huérfana. La base de datos está sincronizada con el vault.",
+            title="Todo limpio",
+        ))
+        return
+
+    ui.section(f"Notas huérfanas detectadas ({len(stale)})")
+    for _, path in stale[:50]:
+        try:
+            display = Path(path).relative_to(actual_vault_path)
+        except ValueError:
+            display = Path(path).name
+        console.print(Text.assemble(
+            ("  ✗ ", "grimoire.danger"),
+            (str(display), "grimoire.muted"),
+        ))
+    if len(stale) > 50:
+        console.print(Text(f"  … y {len(stale) - 50} más", style="grimoire.muted"))
+
+    if dry_run:
+        console.print()
+        ui.tip("Ensayo completado. Ejecuta [cyan]grimoire prune --no-dry-run[/] para borrar.")
+        return
+
+    removed = db.prune_missing_notes(existing_paths)
+    purged = db.purge_unused_tags()
+
+    console.print()
+    console.print(ui.success_panel(
+        ui.kv_table([
+            ("Notas borradas", Text(str(removed), style="grimoire.success")),
+            ("Tags purgados", Text(str(purged), style="grimoire.accent")),
+        ]),
+        title="Prune completado",
+    ))
+
+
 @app.command(rich_help_panel="System")
 def status():
     """🧭 Full dashboard: vault, cognition, daemon."""
@@ -419,6 +517,7 @@ def status():
         ).fetchone()[0]
         total_embeddings = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
         cached_embeddings = conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0]
+    unique_tags = db.get_tag_count()
 
     console.print()
     console.print(ui.render_banner())
@@ -437,6 +536,7 @@ def status():
     console.print(ui.kv_table([
         ("LLM",         Text(config.cognition.model_llm_local,        style="grimoire.accent")),
         ("Embeddings",  Text(config.cognition.model_embeddings_local, style="grimoire.accent")),
+        ("Tags únicos", Text(str(unique_tags),                        style="grimoire.accent")),
         ("Remoto",      Text("permitido" if config.cognition.allow_remote else "local-first",
                              style="grimoire.warning" if config.cognition.allow_remote else "grimoire.success")),
     ]))
