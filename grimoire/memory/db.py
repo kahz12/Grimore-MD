@@ -1,6 +1,7 @@
 import sqlite3
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -11,7 +12,11 @@ class Database:
         self._init_db()
 
     def _get_connection(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        # WAL lets the daemon write while the CLI reads.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
     def _init_db(self):
         with self._get_connection() as conn:
@@ -50,6 +55,16 @@ class Database:
                     FOREIGN KEY(note_id) REFERENCES notes(id)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS embedding_cache (
+                    key TEXT PRIMARY KEY,
+                    vector BLOB NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_embeddings_note_id ON embeddings(note_id)"
+            )
             conn.commit()
 
     def get_note_by_path(self, path: str):
@@ -96,3 +111,18 @@ class Database:
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT note_id, text_content, vector FROM embeddings")
             return cursor.fetchall()
+
+    def get_cached_embedding(self, key: str) -> Optional[bytes]:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT vector FROM embedding_cache WHERE key = ?", (key,)
+            ).fetchone()
+            return row[0] if row else None
+
+    def store_cached_embedding(self, key: str, vector_blob: bytes) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO embedding_cache (key, vector) VALUES (?, ?)",
+                (key, vector_blob),
+            )
+            conn.commit()

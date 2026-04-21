@@ -35,7 +35,7 @@ class GrimoireDaemon:
         self.router = LLMRouter(config)
         self.taxonomy = Taxonomy()
         self.tagger = Tagger(config, self.router, self.taxonomy)
-        self.embedder = Embedder(config)
+        self.embedder = Embedder(config, cache=self.db)
         self.connector = Connector(self.db, self.embedder)
         
         self.vault_root = Path(config.vault.path).resolve()
@@ -128,18 +128,24 @@ class GrimoireDaemon:
             }
             self.writer.write_metadata(file_path, metadata_updates, dry_run=self.config.output.dry_run)
 
-            # 7. Embeddings
-            vector = self.embedder.embed(clean_content)
-            
+            # 7. Embeddings (chunked)
+            embedded = self.embedder.embed_chunks(clean_content)
+
             # 8. Update Database & Embeddings
             note_id = self.db.upsert_note(str(file_path), note.title, note.content_hash)
             self.db.update_last_tagged(str(file_path))
-            
-            if vector:
+
+            if embedded:
                 self.db.delete_note_embeddings(note_id)
-                vector_blob = self.embedder.serialize_vector(vector)
-                self.db.store_embedding(note_id, 0, clean_content[:500], vector_blob)
-            
+                for idx, (chunk_text, vector) in enumerate(embedded):
+                    self.db.store_embedding(
+                        note_id,
+                        idx,
+                        chunk_text[:500],
+                        self.embedder.serialize_vector(vector),
+                    )
+                logger.info("file_embedded", path=rel, chunks=len(embedded))
+
             self.processed_count += 1
             self.last_batch_time = time.time()
             logger.info("file_processed_complete", path=rel)

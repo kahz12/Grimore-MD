@@ -53,7 +53,7 @@ def scan(
     taxonomy = Taxonomy()
     tagger = Tagger(config, router, taxonomy)
     writer = FrontmatterWriter()
-    embedder = Embedder(config)
+    embedder = Embedder(config, cache=db)
     security = SecurityGuard(str(actual_vault_path))
 
     files = list(actual_vault_path.glob("**/*.md"))
@@ -99,10 +99,17 @@ def scan(
                 note_id = db.upsert_note(str(file), note.title, note.content_hash)
                 db.update_last_tagged(str(file))
 
-                vector = embedder.embed(clean_content)
-                if vector and note_id is not None:
+                embedded = embedder.embed_chunks(clean_content)
+                if embedded and note_id is not None:
                     db.delete_note_embeddings(note_id)
-                    db.store_embedding(note_id, 0, clean_content[:500], embedder.serialize_vector(vector))
+                    for idx, (chunk_text, vector) in enumerate(embedded):
+                        db.store_embedding(
+                            note_id,
+                            idx,
+                            chunk_text[:500],
+                            embedder.serialize_vector(vector),
+                        )
+                    logger.info("note_embedded", path=str(file), chunks=len(embedded))
                 else:
                     logger.warning("embedding_skipped", path=str(file))
 
@@ -123,7 +130,7 @@ def connect(
     is_dry_run = dry_run if dry_run is not None else config.output.dry_run
     
     db = Database(config.memory.db_path)
-    embedder = Embedder(config)
+    embedder = Embedder(config, cache=db)
     connector = Connector(db, embedder)
     injector = LinkInjector()
     
@@ -147,10 +154,22 @@ def connect(
         path, title = row
 
         vector = embedder.deserialize_vector(vector_blob)
-        similar = connector.find_similar_notes(vector, top_k=3, exclude_note_id=note_id)
+        # Ask for a wider pool so we can still keep top_k after per-note dedupe.
+        similar = connector.find_similar_notes(vector, top_k=12, exclude_note_id=note_id)
 
-        # Filter by threshold
-        candidates = [s for s in similar if s["score"] > 0.7]
+        # Threshold + dedupe by note_id (chunks of the same note shouldn't
+        # appear as multiple connections).
+        seen_note_ids: set[int] = set()
+        candidates = []
+        for s in similar:
+            if s["score"] <= 0.7:
+                continue
+            if s["note_id"] in seen_note_ids:
+                continue
+            seen_note_ids.add(s["note_id"])
+            candidates.append(s)
+            if len(candidates) >= 3:
+                break
 
         if candidates:
             console.print(f"[bold]Connections for {title}:[/bold]")
@@ -183,7 +202,7 @@ def ask(
     
     db = Database(config.memory.db_path)
     router = LLMRouter(config)
-    embedder = Embedder(config)
+    embedder = Embedder(config, cache=db)
     oracle = Oracle(config, db, router, embedder)
     
     with console.status("[bold green]The Oracle is consulting the whispers..."):
