@@ -1,9 +1,8 @@
 """
-Visual layer for the Grimoire CLI.
-
-Centralises the Rich theme, console instance, and reusable primitives
-(banners, panels, progress bars, badges) so every command feels part
-of the same "grimoire".
+User Interface (UI) and Theming for Project Grimoire.
+This module centralizes the Rich theme and reusable UI components such as
+banners, panels, tables, and progress bars to ensure a consistent look and feel
+across all CLI commands.
 """
 from contextlib import contextmanager
 from typing import Iterator
@@ -24,7 +23,7 @@ from rich.text import Text
 from rich.theme import Theme
 from rich import box
 
-
+# Custom Rich theme with Grimoire's signature "mystic" color palette
 THEME = Theme({
     "grimoire.primary":   "bold medium_purple3",
     "grimoire.secondary": "medium_orchid",
@@ -40,10 +39,10 @@ THEME = Theme({
 console = Console(theme=THEME, highlight=False)
 
 
-# ── Brand / headers ─────────────────────────────────────────────────────────
+# ── Brand / Headers ─────────────────────────────────────────────────────────
 
 def render_banner(version: str = "v2.0") -> Panel:
-    """Full brand panel, used on the status dashboard and first-run hints."""
+    """Returns the large centered brand panel for the dashboard."""
     title = Text.assemble(
         ("🔮  ", "grimoire.accent"),
         ("GRIMOIRE", "grimoire.primary"),
@@ -59,7 +58,7 @@ def render_banner(version: str = "v2.0") -> Panel:
 
 
 def command_header(title: str, subtitle: str = "") -> None:
-    """One-line branded header shown at the top of each command."""
+    """Prints a consistent branded header at the start of a command execution."""
     bar = Text()
     bar.append("✦ ", style="grimoire.accent")
     bar.append(title, style="grimoire.primary")
@@ -72,11 +71,13 @@ def command_header(title: str, subtitle: str = "") -> None:
 
 
 def section(title: str) -> None:
+    """Prints a section divider with a rune bullet point."""
     console.print()
     console.print(Text(f"  ⟡ {title}", style="grimoire.rune"))
 
 
 def tip(message: str) -> None:
+    """Prints a light bulb hint message to the console."""
     console.print(
         Text.assemble(
             Text("  💡 ", style="grimoire.muted"),
@@ -104,6 +105,7 @@ def error_panel(message, title: str = "Error") -> Panel:
 
 
 def oracle_panel(answer: str) -> Panel:
+    """Custom panel for displaying the Oracle's answers with specific styling."""
     return Panel(
         Text(answer, style="white"),
         title=Text("🔮  Oráculo", style="grimoire.primary"),
@@ -131,7 +133,7 @@ def daemon_badge(active: bool) -> Text:
 # ── Tables ──────────────────────────────────────────────────────────────────
 
 def kv_table(rows: list[tuple[str, object]]) -> Table:
-    """Two-column key/value table, unobtrusive style for dashboards."""
+    """Creates a clean two-column table for key-value dashboard metrics."""
     t = Table(
         box=box.SIMPLE,
         show_header=False,
@@ -148,10 +150,7 @@ def kv_table(rows: list[tuple[str, object]]) -> Table:
 
 
 def tag_frequency_table(rows: list[tuple[str, int]], width: int = 20) -> Table:
-    """
-    Three-column table: Tag · Usos · relative-frequency bar.
-    ``rows`` is expected to arrive pre-sorted (most frequent first).
-    """
+    """Creates a table showing tag frequency with relative visual bars."""
     t = Table(
         box=box.SIMPLE,
         show_header=True,
@@ -178,6 +177,7 @@ def tag_frequency_table(rows: list[tuple[str, int]], width: int = 20) -> Table:
 
 
 def coverage_bar(done: int, total: int, width: int = 20) -> Text:
+    """Visual bar showing progress or coverage ratio."""
     if total <= 0:
         return Text("—", style="grimoire.muted")
     ratio = max(0.0, min(1.0, done / total))
@@ -193,14 +193,7 @@ def coverage_bar(done: int, total: int, width: int = 20) -> Text:
 
 @contextmanager
 def progress_bar() -> Iterator[Progress]:
-    """
-    Yields a themed Progress. Usage::
-
-        with progress_bar() as pg:
-            task = pg.add_task("Scanning", total=len(files))
-            for f in files:
-                pg.update(task, advance=1, description=f"[dim]{f.name}[/dim]")
-    """
+    """Provides a branded context manager for displaying task progress."""
     progress = Progress(
         SpinnerColumn(style="grimoire.accent"),
         TextColumn("[bold]{task.description}"),

@@ -1,3 +1,8 @@
+"""
+The Oracle: Retrieval-Augmented Generation (RAG) Engine.
+This module combines semantic search (via the Connector) with LLM completion
+(via the LLMRouter) to answer questions based on the vault's content.
+"""
 from pathlib import Path
 from grimoire.cognition.llm_router import LLMRouter
 from grimoire.cognition.embedder import Embedder
@@ -9,6 +14,9 @@ from grimoire.utils.security import SecurityGuard
 logger = get_logger(__name__)
 
 class Oracle:
+    """
+    Implements the RAG pipeline to provide context-aware answers to user queries.
+    """
     def __init__(self, config, db: Database, router: LLMRouter, embedder: Embedder):
         self.config = config
         self.db = db
@@ -18,46 +26,49 @@ class Oracle:
         self.system_prompt_template = self._load_prompt()
 
     def _load_prompt(self):
+        """Loads the Oracle's system prompt template."""
         prompt_path = Path(__file__).parent / "prompts" / "oracle.txt"
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
     def ask(self, question: str, top_k: int = 5) -> dict:
         """
-        Performs RAG: 
-        1. Embeds question.
-        2. Finds relevant chunks.
-        3. Constructs prompt.
-        4. Gets LLM answer.
+        Main RAG entry point:
+        1. Generates an embedding for the user's question.
+        2. Retrieves the most relevant chunks from the database.
+        3. Constructs a system prompt containing the retrieved context.
+        4. Calls the LLM to generate a cited answer.
         """
         logger.info("oracle_query", question=question)
         
-        # 1. Get query vector
+        # Step 1: Vectorize the question
         query_vector = self.embedder.embed(question)
         if not query_vector:
             return {"answer": "I could not understand the question's essence.", "sources": []}
 
-        # 2. Retrieve relevant chunks
+        # Step 2: Retrieve semantically relevant fragments
         similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
         
         if not similar:
             return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
 
-        # 3. Build context
+        # Step 3: Format the context for the LLM
         context_parts = []
         sources = []
         for item in similar:
+            # Fetch note title for citation
             with self.db._get_connection() as conn:
                 row = conn.execute(
                     "SELECT title FROM notes WHERE id = ?",
                     (item['note_id'],),
                 ).fetchone()
             if not row:
-                # Orphan embedding: note was deleted but chunk lingers.
+                # Handle potential orphan data
                 logger.warning("orphan_embedding", note_id=item['note_id'])
                 continue
             title = row[0]
 
+            # Sanitize and wrap content to prevent prompt injection from notes
             safe_text = SecurityGuard.wrap_untrusted(
                 SecurityGuard.sanitize_prompt(item['text']),
                 label="source",
@@ -70,12 +81,9 @@ class Oracle:
         
         full_context = "\n\n".join(context_parts)
         
-        # 4. LLM Call
+        # Step 4: LLM Generation
+        # Inject retrieved context into the system prompt template
         system_prompt = self.system_prompt_template.replace("{context}", full_context)
-        
-        # Since Oracle response isn't necessarily JSON by default (it's a chat), 
-        # we might need to adjust the router or use a different completion method.
-        # But our router is set to 'format: json'. Let's adjust it for the Oracle.
         
         response = self.router.complete(
             prompt=f"Question: {question}",

@@ -1,3 +1,7 @@
+"""
+Semantic Connection Discovery.
+This module provides logic to find related notes by comparing their vector embeddings.
+"""
 from typing import List
 
 from grimoire.cognition.embedder import Embedder
@@ -8,6 +12,9 @@ logger = get_logger(__name__)
 
 
 class Connector:
+    """
+    Handles the discovery of relationships between notes using semantic similarity.
+    """
     def __init__(self, db: Database, embedder: Embedder):
         self.db = db
         self.embedder = embedder
@@ -19,15 +26,18 @@ class Connector:
         exclude_note_id: int = None,
     ):
         """
-        Finds the top_k most similar chunks in the database.
-        Stored and query vectors are unit-normalized by the embedder,
-        so cosine similarity reduces to a dot product (one pass, no magnitudes).
+        Finds the top_k most similar chunks in the database compared to a query vector.
+        
+        Note: Stored and query vectors are unit-normalized by the embedder,
+        so cosine similarity simplifies to a basic dot product.
         """
         query = list(query_vector)
+        # Fetch all indexed embeddings for comparison
         all_embeddings = self.db.get_all_embeddings()
         similarities = []
 
         for note_id, text, vector_blob in all_embeddings:
+            # Skip self-comparison
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
 
@@ -35,5 +45,6 @@ class Connector:
             score = Embedder.dot_product(query, vector)
             similarities.append({"note_id": note_id, "text": text, "score": score})
 
+        # Sort results by similarity score in descending order
         similarities.sort(key=lambda x: x["score"], reverse=True)
         return similarities[:top_k]

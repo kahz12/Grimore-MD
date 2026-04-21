@@ -1,14 +1,11 @@
 """
-Semantically-aware markdown chunker.
-
-Strategy:
-- Split by blank-line paragraphs (markdown's logical unit).
-- Pack whole paragraphs into chunks until the budget is exceeded.
-- Paragraphs larger than the budget fall back to a fixed-width sliding
-  window with overlap, so nothing gets silently dropped.
+Semantically-aware Markdown Chunker.
+This module splits large Markdown files into smaller, manageable pieces (chunks)
+while respecting the logical structure of the document (paragraphs).
 """
 import re
 
+# Regex to split text by blank lines (paragraphs)
 _PARA_SPLIT = re.compile(r"\n\s*\n")
 
 DEFAULT_MAX_CHARS = 1500
@@ -20,6 +17,14 @@ def chunk_markdown(
     max_chars: int = DEFAULT_MAX_CHARS,
     overlap: int = DEFAULT_OVERLAP,
 ) -> list[str]:
+    """
+    Splits markdown text into chunks.
+    
+    Strategy:
+    1. Split by blank-line paragraphs.
+    2. Pack whole paragraphs into chunks until the character budget (max_chars) is met.
+    3. If a single paragraph is larger than max_chars, it's split using a sliding window.
+    """
     if not text or not text.strip():
         return []
 
@@ -29,6 +34,7 @@ def chunk_markdown(
     buffer_len = 0
 
     def flush():
+        """Joins current buffer into a single chunk and resets state."""
         nonlocal buffer, buffer_len
         if buffer:
             chunks.append("\n\n".join(buffer))
@@ -36,12 +42,14 @@ def chunk_markdown(
             buffer_len = 0
 
     for para in paragraphs:
+        # Handling oversized paragraphs
         if len(para) > max_chars:
             flush()
             chunks.extend(_sliding_window(para, max_chars, overlap))
             continue
 
-        sep = 2 if buffer else 0
+        # Check if adding this paragraph exceeds the budget
+        sep = 2 if buffer else 0 # Accounting for "\n\n" separator
         if buffer_len + sep + len(para) > max_chars and buffer:
             flush()
             sep = 0
@@ -54,6 +62,10 @@ def chunk_markdown(
 
 
 def _sliding_window(text: str, size: int, overlap: int) -> list[str]:
+    """
+    Splits a large block of text into overlapping pieces of a fixed size.
+    Used as a fallback for paragraphs that exceed the maximum chunk size.
+    """
     if size <= 0 or len(text) <= size:
         return [text] if text else []
     step = max(1, size - overlap)

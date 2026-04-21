@@ -1,3 +1,8 @@
+"""
+Background service for Project Grimoire.
+This module implements the GrimoireDaemon, which monitors the vault for real-time
+changes and automatically triggers cognitive processing (tagging, embedding).
+"""
 import time
 from pathlib import Path
 from grimoire.utils.config import Config, load_config
@@ -20,6 +25,10 @@ from grimoire.utils.backup import BackupManager
 logger = get_logger(__name__)
 
 class GrimoireDaemon:
+    """
+    Orchestrates background tasks: file system watching, periodic backups,
+    and automated processing of new/modified notes.
+    """
     def __init__(self, config: Config):
         self.config = config
         self.db = Database(config.memory.db_path)
@@ -31,7 +40,7 @@ class GrimoireDaemon:
         self.security = SecurityGuard(config.vault.path)
         self.backup = BackupManager(config.memory.db_path)
         
-        # Cognition setup
+        # Initialize cognitive components
         self.router = LLMRouter(config)
         self.taxonomy = load_taxonomy_from_vault(Path(config.vault.path))
         self.tagger = Tagger(config, self.router, self.taxonomy)
@@ -45,12 +54,17 @@ class GrimoireDaemon:
         self.last_backup_time = time.time()
 
     def _log_path(self, file_path: Path) -> str:
+        """Helper to get a relative path for cleaner logging."""
         try:
             return str(Path(file_path).resolve().relative_to(self.vault_root))
         except (ValueError, OSError):
             return Path(file_path).name
 
     def start(self):
+        """
+        Starts the file system observer and enters a management loop
+        for notifications and backups.
+        """
         logger.info("daemon_starting", vault=self.config.vault.path)
         self.observer = VaultObserver(
             vault_path=self.config.vault.path,
@@ -62,7 +76,7 @@ class GrimoireDaemon:
         try:
             while True:
                 current_time = time.time()
-                # Batch notification
+                # Batch notification: send summary every 5 minutes if activity occurred
                 if self.processed_count > 0 and (current_time - self.last_batch_time > 300):
                     self.notifier.notify_batch_processed(self.processed_count)
                     self.processed_count = 0
@@ -78,11 +92,16 @@ class GrimoireDaemon:
             self.stop()
 
     def stop(self):
+        """Gracefully stops the file system observer."""
         logger.info("daemon_stopping")
         if self.observer:
             self.observer.stop()
 
     def process_file(self, file_path: Path):
+        """
+        The core pipeline triggered when a file is created or modified.
+        Follows a similar flow to the 'scan' command but in real-time.
+        """
         rel = self._log_path(file_path)
         logger.info("processing_file", path=rel)
 
@@ -96,7 +115,7 @@ class GrimoireDaemon:
                 logger.info("policy_skip", path=rel, reason="privacy: never_process")
                 return
 
-            # Scan for sensitive data — if found, force local-only processing.
+            # Scan for sensitive data (PII, API keys)
             sensitive_findings = self.security.scan_for_sensitive_data(note.content)
             force_local = bool(sensitive_findings)
             if force_local:
@@ -105,22 +124,21 @@ class GrimoireDaemon:
                     logger.warning("remote_disabled_for_note", path=rel,
                                    reason="sensitive_data_detected")
 
-            # 3. Check hash idempotency
+            # 3. Check hash idempotency to avoid redundant LLM calls
             existing_note = self.db.get_note_by_path(str(file_path))
             if existing_note and existing_note[3] == note.content_hash:
                 logger.info("file_unchanged", path=rel)
                 return
 
-            # 4. Git Guard: commit current state
+            # 4. Git Guard: automatic snapshot
             if self.config.output.auto_commit and not self.config.output.dry_run:
                 self.git_guard.commit_pre_change(str(file_path))
 
-            # 5. Cognition: Tagging & Summary
-            # Sanitize content before sending to LLM
+            # 5. Cognition: Tagging & Summary via LLM
             clean_content = self.security.sanitize_prompt(note.content)
             cognition_data = self.tagger.tag_note(clean_content)
             
-            # 6. Output: Update Frontmatter
+            # 6. Output: Update note frontmatter
             metadata_updates = {
                 "tags": cognition_data["tags"],
                 "summary": cognition_data["summary"],
@@ -128,16 +146,17 @@ class GrimoireDaemon:
             }
             self.writer.write_metadata(file_path, metadata_updates, dry_run=self.config.output.dry_run)
 
-            # 7. Embeddings (chunked)
+            # 7. Embeddings: Vectorize for semantic index
             embedded = self.embedder.embed_chunks(clean_content)
 
-            # 8. Update Database & Embeddings
+            # 8. Update Database records
             note_id = self.db.upsert_note(str(file_path), note.title, note.content_hash)
             self.db.update_last_tagged(str(file_path))
             if note_id is not None:
                 self.db.upsert_tags(note_id, cognition_data["tags"])
 
             if embedded:
+                # Store new chunks and their vectors
                 self.db.delete_note_embeddings(note_id)
                 for idx, (chunk_text, vector) in enumerate(embedded):
                     self.db.store_embedding(

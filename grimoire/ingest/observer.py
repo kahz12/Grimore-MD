@@ -1,3 +1,8 @@
+"""
+File system monitoring for Project Grimoire.
+Uses the watchdog library to track changes in the Markdown vault and implements
+a debounce mechanism to avoid processing files while they are still being edited.
+"""
 import time
 from pathlib import Path
 from watchdog.observers import Observer
@@ -9,11 +14,16 @@ from grimoire.utils.logger import get_logger
 logger = get_logger(__name__)
 
 class VaultEventHandler(FileSystemEventHandler):
+    """
+    Handles low-level file system events (modified, created, moved).
+    Filters events by file extension (.md) and ignored directories.
+    """
     def __init__(self, queue: Queue, ignored_dirs: list[str]):
         self.queue = queue
         self.ignored_dirs = ignored_dirs
 
     def _enqueue(self, raw_path: str, event_type: str):
+        """Filters and pushes valid file events into the processing queue."""
         if not raw_path.endswith(".md"):
             return
         path = Path(raw_path)
@@ -39,32 +49,44 @@ class VaultEventHandler(FileSystemEventHandler):
         self._enqueue(event.dest_path, "moved")
 
 class VaultObserver:
+    """
+    High-level observer that manages the watchdog process and implements
+    a debounce timer (default 45s) to ensure file writes are complete.
+    """
     def __init__(self, vault_path: str, callback, ignored_dirs: list[str], debounce_seconds: int = 45):
         self.vault_path = vault_path
-        self.callback = callback
+        self.callback = callback  # Function to call when a file is ready to process
         self.ignored_dirs = ignored_dirs
         self.debounce_seconds = debounce_seconds
         self.queue = Queue()
-        self.pending_changes = {}
+        self.pending_changes = {}  # Maps Path -> last_event_timestamp
         self._stop = False
 
     def start(self):
+        """Starts the watchdog observer and the background processing thread."""
         self.observer = Observer()
         self.handler = VaultEventHandler(self.queue, self.ignored_dirs)
         self.observer.schedule(self.handler, self.vault_path, recursive=True)
         self.observer.start()
         
+        # Processor thread handles the debounce logic
         self.processor_thread = Thread(target=self._process_queue, daemon=True)
         self.processor_thread.start()
         
         logger.info("observer_started", path=self.vault_path, debounce=self.debounce_seconds)
 
     def stop(self):
+        """Signals the observer to stop and waits for the thread to join."""
         self._stop = True
         self.observer.stop()
         self.observer.join()
 
     def _process_queue(self):
+        """
+        Main loop for the background thread.
+        Moves items from the event queue to pending_changes, then executes the
+        callback for files that haven't been touched for at least debounce_seconds.
+        """
         while not self._stop:
             try:
                 # Get all available events from queue

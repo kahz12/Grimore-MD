@@ -1,3 +1,8 @@
+"""
+Persistence Layer (SQLite).
+This module manages the SQLite database, handling note metadata, tags,
+and vector embeddings. It uses WAL mode to allow concurrent access.
+"""
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -7,19 +12,26 @@ from grimoire.utils.logger import get_logger
 logger = get_logger(__name__)
 
 class Database:
+    """
+    Manages all database operations for Project Grimoire.
+    Ensures the schema is initialized and provides high-level methods for data access.
+    """
     def __init__(self, db_path: str):
         self.db_path = db_path
         self._init_db()
 
     def _get_connection(self):
+        """Creates a new SQLite connection with optimized settings for concurrency."""
         conn = sqlite3.connect(self.db_path)
-        # WAL lets the daemon write while the CLI reads.
+        # WAL (Write-Ahead Logging) lets the daemon write while the CLI reads.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_db(self):
+        """Initializes the database schema if it doesn't exist."""
         with self._get_connection() as conn:
+            # Table for note metadata
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS notes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,12 +42,14 @@ class Database:
                     last_tagged DATETIME
                 )
             """)
+            # Table for unique tag names
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS tags (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE
                 )
             """)
+            # Junction table for many-to-many relationship between notes and tags
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS note_tags (
                     note_id INTEGER,
@@ -45,6 +59,7 @@ class Database:
                     PRIMARY KEY(note_id, tag_id)
                 )
             """)
+            # Table for chunked vector embeddings
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embeddings (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,6 +70,7 @@ class Database:
                     FOREIGN KEY(note_id) REFERENCES notes(id)
                 )
             """)
+            # Cache table to avoid re-embedding the same text multiple times
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS embedding_cache (
                     key TEXT PRIMARY KEY,
@@ -62,17 +78,20 @@ class Database:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Speed up retrieval by note_id
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_embeddings_note_id ON embeddings(note_id)"
             )
             conn.commit()
 
     def get_note_by_path(self, path: str):
+        """Retrieves a note record by its file path."""
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT * FROM notes WHERE path = ?", (path,))
             return cursor.fetchone()
 
     def upsert_note(self, path: str, title: str, content_hash: str) -> int:
+        """Inserts or updates a note record. Returns the internal note ID."""
         with self._get_connection() as conn:
             now = datetime.now().isoformat()
             cursor = conn.execute("""
@@ -89,12 +108,14 @@ class Database:
             return result[0] if result else None
 
     def update_last_tagged(self, path: str):
+        """Updates the last_tagged timestamp for a note."""
         with self._get_connection() as conn:
             now = datetime.now().isoformat()
             conn.execute("UPDATE notes SET last_tagged = ? WHERE path = ?", (now, path))
             conn.commit()
 
     def store_embedding(self, note_id: int, chunk_index: int, text_content: str, vector_blob: bytes):
+        """Stores a vector embedding for a specific note chunk."""
         with self._get_connection() as conn:
             conn.execute("""
                 INSERT INTO embeddings (note_id, chunk_index, text_content, vector)
@@ -103,16 +124,19 @@ class Database:
             conn.commit()
 
     def delete_note_embeddings(self, note_id: int):
+        """Deletes all embeddings associated with a note (usually before re-indexing)."""
         with self._get_connection() as conn:
             conn.execute("DELETE FROM embeddings WHERE note_id = ?", (note_id,))
             conn.commit()
 
     def get_all_embeddings(self):
+        """Returns all embeddings in the database for connection discovery."""
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT note_id, text_content, vector FROM embeddings")
             return cursor.fetchall()
 
     def get_cached_embedding(self, key: str) -> Optional[bytes]:
+        """Retrieves a vector from the embedding cache if present."""
         with self._get_connection() as conn:
             row = conn.execute(
                 "SELECT vector FROM embedding_cache WHERE key = ?", (key,)
@@ -120,6 +144,7 @@ class Database:
             return row[0] if row else None
 
     def store_cached_embedding(self, key: str, vector_blob: bytes) -> None:
+        """Stores a vector in the embedding cache."""
         with self._get_connection() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO embedding_cache (key, vector) VALUES (?, ?)",
@@ -131,21 +156,23 @@ class Database:
 
     def upsert_tags(self, note_id: int, tag_names: list[str]) -> None:
         """
-        Replace the association set of tags for a note. Creates new tag rows
-        as needed; old rows are left in the ``tags`` table (they surface with
-        zero frequency and can be purged separately).
+        Syncs a note's tags with the database. 
+        Ensures the 'tags' table has the tag names and updates 'note_tags' association.
         """
         with self._get_connection() as conn:
+            # Clear old associations
             conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
             for name in tag_names:
                 if not name:
                     continue
+                # Ensure the tag exists globally
                 conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
                 row = conn.execute(
                     "SELECT id FROM tags WHERE name = ?", (name,)
                 ).fetchone()
                 if row is None:
                     continue
+                # Associate tag with this note
                 conn.execute(
                     "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
                     (note_id, row[0]),
@@ -153,6 +180,7 @@ class Database:
             conn.commit()
 
     def get_tag_frequency(self, limit: int = 50) -> list[tuple[str, int]]:
+        """Returns the most used tags and their frequencies."""
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
@@ -168,7 +196,7 @@ class Database:
         return [(name, count) for name, count in rows]
 
     def get_tag_count(self) -> int:
-        """Number of distinct tags currently associated with at least one note."""
+        """Returns the number of distinct tags currently in use."""
         with self._get_connection() as conn:
             row = conn.execute(
                 """
@@ -179,6 +207,7 @@ class Database:
         return int(row[0]) if row else 0
 
     def get_notes_by_tag(self, tag_name: str) -> list[tuple[int, str, str]]:
+        """Retrieves all notes that have a specific tag."""
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
@@ -194,7 +223,7 @@ class Database:
         return [(r[0], r[1], r[2]) for r in rows]
 
     def purge_unused_tags(self) -> int:
-        """Remove tag rows that no longer belong to any note."""
+        """Deletes tags that are not associated with any notes."""
         with self._get_connection() as conn:
             cursor = conn.execute(
                 "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM note_tags)"
@@ -206,8 +235,7 @@ class Database:
 
     def find_stale_notes(self, existing_paths: Iterable[str]) -> list[tuple[int, str]]:
         """
-        Return (note_id, path) for every note whose ``path`` is not in
-        ``existing_paths``. The caller supplies the live filesystem set.
+        Identifies note records in the DB that no longer correspond to a file on disk.
         """
         existing = set(existing_paths)
         with self._get_connection() as conn:
@@ -216,8 +244,8 @@ class Database:
 
     def prune_missing_notes(self, existing_paths: Iterable[str]) -> int:
         """
-        Delete notes whose path is no longer on disk, along with their
-        cascading rows in note_tags and embeddings.
+        Removes all database records (notes, tags association, embeddings)
+        for files that have been deleted from the vault.
         """
         stale = self.find_stale_notes(existing_paths)
         if not stale:

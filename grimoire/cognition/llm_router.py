@@ -1,3 +1,8 @@
+"""
+Local LLM Routing and JSON Extraction.
+This module handles communication with the Ollama API, implements a circuit breaker
+pattern for robustness, and provides robust JSON extraction from LLM responses.
+"""
 import json
 import os
 import re
@@ -10,14 +15,19 @@ from grimoire.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
+# Regex to find JSON blocks inside Markdown code fences
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 
 
 def _extract_json_object(text: str) -> Optional[dict]:
     """
     Best-effort parse of a JSON object embedded in LLM output.
-    Strategies (in order): direct parse, fenced code block, bracket-balanced
-    substring starting at the first '{'. Returns None if all fail.
+    Strategies (in order):
+    1. Direct parse of the entire text.
+    2. Extraction from Markdown fenced code blocks (```json ... ```).
+    3. Bracket-balanced substring starting at the first '{'.
+    
+    Returns None if all strategies fail.
     """
     if not text:
         return None
@@ -38,6 +48,7 @@ def _extract_json_object(text: str) -> Optional[dict]:
         except json.JSONDecodeError:
             pass
 
+    # Fallback: find the first '{' and try to find a balanced '}'
     start = text.find("{")
     if start == -1:
         return None
@@ -75,6 +86,10 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 
 class LLMRouter:
+    """
+    Routes completion requests to the local Ollama backend.
+    Implements a circuit breaker to prevent hammering the service if it's down.
+    """
     # Circuit breaker: after N back-to-back failures, short-circuit calls
     # for COOLDOWN_SECONDS so we don't hammer a dead Ollama.
     _FAILURE_THRESHOLD = 5
@@ -83,6 +98,7 @@ class LLMRouter:
     def __init__(self, config):
         self.config = config
         raw_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        # Ensure the host is valid and safe (especially if allow_remote is False)
         self.ollama_host = SecurityGuard.validate_llm_host(
             raw_host, allow_remote=config.cognition.allow_remote
         )
@@ -91,9 +107,11 @@ class LLMRouter:
         self._open_until = 0.0
 
     def _circuit_open(self) -> bool:
+        """Returns True if the circuit breaker is currently open (cooldown active)."""
         return time.monotonic() < self._open_until
 
     def _record_failure(self) -> None:
+        """Records a failure and potentially opens the circuit."""
         self._consecutive_failures += 1
         if self._consecutive_failures >= self._FAILURE_THRESHOLD and not self._circuit_open():
             self._open_until = time.monotonic() + self._COOLDOWN_SECONDS
@@ -104,6 +122,7 @@ class LLMRouter:
             )
 
     def _record_success(self) -> None:
+        """Resets the failure counter upon a successful call."""
         if self._consecutive_failures or self._open_until:
             logger.info("llm_circuit_closed")
         self._consecutive_failures = 0
@@ -117,8 +136,9 @@ class LLMRouter:
         json_format: bool = True,
     ) -> Any:
         """
-        Route the completion request to the local Ollama backend.
-        When the circuit is open, returns None without contacting the model.
+        Sends a completion request to Ollama.
+        If json_format=True, attempts to parse and return a dictionary.
+        Returns None if the circuit is open or if the request fails.
         """
         if self._circuit_open():
             logger.warning("llm_skipped_circuit_open")

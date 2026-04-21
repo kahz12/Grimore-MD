@@ -1,3 +1,8 @@
+"""
+System Utilities.
+This module provides low-level system interactions such as process management,
+daemon backgrounding, and PID file handling.
+"""
 import os
 import subprocess
 import sys
@@ -6,7 +11,7 @@ from pathlib import Path
 
 
 def _read_cmdline(pid: int) -> str:
-    """Return /proc/<pid>/cmdline as a printable string, or '' if unavailable."""
+    """Returns /proc/<pid>/cmdline as a string, used to identify processes."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             return f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
@@ -15,12 +20,13 @@ def _read_cmdline(pid: int) -> str:
 
 
 def _is_grimoire_process(pid: int) -> bool:
-    """Best-effort check that the PID corresponds to a grimoire daemon."""
+    """Best-effort check that the PID corresponds to a Grimoire daemon process."""
     cmdline = _read_cmdline(pid)
     return "grimoire" in cmdline
 
 
 def _read_pid(pid_file: str) -> int | None:
+    """Reads the PID from a file."""
     try:
         with open(pid_file, "r") as f:
             return int(f.read().strip())
@@ -29,12 +35,17 @@ def _read_pid(pid_file: str) -> int | None:
 
 
 def is_running(pid_file: str) -> bool:
+    """
+    Checks if a Grimoire daemon is currently running by inspecting the PID file
+    and verifying the process exists and matches our name.
+    """
     if not os.path.exists(pid_file):
         return False
     pid = _read_pid(pid_file)
     if pid is None:
         return False
     try:
+        # Signal 0 checks if the process is alive without sending a real signal
         os.kill(pid, 0)
     except OSError:
         return False
@@ -42,7 +53,7 @@ def is_running(pid_file: str) -> bool:
 
 
 def _atomic_write_pid(pid_file: str, pid: int) -> None:
-    """Write the PID atomically with restrictive permissions."""
+    """Writes the PID atomically to a file with restrictive permissions."""
     pid_path = Path(pid_file).resolve()
     fd, tmp_path = tempfile.mkstemp(
         prefix=".pid.", dir=str(pid_path.parent)
@@ -62,20 +73,21 @@ def _atomic_write_pid(pid_file: str, pid: int) -> None:
 
 def start_daemon_background(pid_file: str, log_file: str):
     """
-    Starts the daemon in the background.
-    For Termux/Linux simplicity, we use a nohup-like approach.
+    Starts the Grimoire daemon in the background as a separate session.
+    Redirects stdout and stderr to the specified log file.
     """
     if is_running(pid_file):
         print("Daemon is already running.")
         return
 
-    # If a stale PID file exists, remove it before starting.
+    # Remove stale PID file if it exists
     if os.path.exists(pid_file):
         os.remove(pid_file)
 
     cmd = [sys.executable, "-m", "grimoire", "daemon"]
 
     with open(log_file, "a") as log:
+        # Popen with start_new_session=True creates a background process (daemon-like)
         process = subprocess.Popen(
             cmd,
             stdout=log,
@@ -88,6 +100,9 @@ def start_daemon_background(pid_file: str, log_file: str):
 
 
 def stop_daemon(pid_file: str):
+    """
+    Stops a running daemon by sending a SIGTERM signal to the recorded PID.
+    """
     if not os.path.exists(pid_file):
         print("No PID file found. Is it running?")
         return
@@ -107,7 +122,7 @@ def stop_daemon(pid_file: str):
         return
 
     try:
-        os.kill(pid, 15)  # SIGTERM
+        os.kill(pid, 15)  # SIGTERM (Request graceful shutdown)
         os.remove(pid_file)
         print(f"Stopped daemon (PID: {pid})")
     except Exception as e:

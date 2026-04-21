@@ -1,3 +1,8 @@
+"""
+Command Line Interface (CLI) for Project Grimoire.
+This module defines the user commands for scanning vaults, connecting notes,
+consulting the Oracle (RAG), and managing the background daemon.
+"""
 import time
 from pathlib import Path
 
@@ -12,6 +17,7 @@ from grimoire.cognition.tagger import Tagger
 from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
 from grimoire.memory.taxonomy import load_taxonomy_from_vault
+from grimoire.cognition.chunker import Chunker
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
@@ -21,6 +27,7 @@ from grimoire.utils.logger import get_logger, setup_logger
 from grimoire.utils.security import SecurityGuard
 
 
+# Define the Typer application with metadata for the help screen
 app = typer.Typer(
     help="🔮 [bold medium_purple3]Grimoire v2.0[/] — Automated Knowledge Engine",
     rich_markup_mode="rich",
@@ -35,6 +42,7 @@ logger = get_logger(__name__)
 
 
 def _mode_badge(is_dry_run: bool) -> Text:
+    """Returns a visual badge indicating if the current execution is a dry run or live."""
     return ui.dry_run_badge() if is_dry_run else ui.live_mode_badge()
 
 
@@ -44,7 +52,13 @@ def scan(
     dry_run: bool = typer.Option(None, "--dry-run/--no-dry-run", help="Simulate changes without writing"),
     json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format"),
 ):
-    """📖 Scan the vault, tag new or changed notes and index their embeddings."""
+    """
+    📖 Scan the vault, tag new or changed notes and index their embeddings.
+    
+    This is the primary ingestion command. It identifies new or modified Markdown files,
+    extracts metadata/content, generates tags and summaries via LLM, and creates
+    vector embeddings for semantic search.
+    """
     setup_logger(json_format=json_logs)
     config = load_config()
 
@@ -62,6 +76,7 @@ def scan(
         ))
         raise typer.Exit(code=1)
 
+    # Initialize core services
     git_guard = GitGuard(str(actual_vault_path))
     if not git_guard.is_repo_ready():
         console.print(ui.warn_panel(
@@ -79,6 +94,7 @@ def scan(
     embedder = Embedder(config, cache=db)
     security = SecurityGuard(str(actual_vault_path))
 
+    # Identify files to process (filtering out ignored directories)
     files = [
         f for f in actual_vault_path.glob("**/*.md")
         if not any(part in str(f) for part in config.vault.ignored_dirs)
@@ -101,6 +117,7 @@ def scan(
             progress.update(task, description=f"[grimoire.muted]{rel}[/]")
 
             try:
+                # Step 1: Parse Markdown and metadata
                 note = parser.parse_file(file)
             except Exception as e:
                 stats["errors"] += 1
@@ -108,22 +125,28 @@ def scan(
                 progress.advance(task)
                 continue
 
+            # Respect privacy policy in frontmatter
             if note.metadata.get("privacy") == "never_process":
                 stats["skipped"] += 1
                 progress.advance(task)
                 continue
 
+            # Idempotency check: Skip if content hasn't changed
             existing = db.get_note_by_path(str(file))
             if existing and existing[3] == note.content_hash:
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
 
+            # Security: Scan for PII/Secrets
             sensitive_findings = security.scan_for_sensitive_data(note.content)
             if sensitive_findings:
                 logger.warning("sensitive_data_detected", path=str(file), types=sensitive_findings)
 
+            # Sanitize content before sending to LLM
             clean_content = security.sanitize_prompt(note.content)
+            
+            # Step 2: Cognition (Tagging and Summarization)
             cognition_data = tagger.tag_note(clean_content)
 
             if is_dry_run:
@@ -138,9 +161,11 @@ def scan(
                 continue
 
             try:
+                # Step 3: Safety snapshot before writing
                 if config.output.auto_commit and git_guard.is_repo_ready():
                     git_guard.commit_pre_change(str(file))
 
+                # Step 4: Write metadata back to note file
                 metadata_updates = {
                     "tags": cognition_data["tags"],
                     "summary": cognition_data["summary"],
@@ -148,11 +173,13 @@ def scan(
                 }
                 writer.write_metadata(file, metadata_updates, dry_run=False)
 
+                # Step 5: Update persistence layer (DB)
                 note_id = db.upsert_note(str(file), note.title, note.content_hash)
                 db.update_last_tagged(str(file))
                 if note_id is not None:
                     db.upsert_tags(note_id, cognition_data["tags"])
 
+                # Step 6: Vectorize content for semantic search
                 embedded = embedder.embed_chunks(clean_content)
                 if embedded and note_id is not None:
                     db.delete_note_embeddings(note_id)
@@ -191,7 +218,12 @@ def scan(
 def connect(
     dry_run: bool = typer.Option(None, "--dry-run/--no-dry-run", help="Simulate link injection"),
 ):
-    """🕸️  Discover semantic connections between notes and inject [[wikilinks]]."""
+    """
+    🕸️  Discover semantic connections between notes and inject [[wikilinks]].
+    
+    This command uses vector embeddings and cosine similarity to find related notes.
+    It then injects a 'Suggested Connections' section into the Markdown files.
+    """
     setup_logger()
     config = load_config()
     is_dry_run = dry_run if dry_run is not None else config.output.dry_run
@@ -235,12 +267,14 @@ def connect(
                 continue
             path, title = row
 
+            # Find similar notes using cosine similarity on embeddings
             vector = embedder.deserialize_vector(vector_blob)
             similar = connector.find_similar_notes(vector, top_k=12, exclude_note_id=note_id)
 
             seen_ids: set[int] = set()
             candidates = []
             for s in similar:
+                # Threshold for similarity and avoiding duplicates/self
                 if s["score"] <= 0.7 or s["note_id"] in seen_ids:
                     continue
                 seen_ids.add(s["note_id"])
@@ -273,6 +307,8 @@ def connect(
                 ))
                 for line in bullet_lines:
                     progress.console.print(line)
+                
+                # Inject the discovered links back into the file
                 injector.inject_links(Path(path), connections_to_inject, dry_run=is_dry_run)
 
     console.print()
@@ -291,7 +327,13 @@ def ask(
     top_k: int = typer.Option(5, "--top-k", "-k", help="Fragmentos de contexto a recuperar"),
     export: Path = typer.Option(None, "--export", "-e", help="Guardar la respuesta como nota markdown"),
 ):
-    """🔮 Consult the Grimoire Oracle about your vault's knowledge."""
+    """
+    🔮 Consult the Grimoire Oracle about your vault's knowledge.
+    
+    This is a Retrieval-Augmented Generation (RAG) system. It searches for relevant
+    note fragments, provides them as context to the LLM, and generates an answer
+    with citations to your own notes.
+    """
     setup_logger()
     config = load_config()
 
@@ -309,6 +351,7 @@ def ask(
     ))
 
     with console.status("[grimoire.mystic]El Oráculo escucha los susurros...[/]", spinner="dots12"):
+        # Perform the RAG query
         result = oracle.ask(question, top_k=top_k)
 
     console.print()
@@ -325,6 +368,7 @@ def ask(
         ui.tip("El Oráculo no ha encontrado notas relevantes. ¿Has ejecutado [cyan]grimoire scan[/]?")
 
     if export:
+        # Export the Oracle's response as a new Markdown file in the vault
         vault_root = Path(config.vault.path).resolve()
         export_path = (vault_root / export).resolve()
         try:
@@ -358,7 +402,12 @@ def daemon(
     action: str = typer.Argument("run", help="Acción: run · start · stop · status"),
     json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format"),
 ):
-    """🧿 Manage the Grimoire daemon (foreground / background / status)."""
+    """
+    🧿 Manage the Grimoire daemon (foreground / background / status).
+    
+    The daemon watches for file changes in real-time and automatically 
+    processes them after a debounce period.
+    """
     from grimoire.utils.system import is_running, start_daemon_background, stop_daemon
 
     pid_file = "grimoire.pid"
@@ -367,6 +416,7 @@ def daemon(
     ui.command_header("daemon", action)
 
     if action == "run":
+        # Run daemon in foreground
         setup_logger(json_format=json_logs)
         config = load_config()
         from grimoire.daemon import GrimoireDaemon
@@ -378,6 +428,7 @@ def daemon(
         instance = GrimoireDaemon(config)
         instance.start()
     elif action == "start":
+        # Start daemon in background
         if is_running(pid_file):
             console.print(ui.warn_panel(
                 f"Ya hay un daemon activo. PID file: [cyan]{pid_file}[/].",
@@ -390,12 +441,14 @@ def daemon(
             title="Arrancado",
         ))
     elif action == "stop":
+        # Stop background daemon
         if not is_running(pid_file):
             console.print(ui.info_panel("No hay daemon corriendo.", title="Nada que detener"))
             return
         stop_daemon(pid_file)
         console.print(ui.success_panel("Daemon detenido.", title="Stop"))
     elif action == "status":
+        # Check if daemon is active
         active = is_running(pid_file)
         console.print(Text.assemble("  ", ui.daemon_badge(active)))
     else:
@@ -441,7 +494,12 @@ def prune(
     vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
     dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Solo listar, no borrar"),
 ):
-    """🧹 Remove DB entries for notes that no longer exist on disk."""
+    """
+    🧹 Remove DB entries for notes that no longer exist on disk.
+    
+    Ensures the database remains synchronized with the actual file system
+    by removing orphan records and cleaning up unused tags.
+    """
     setup_logger()
     config = load_config()
     actual_vault_path = vault_path or Path(config.vault.path)
@@ -458,6 +516,7 @@ def prune(
 
     db = Database(config.memory.db_path)
 
+    # Scan disk for existing files to identify orphans in DB
     existing_paths = {
         str(f) for f in actual_vault_path.glob("**/*.md")
         if not any(part in str(f) for part in config.vault.ignored_dirs)
@@ -489,6 +548,7 @@ def prune(
         ui.tip("Ensayo completado. Ejecuta [cyan]grimoire prune --no-dry-run[/] para borrar.")
         return
 
+    # Delete records from DB
     removed = db.prune_missing_notes(existing_paths)
     purged = db.purge_unused_tags()
 
@@ -504,12 +564,18 @@ def prune(
 
 @app.command(rich_help_panel="System")
 def status():
-    """🧭 Full dashboard: vault, cognition, daemon."""
+    """
+    🧭 Full dashboard: vault, cognition, daemon.
+    
+    Displays a high-level overview of the system state, including
+    indexing progress, model configurations, and daemon status.
+    """
     from grimoire.utils.system import is_running
 
     config = load_config()
     db = Database(config.memory.db_path)
 
+    # Gather metrics from database
     with db._get_connection() as conn:
         total_notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
         tagged_notes = conn.execute(

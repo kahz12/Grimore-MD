@@ -1,3 +1,7 @@
+"""
+Markdown parsing logic for Project Grimoire.
+Uses the python-frontmatter library to separate YAML metadata from note content.
+"""
 import frontmatter
 import re
 from pathlib import Path
@@ -7,6 +11,7 @@ from grimoire.utils.hashing import calculate_content_hash
 
 @dataclass
 class ParsedNote:
+    """Represents a fully parsed Markdown note with its metadata and unique content hash."""
     path: Path
     title: str
     metadata: dict[str, Any]
@@ -14,7 +19,15 @@ class ParsedNote:
     content_hash: str
 
 class MarkdownParser:
+    """
+    Responsible for reading Markdown files and extracting structured data.
+    """
     def parse_file(self, file_path: Path) -> ParsedNote:
+        """
+        Parses a Markdown file into a ParsedNote object.
+        Extracts title from frontmatter, first H1, or filename as fallback.
+        Calculates a SHA-256 hash of the content for change detection.
+        """
         with open(file_path, 'r', encoding='utf-8') as f:
             post = frontmatter.load(f)
         

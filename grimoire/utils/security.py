@@ -1,3 +1,8 @@
+"""
+Security and Privacy Guard.
+This module provides tools for detecting sensitive data (PII, credentials),
+sanitizing prompts to prevent injection, and validating LLM host URLs.
+"""
 import ipaddress
 import re
 import socket
@@ -7,11 +12,7 @@ from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Common patterns for sensitive information.
-# Each entry is (pattern, flags): some markers are legitimately case-sensitive
-# (AKIA, sk-, gh[pousr]_ are literal prefixes — matching `akia...` is a false
-# positive), while labels like "Api-Key:" or "BEGIN PRIVATE KEY" tolerate
-# case variation.
+# Common patterns for sensitive information (API keys, secrets, PII)
 SENSITIVE_PATTERNS = {
     "api_key": (
         r'\b(?:api[-_]?key|token|auth|password|secret|pwd)\s*[:=]\s*["\']?[A-Za-z0-9\-_./+=]{16,}["\']?',
@@ -27,9 +28,7 @@ SENSITIVE_PATTERNS = {
     "bearer": (r'\bBearer\s+[A-Za-z0-9\-_.=]{20,}\b', re.IGNORECASE),
 }
 
-# Tokens / role markers that LLMs interpret as control structures.
-# Case-insensitive substring replacement; we neutralize them by inserting
-# a zero-width-ish separator so the original meaning survives for humans.
+# Control tokens that could trigger prompt injection or confuse the LLM
 ROLE_MARKERS = [
     "system:", "user:", "assistant:", "developer:",
     "sistema:", "usuario:", "asistente:",
@@ -46,13 +45,16 @@ _ROLE_MARKER_RE = re.compile(
 
 
 class SecurityGuard:
+    """
+    Implements various security checks and content sanitization strategies.
+    """
     def __init__(self, vault_path: str):
         self.vault_path = vault_path
 
     def scan_for_sensitive_data(self, text: str) -> list[str]:
         """
         Detects potential PII or credentials in text.
-        Returns a list of detected categories.
+        Returns a list of detected categories (e.g., ['api_key', 'email']).
         """
         detected = []
         for name, (pattern, flags) in SENSITIVE_PATTERNS.items():
@@ -63,9 +65,9 @@ class SecurityGuard:
     @staticmethod
     def sanitize_prompt(text: str) -> str:
         """
-        Neutralize role markers and chat-template tokens that could be
-        interpreted by the LLM as control structure (prompt injection).
-        Replacement breaks the literal token while keeping it readable.
+        Neutralize role markers and chat-template tokens by inserting a 
+        zero-width space (\u200b). This prevents the LLM from interpreting 
+        user content as instructions (Prompt Injection).
         """
         return _ROLE_MARKER_RE.sub(
             lambda m: m.group(0)[0] + "\u200b" + m.group(0)[1:],
@@ -75,12 +77,8 @@ class SecurityGuard:
     @staticmethod
     def validate_llm_host(url: str, allow_remote: bool = False) -> str:
         """
-        Validate an Ollama-compatible host URL.
-        Rules:
-          - scheme must be http or https
-          - https required for non-loopback hosts
-          - if allow_remote is False, host must resolve to a loopback address
-        Returns the URL on success; raises ValueError otherwise.
+        Validates the Ollama host URL to prevent SSRF or unauthorized remote access.
+        If allow_remote is False, only loopback addresses (localhost/127.0.0.1) are permitted.
         """
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
@@ -109,8 +107,8 @@ class SecurityGuard:
     @staticmethod
     def wrap_untrusted(text: str, label: str = "note") -> str:
         """
-        Wrap untrusted content in a delimited block so the LLM treats it
-        strictly as data. Strips any closing delimiter inside the payload.
+        Wraps untrusted content in XML-like tags to further delimit data from instructions.
+        Ensures that any existing closing tags within the content are neutralized.
         """
         close_tag = f"</{label}>"
         safe = text.replace(close_tag, close_tag.replace("<", "<\u200b"))
