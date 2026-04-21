@@ -135,27 +135,39 @@ def connect(
     for note_id, text, vector_blob in all_embeddings:
         if note_id in processed_notes: continue
         processed_notes.add(note_id)
-        
+
         # Get path for this note_id
         with db._get_connection() as conn:
-            path, title = conn.execute("SELECT path, title FROM notes WHERE id = ?", (note_id,)).fetchone()
-        
+            row = conn.execute(
+                "SELECT path, title FROM notes WHERE id = ?", (note_id,)
+            ).fetchone()
+        if not row:
+            logger.warning("orphan_embedding", note_id=note_id)
+            continue
+        path, title = row
+
         vector = embedder.deserialize_vector(vector_blob)
         similar = connector.find_similar_notes(vector, top_k=3, exclude_note_id=note_id)
-        
+
         # Filter by threshold
         candidates = [s for s in similar if s["score"] > 0.7]
-        
+
         if candidates:
             console.print(f"[bold]Connections for {title}:[/bold]")
             connections_to_inject = []
             for c in candidates:
                 with db._get_connection() as conn:
-                    c_title = conn.execute("SELECT title FROM notes WHERE id = ?", (c['note_id'],)).fetchone()[0]
+                    c_row = conn.execute(
+                        "SELECT title FROM notes WHERE id = ?", (c['note_id'],)
+                    ).fetchone()
+                if not c_row:
+                    continue
+                c_title = c_row[0]
                 console.print(f"  - {c_title} (score: {c['score']:.2f})")
                 connections_to_inject.append({"title": c_title, "reason": "High semantic similarity."})
-            
-            injector.inject_links(Path(path), connections_to_inject, dry_run=is_dry_run)
+
+            if connections_to_inject:
+                injector.inject_links(Path(path), connections_to_inject, dry_run=is_dry_run)
 
 @app.command()
 def ask(
@@ -220,8 +232,8 @@ def daemon(
         setup_logger(json_format=json_logs)
         config = load_config()
         from grimoire.daemon import GrimoireDaemon
-        daemon = GrimoireDaemon(config)
-        daemon.start()
+        instance = GrimoireDaemon(config)
+        instance.start()
     elif action == "start":
         start_daemon_background(pid_file, log_file)
     elif action == "stop":

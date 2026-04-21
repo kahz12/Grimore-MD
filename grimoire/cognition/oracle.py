@@ -19,7 +19,7 @@ class Oracle:
 
     def _load_prompt(self):
         prompt_path = Path(__file__).parent / "prompts" / "oracle.txt"
-        with open(prompt_path, "r") as f:
+        with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
     def ask(self, question: str, top_k: int = 5) -> dict:
@@ -48,14 +48,25 @@ class Oracle:
         sources = []
         for item in similar:
             with self.db._get_connection() as conn:
-                title = conn.execute("SELECT title FROM notes WHERE id = ?", (item['note_id'],)).fetchone()[0]
-            
+                row = conn.execute(
+                    "SELECT title FROM notes WHERE id = ?",
+                    (item['note_id'],),
+                ).fetchone()
+            if not row:
+                # Orphan embedding: note was deleted but chunk lingers.
+                logger.warning("orphan_embedding", note_id=item['note_id'])
+                continue
+            title = row[0]
+
             safe_text = SecurityGuard.wrap_untrusted(
-                SecurityGuard("").sanitize_prompt(item['text']),
+                SecurityGuard.sanitize_prompt(item['text']),
                 label="source",
             )
             context_parts.append(f"--- Source: [[{title}]] ---\n{safe_text}")
             sources.append(title)
+
+        if not context_parts:
+            return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
         
         full_context = "\n\n".join(context_parts)
         

@@ -13,18 +13,30 @@ class VaultEventHandler(FileSystemEventHandler):
         self.queue = queue
         self.ignored_dirs = ignored_dirs
 
+    def _enqueue(self, raw_path: str, event_type: str):
+        if not raw_path.endswith(".md"):
+            return
+        path = Path(raw_path)
+        if any(ignored in str(path) for ignored in self.ignored_dirs):
+            return
+        self.queue.put((path, time.time()))
+        logger.debug("file_event", type=event_type, path=str(path))
+
     def on_modified(self, event):
         if event.is_directory:
             return
-        if not event.src_path.endswith(".md"):
+        self._enqueue(event.src_path, "modified")
+
+    def on_created(self, event):
+        if event.is_directory:
             return
-        
-        path = Path(event.src_path)
-        if any(ignored in str(path) for ignored in self.ignored_dirs):
+        self._enqueue(event.src_path, "created")
+
+    def on_moved(self, event):
+        if event.is_directory:
             return
-            
-        self.queue.put((path, time.time()))
-        logger.debug("file_modified_event", path=str(path))
+        # Process destination; a rename is effectively a new file for the vault.
+        self._enqueue(event.dest_path, "moved")
 
 class VaultObserver:
     def __init__(self, vault_path: str, callback, ignored_dirs: list[str], debounce_seconds: int = 45):

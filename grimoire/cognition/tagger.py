@@ -39,7 +39,7 @@ class Tagger:
 
     def _load_prompt(self):
         prompt_path = Path(__file__).parent / "prompts" / "tagger.txt"
-        with open(prompt_path, "r") as f:
+        with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
     def tag_note(self, content: str) -> dict:

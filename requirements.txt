@@ -8,5 +8,6 @@ python-dotenv
 pyyaml
 gitpython
 pydantic
+requests
 pytest
 pytest-mock

@@ -8,17 +8,23 @@ from grimoire.utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Common patterns for sensitive information.
-# Email/IPv4 are validated structurally rather than just shape-matched.
+# Each entry is (pattern, flags): some markers are legitimately case-sensitive
+# (AKIA, sk-, gh[pousr]_ are literal prefixes — matching `akia...` is a false
+# positive), while labels like "Api-Key:" or "BEGIN PRIVATE KEY" tolerate
+# case variation.
 SENSITIVE_PATTERNS = {
-    "api_key": r'(?i)\b(?:api[-_]?key|token|auth|password|secret|pwd)\s*[:=]\s*["\']?[A-Za-z0-9\-_./+=]{16,}["\']?',
-    "email": r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}\b',
-    "ipv4": r'\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b',
-    "ssh_key": r'-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----',
-    "aws_key": r'\bAKIA[0-9A-Z]{16}\b',
-    "github_token": r'\bgh[pousr]_[A-Za-z0-9]{20,}\b',
-    "openai_key": r'\bsk-[A-Za-z0-9]{20,}\b',
-    "jwt": r'\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b',
-    "bearer": r'\bBearer\s+[A-Za-z0-9\-_.=]{20,}\b',
+    "api_key": (
+        r'\b(?:api[-_]?key|token|auth|password|secret|pwd)\s*[:=]\s*["\']?[A-Za-z0-9\-_./+=]{16,}["\']?',
+        re.IGNORECASE,
+    ),
+    "email": (r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,63}\b', re.IGNORECASE),
+    "ipv4": (r'\b(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\b', 0),
+    "ssh_key": (r'-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----', 0),
+    "aws_key": (r'\bAKIA[0-9A-Z]{16}\b', 0),
+    "github_token": (r'\bgh[pousr]_[A-Za-z0-9]{20,}\b', 0),
+    "openai_key": (r'\bsk-[A-Za-z0-9]{20,}\b', 0),
+    "jwt": (r'\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b', 0),
+    "bearer": (r'\bBearer\s+[A-Za-z0-9\-_.=]{20,}\b', re.IGNORECASE),
 }
 
 # Tokens / role markers that LLMs interpret as control structures.
@@ -49,12 +55,13 @@ class SecurityGuard:
         Returns a list of detected categories.
         """
         detected = []
-        for name, pattern in SENSITIVE_PATTERNS.items():
-            if re.search(pattern, text, re.IGNORECASE):
+        for name, (pattern, flags) in SENSITIVE_PATTERNS.items():
+            if re.search(pattern, text, flags):
                 detected.append(name)
         return detected
 
-    def sanitize_prompt(self, text: str) -> str:
+    @staticmethod
+    def sanitize_prompt(text: str) -> str:
         """
         Neutralize role markers and chat-template tokens that could be
         interpreted by the LLM as control structure (prompt injection).
