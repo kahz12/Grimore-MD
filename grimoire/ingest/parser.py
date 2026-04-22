@@ -8,6 +8,14 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Any
 from grimoire.utils.hashing import calculate_content_hash
+from grimoire.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+# Hard cap on parsed file size. Markdown notes above this threshold are
+# almost certainly binary blobs, dumps, or accidents — reading them into
+# memory would open a DoS vector via a shared or networked vault.
+MAX_NOTE_BYTES = 2_000_000
 
 @dataclass
 class ParsedNote:
@@ -28,6 +36,21 @@ class MarkdownParser:
         Extracts title from frontmatter, first H1, or filename as fallback.
         Calculates a SHA-256 hash of the content for change detection.
         """
+        try:
+            size = file_path.stat().st_size
+        except OSError as e:
+            raise ValueError(f"cannot stat {file_path}: {e}") from e
+        if size > MAX_NOTE_BYTES:
+            logger.warning(
+                "note_too_large",
+                path=str(file_path),
+                size=size,
+                max=MAX_NOTE_BYTES,
+            )
+            raise ValueError(
+                f"note exceeds {MAX_NOTE_BYTES} bytes: {file_path} ({size} bytes)"
+            )
+
         with open(file_path, 'r', encoding='utf-8') as f:
             post = frontmatter.load(f)
         

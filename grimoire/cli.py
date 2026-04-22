@@ -17,7 +17,6 @@ from grimoire.cognition.tagger import Tagger
 from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
 from grimoire.memory.taxonomy import load_taxonomy_from_vault
-from grimoire.cognition.chunker import Chunker
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
@@ -95,10 +94,17 @@ def scan(
     security = SecurityGuard(str(actual_vault_path))
 
     # Identify files to process (filtering out ignored directories)
-    files = [
-        f for f in actual_vault_path.glob("**/*.md")
-        if not any(part in str(f) for part in config.vault.ignored_dirs)
-    ]
+    vault_root = actual_vault_path.resolve()
+    files = []
+    for f in actual_vault_path.glob("**/*.md"):
+        if any(part in str(f) for part in config.vault.ignored_dirs):
+            continue
+        try:
+            SecurityGuard.resolve_within_vault(f, vault_root)
+        except ValueError:
+            logger.warning("path_escape_skipped", path=str(f))
+            continue
+        files.append(f)
 
     if not files:
         console.print(ui.info_panel(
@@ -370,9 +376,10 @@ def ask(
     if export:
         # Export the Oracle's response as a new Markdown file in the vault
         vault_root = Path(config.vault.path).resolve()
-        export_path = (vault_root / export).resolve()
         try:
-            export_path.relative_to(vault_root)
+            export_path = SecurityGuard.resolve_within_vault(
+                vault_root / export, vault_root
+            )
         except ValueError:
             console.print(ui.error_panel(
                 f"[bold]--export[/] debe apuntar dentro del vault ({vault_root}).",

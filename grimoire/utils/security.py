@@ -6,6 +6,7 @@ sanitizing prompts to prevent injection, and validating LLM host URLs.
 import ipaddress
 import re
 import socket
+from pathlib import Path
 from urllib.parse import urlparse
 
 from grimoire.utils.logger import get_logger
@@ -113,3 +114,40 @@ class SecurityGuard:
         close_tag = f"</{label}>"
         safe = text.replace(close_tag, close_tag.replace("<", "<\u200b"))
         return f"<{label}>\n{safe}\n</{label}>"
+
+    @staticmethod
+    def resolve_within_vault(file_path, vault_root) -> Path:
+        """
+        Resolve ``file_path`` and require the result to live under ``vault_root``.
+
+        Follows symlinks (so a symlink inside the vault pointing outside is
+        rejected) and defends against ``..`` traversal. Raises ``ValueError``
+        when the path escapes the vault.
+        """
+        vault = Path(vault_root).resolve(strict=False)
+        candidate = Path(file_path).resolve(strict=False)
+        try:
+            candidate.relative_to(vault)
+        except ValueError as exc:
+            raise ValueError(
+                f"path escapes vault: {file_path!r} not inside {vault}"
+            ) from exc
+        return candidate
+
+    @staticmethod
+    def redact_for_log(text: str, max_len: int = 160) -> str:
+        """
+        Make an arbitrary LLM/user string safe to drop into a log field:
+        strip control chars, collapse whitespace, redact sensitive patterns,
+        and truncate. Prevents note content (which can contain the very
+        secrets we scan for) from leaking verbatim into logs.
+        """
+        if not isinstance(text, str):
+            return ""
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        for _, (pattern, flags) in SENSITIVE_PATTERNS.items():
+            cleaned = re.sub(pattern, "[REDACTED]", cleaned, flags=flags)
+        if len(cleaned) > max_len:
+            cleaned = cleaned[: max_len - 1] + "…"
+        return cleaned

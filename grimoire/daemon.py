@@ -106,6 +106,14 @@ class GrimoireDaemon:
         logger.info("processing_file", path=rel)
 
         try:
+            # 0. Vault-scope guard: reject symlinks or events that somehow
+            # point outside the vault we were told to watch.
+            try:
+                SecurityGuard.resolve_within_vault(file_path, self.vault_root)
+            except ValueError:
+                logger.warning("path_escape_skipped", path=rel)
+                return
+
             # 1. Parse file
             note = self.parser.parse_file(file_path)
 

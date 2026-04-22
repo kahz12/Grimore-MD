@@ -165,7 +165,10 @@ class LLMRouter:
             if json_format:
                 parsed = _extract_json_object(raw_response)
                 if parsed is None:
-                    logger.warning("llm_json_parse_failed", raw=raw_response[:200])
+                    logger.warning(
+                        "llm_json_parse_failed",
+                        raw=SecurityGuard.redact_for_log(raw_response),
+                    )
                     self._record_failure()
                     return None
                 self._record_success()
