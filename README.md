@@ -35,6 +35,7 @@
 - [CLI reference](#cli-reference)
 - [Configuration](#configuration)
 - [Controlled taxonomy](#controlled-taxonomy)
+- [Categories](#categories)
 - [Privacy & safety](#privacy--safety)
 - [Tech stack](#tech-stack)
 - [Roadmap](#roadmap)
@@ -60,13 +61,16 @@
 
 ### Cognition
 - **Auto-tagging & summaries** — `qwen2.5:3b` by default; tags are normalised (accents stripped, lowercased, hyphenated) and reconciled against your controlled vocabulary.
+- **Hierarchical categorisation** — each note is routed to one node of your category tree (`Historia` · `Ciencia` · `Tecnología` · `Matemáticas` · `Arte` by default, fully customisable). The LLM picks from the live menu; unknown paths are rejected.
 - **Chunked embeddings** — notes are split into overlapping chunks (1 500 char / 150 overlap) so retrieval works at paragraph granularity.
 - **Embedding cache** — vectors are keyed by `sha256(model || chunk)`, so swapping embedding models invalidates cleanly without re-embedding identical text.
 - **Circuit breaker** — five consecutive LLM failures open a 120 s cooldown instead of thrashing Ollama.
 
 ### Memory
 - **SQLite + WAL** — concurrent reads (CLI) while the daemon writes; indexed on `note_id` for fast joins.
+- **FTS5 full-text index** — chunk text is mirrored into a BM25-ranked index via triggers (external-content mode, so zero storage overhead) for the hybrid retriever.
 - **Tag persistence** — associations live in `note_tags`; `grimoire tags` shows a frequency table.
+- **Category persistence** — `notes.category` stores the canonical tree path; `grimoire category list` shows per-branch counts.
 - **Stale-note pruning** — `grimoire prune` drops DB rows for notes that no longer exist on disk, cascading to tags and embeddings.
 
 ### Synthesis
@@ -75,6 +79,7 @@
 
 ### The Oracle (RAG)
 - **Grounded Q&A** — `grimoire ask` retrieves relevant chunks, composes a local-LLM answer, and cites sources as wikilinks.
+- **Hybrid retrieval** — BM25 (FTS5) and cosine similarity are fused with **Reciprocal Rank Fusion**, so exact terms (proper nouns, jargon) and fuzzy concepts both land. Degrades to BM25-only if the embedder is down, or vector-only if FTS5 isn't compiled in.
 - **Insight export** — save responses back into the vault as first-class, linked notes.
 
 ### Visual layer
@@ -89,11 +94,11 @@ graph TD
     B -->|SHA-256 hash| C{Changed?}
     C -->|no| Z[Skip]
     C -->|yes| D[Git Guard snapshot]
-    D --> E[Cognition<br/>tags · summary · chunks · vectors]
-    E --> F[(SQLite<br/>notes · tags · embeddings · cache)]
+    D --> E[Cognition<br/>tags · category · summary · chunks · vectors]
+    E --> F[(SQLite<br/>notes · tags · categories · embeddings · FTS5)]
     F --> G[Link Injector]
     G --> A
-    F --> H[Oracle RAG]
+    F --> H[Oracle RAG<br/>BM25 + cosine ⇒ RRF]
     H --> I[CLI]
 ```
 
@@ -143,6 +148,10 @@ grimoire ask "What threads through my notes on Heidegger's nihilism?"
 | `grimoire connect` | Knowledge ops | Discover semantic links and inject wikilinks. |
 | `grimoire ask <q>` | Knowledge ops | Query the Oracle (RAG) with citations. |
 | `grimoire tags` | Knowledge ops | Frequency table of tags currently in use. |
+| `grimoire category list` | Knowledge ops | Tree view of categories with per-branch note counts. |
+| `grimoire category add <path>` | Knowledge ops | Create a category (ancestors auto-created), persisted to `taxonomy.yml`. |
+| `grimoire category rm <path>` | Knowledge ops | Remove a subtree (use `--force` if it has notes). |
+| `grimoire category notes <path>` | Knowledge ops | List notes filed under a branch (`--flat` to skip descendants). |
 | `grimoire daemon <action>` | Daemon | `run` · `start` · `stop` · `status`. |
 | `grimoire prune` | System | Remove DB entries for notes gone from disk. |
 | `grimoire status` | System | Full dashboard: vault · cognition · daemon. |
@@ -160,13 +169,15 @@ Config lives in `grimoire.toml` at the project root.
 | `cognition` | `model_llm_local` | `qwen2.5:3b` | Ollama model for tagging and the Oracle. |
 | `cognition` | `model_embeddings_local` | `nomic-embed-text` | Ollama model for semantic vectors. |
 | `cognition` | `allow_remote` | `false` | Reserved for future opt-in remote backends. |
+| `cognition` | `hybrid_search` | `true` | Fuse BM25 (FTS5) and cosine via RRF at query time. |
+| `cognition` | `rrf_k` | `60` | RRF constant — higher flattens the rank-weight curve. |
 | `memory` | `db_path` | `grimoire.db` | SQLite file for notes, tags and embeddings. |
 | `output` | `auto_commit` | `true` | Git Guard pre-change snapshots. |
 | `output` | `dry_run` | `true` | Prevents writes until explicitly disabled. |
 
 ## Controlled taxonomy
 
-Drop a `taxonomy.yml` at the **root of your vault** to pin your tag vocabulary:
+Drop a `taxonomy.yml` at the **root of your vault** to pin your tag vocabulary and category tree:
 
 ```yaml
 vocabulary:
@@ -174,11 +185,38 @@ vocabulary:
   - ocultismo-clasico
   - nihilismo
   - epistemologia
+
+categories:
+  Historia:
+    - Antigua
+    - Moderna
+  Ciencia:
+    Física:
+      - Cuántica
+    - Biología
+  Arte: []
 ```
 
 Each LLM-emitted tag is normalised (`"Ocultismo Clásico"` → `ocultismo-clasico`) and, when a normalised form is in the vocabulary, rewritten to its canonical spelling. Unknown tags are kept verbatim — the taxonomy steers, it does not gatekeep.
 
-Malformed or missing files fall back to an empty taxonomy silently, so ingestion is never blocked.
+Malformed or missing files fall back to sensible defaults silently, so ingestion is never blocked.
+
+## Categories
+
+Categories are the **hierarchical** counterpart to flat tags — each note gets exactly one canonical path (`Ciencia/Física/Cuántica`). If you don't configure any, Grimoire seeds five roots: `Historia`, `Ciencia`, `Tecnología`, `Matemáticas`, `Arte`.
+
+At scan time the Tagger is shown the live menu and must pick from it; unknown paths are dropped, not invented. The result is written to both the note's frontmatter (`category:`) and the `notes.category` column.
+
+Manage the tree from the CLI:
+
+```bash
+grimoire category list                  # tree + counts
+grimoire category add "Ciencia/Física/Cuántica"
+grimoire category notes  "Ciencia"      # every note under Ciencia/*
+grimoire category rm     "Arte" --force # drop subtree even with notes
+```
+
+Input resolution is accent- and case-insensitive (`"ciencia / fisica"` → `"Ciencia/Física"`), so you can type fast without worrying about diacritics.
 
 ## Privacy & safety
 
@@ -194,7 +232,8 @@ Malformed or missing files fall back to an empty taxonomy silently, so ingestion
 | :--- | :--- |
 | **Runtime** | Python 3.11+ |
 | **LLM** | Ollama (`qwen2.5:3b` · `nomic-embed-text`) |
-| **Storage** | SQLite (WAL mode) |
+| **Storage** | SQLite (WAL mode · FTS5) |
+| **Retrieval** | Cosine similarity + BM25 fused with Reciprocal Rank Fusion |
 | **CLI / UX** | Typer + Rich |
 | **Ingest** | watchdog · python-frontmatter · markdown-it-py |
 | **Observability** | structlog |
