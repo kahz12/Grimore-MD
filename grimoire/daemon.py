@@ -42,8 +42,8 @@ class GrimoireDaemon:
         
         # Initialize cognitive components
         self.router = LLMRouter(config)
-        self.taxonomy = load_taxonomy_from_vault(Path(config.vault.path))
-        self.tagger = Tagger(config, self.router, self.taxonomy)
+        self.vault_tax = load_taxonomy_from_vault(Path(config.vault.path))
+        self.tagger = Tagger(config, self.router, self.vault_tax)
         self.embedder = Embedder(config, cache=self.db)
         self.connector = Connector(self.db, self.embedder)
         
@@ -150,6 +150,7 @@ class GrimoireDaemon:
             metadata_updates = {
                 "tags": cognition_data["tags"],
                 "summary": cognition_data["summary"],
+                "category": cognition_data.get("category", ""),
                 "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%S")
             }
             self.writer.write_metadata(file_path, metadata_updates, dry_run=self.config.output.dry_run)
@@ -162,6 +163,7 @@ class GrimoireDaemon:
             self.db.update_last_tagged(str(file_path))
             if note_id is not None:
                 self.db.upsert_tags(note_id, cognition_data["tags"])
+                self.db.set_note_category(note_id, cognition_data.get("category") or None)
 
             if embedded:
                 # Store new chunks and their vectors

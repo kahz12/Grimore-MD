@@ -16,7 +16,7 @@ from grimoire.cognition.oracle import Oracle
 from grimoire.cognition.tagger import Tagger
 from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
-from grimoire.memory.taxonomy import load_taxonomy_from_vault
+from grimoire.memory.taxonomy import load_taxonomy_from_vault, save_taxonomy_to_vault
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
@@ -87,8 +87,8 @@ def scan(
     db = Database(config.memory.db_path)
     parser = MarkdownParser()
     router = LLMRouter(config)
-    taxonomy = load_taxonomy_from_vault(actual_vault_path)
-    tagger = Tagger(config, router, taxonomy)
+    vault_tax = load_taxonomy_from_vault(actual_vault_path)
+    tagger = Tagger(config, router, vault_tax)
     writer = FrontmatterWriter()
     embedder = Embedder(config, cache=db)
     security = SecurityGuard(str(actual_vault_path))
@@ -175,6 +175,7 @@ def scan(
                 metadata_updates = {
                     "tags": cognition_data["tags"],
                     "summary": cognition_data["summary"],
+                    "category": cognition_data.get("category", ""),
                     "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 }
                 writer.write_metadata(file, metadata_updates, dry_run=False)
@@ -184,6 +185,7 @@ def scan(
                 db.update_last_tagged(str(file))
                 if note_id is not None:
                     db.upsert_tags(note_id, cognition_data["tags"])
+                    db.set_note_category(note_id, cognition_data.get("category") or None)
 
                 # Step 6: Vectorize content for semantic search
                 embedded = embedder.embed_chunks(clean_content)
@@ -590,7 +592,11 @@ def status():
         ).fetchone()[0]
         total_embeddings = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
         cached_embeddings = conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0]
+        categorised_notes = conn.execute(
+            "SELECT COUNT(*) FROM notes WHERE category IS NOT NULL AND category <> ''"
+        ).fetchone()[0]
     unique_tags = db.get_tag_count()
+    category_rows = db.get_category_frequency()
 
     console.print()
     console.print(ui.render_banner())
@@ -610,6 +616,8 @@ def status():
         ("LLM",         Text(config.cognition.model_llm_local,        style="grimoire.accent")),
         ("Embeddings",  Text(config.cognition.model_embeddings_local, style="grimoire.accent")),
         ("Tags únicos", Text(str(unique_tags),                        style="grimoire.accent")),
+        ("Categorías",  Text(f"{len(category_rows)} activas · {categorised_notes} notas",
+                             style="grimoire.accent")),
         ("Remoto",      Text("permitido" if config.cognition.allow_remote else "local-first",
                              style="grimoire.warning" if config.cognition.allow_remote else "grimoire.success")),
     ]))
@@ -631,6 +639,197 @@ def status():
     elif config.output.dry_run:
         console.print()
         ui.tip("Estás en modo ensayo. Ajusta [cyan]dry_run = false[/] en [cyan]grimoire.toml[/] para escribir.")
+
+
+category_app = typer.Typer(
+    help="🗂️  Manage the hierarchical category tree (Historia · Ciencia · …).",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+app.add_typer(category_app, name="category", rich_help_panel="Knowledge ops")
+
+
+def _resolve_vault_path(vault_path: Path | None) -> Path:
+    config = load_config()
+    path = vault_path or Path(config.vault.path)
+    if not path.exists():
+        console.print(ui.error_panel(
+            f"Vault not found at [bold]{path}[/]",
+            title="Vault missing",
+        ))
+        raise typer.Exit(code=1)
+    return path
+
+
+@category_app.command("list")
+def category_list(
+    vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
+):
+    """📚 Show the full category tree with per-node note counts."""
+    setup_logger()
+    actual_vault_path = _resolve_vault_path(vault_path)
+    vault_tax = load_taxonomy_from_vault(actual_vault_path)
+    config = load_config()
+    db = Database(config.memory.db_path)
+
+    ui.command_header("category list", str(actual_vault_path))
+
+    tree = vault_tax.categories
+    if tree.is_empty():
+        console.print(ui.info_panel(
+            "No hay categorías configuradas todavía.\n"
+            "Añade la primera con [cyan]grimoire category add <ruta>[/].",
+            title="Árbol vacío",
+        ))
+        return
+
+    console.print()
+
+    def render(node: str, depth: int) -> None:
+        for child in tree.children(node):
+            name = child.rsplit("/", 1)[-1]
+            count = db.count_notes_under_category(child)
+            indent = "  " * depth
+            bullet = "◆" if depth == 0 else "↳"
+            style = "grimoire.primary" if depth == 0 else "grimoire.accent"
+            console.print(Text.assemble(
+                (f"  {indent}{bullet} ", "grimoire.rune"),
+                (name, style),
+                ("  ", ""),
+                (f"({count} notas)" if count else "(vacía)", "grimoire.muted"),
+            ))
+            render(child, depth + 1)
+
+    render("", 0)
+    console.print()
+    console.print(Text.assemble(
+        ("  ", ""),
+        (f"{len(tree.paths())} categorías totales", "grimoire.accent"),
+    ))
+
+
+@category_app.command("add")
+def category_add(
+    path: str = typer.Argument(..., help="Ruta jerárquica, ej. 'Ciencia/Física/Cuántica'"),
+    vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
+):
+    """➕ Create a category (and any missing ancestors)."""
+    setup_logger()
+    actual_vault_path = _resolve_vault_path(vault_path)
+    vault_tax = load_taxonomy_from_vault(actual_vault_path)
+
+    ui.command_header("category add", path)
+
+    try:
+        created = vault_tax.categories.add(path)
+    except ValueError as e:
+        console.print(ui.error_panel(str(e), title="Ruta inválida"))
+        raise typer.Exit(code=2)
+
+    if not created:
+        console.print(ui.info_panel(
+            f"[bold]{path}[/] ya existe en el árbol.",
+            title="Sin cambios",
+        ))
+        return
+
+    save_taxonomy_to_vault(actual_vault_path, vault_tax)
+    console.print(ui.success_panel(
+        f"Categoría [bold]{path}[/] añadida y persistida en [cyan]taxonomy.yml[/].",
+        title="Creada",
+    ))
+
+
+@category_app.command("rm")
+def category_rm(
+    path: str = typer.Argument(..., help="Categoría a eliminar (incluye sus hijas)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Borrar aunque haya notas asignadas"),
+    vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
+):
+    """➖ Remove a category and its entire subtree."""
+    setup_logger()
+    actual_vault_path = _resolve_vault_path(vault_path)
+    vault_tax = load_taxonomy_from_vault(actual_vault_path)
+    config = load_config()
+    db = Database(config.memory.db_path)
+
+    ui.command_header("category rm", path)
+
+    canonical = vault_tax.categories.resolve(path) or path
+    notes_affected = db.count_notes_under_category(canonical)
+    if notes_affected and not force:
+        console.print(ui.warn_panel(
+            f"[bold]{canonical}[/] tiene {notes_affected} notas asignadas.\n"
+            f"Usa [cyan]--force[/] para eliminarla de todos modos "
+            f"(el campo quedará vacío en la DB pero no en los ficheros).",
+            title="Categoría en uso",
+        ))
+        raise typer.Exit(code=1)
+
+    removed = vault_tax.categories.remove(canonical)
+    if not removed:
+        console.print(ui.info_panel(
+            f"[bold]{path}[/] no existe en el árbol.",
+            title="Nada que borrar",
+        ))
+        return
+
+    save_taxonomy_to_vault(actual_vault_path, vault_tax)
+    console.print(ui.success_panel(
+        f"Categoría [bold]{canonical}[/] eliminada del árbol.\n"
+        f"{notes_affected} notas quedan sin categoría en la DB.",
+        title="Eliminada",
+    ))
+
+
+@category_app.command("notes")
+def category_notes(
+    path: str = typer.Argument(..., help="Categoría a inspeccionar"),
+    recursive: bool = typer.Option(True, "--recursive/--flat", help="Incluir descendientes"),
+    vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
+):
+    """📄 List notes filed under a category."""
+    setup_logger()
+    actual_vault_path = _resolve_vault_path(vault_path)
+    vault_tax = load_taxonomy_from_vault(actual_vault_path)
+    config = load_config()
+    db = Database(config.memory.db_path)
+
+    ui.command_header("category notes", path)
+
+    canonical = vault_tax.categories.resolve(path)
+    if canonical is None:
+        console.print(ui.warn_panel(
+            f"[bold]{path}[/] no existe en el árbol. Usa [cyan]grimoire category list[/] para ver las disponibles.",
+            title="Categoría desconocida",
+        ))
+        raise typer.Exit(code=1)
+
+    rows = db.get_notes_by_category(canonical, recursive=recursive)
+    if not rows:
+        console.print(ui.info_panel(
+            f"No hay notas bajo [bold]{canonical}[/].",
+            title="Vacía",
+        ))
+        return
+
+    console.print()
+    for _nid, npath, title in rows:
+        try:
+            display = Path(npath).relative_to(actual_vault_path)
+        except ValueError:
+            display = Path(npath).name
+        console.print(Text.assemble(
+            ("  • ", "grimoire.rune"),
+            (title or str(display), "grimoire.primary"),
+            ("  ", ""),
+            (str(display), "grimoire.muted"),
+        ))
+    console.print()
+    console.print(Text.assemble(
+        ("  ", ""),
+        (f"{len(rows)} notas", "grimoire.accent"),
+    ))
 
 
 if __name__ == "__main__":

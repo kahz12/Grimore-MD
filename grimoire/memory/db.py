@@ -82,7 +82,18 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_embeddings_note_id ON embeddings(note_id)"
             )
+            self._migrate_category_column(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category)"
+            )
             conn.commit()
+
+    @staticmethod
+    def _migrate_category_column(conn) -> None:
+        """Add ``notes.category`` if it's missing (idempotent upgrade path)."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
+        if "category" not in cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN category TEXT")
 
     def get_note_by_path(self, path: str):
         """Retrieves a note record by its file path."""
@@ -113,6 +124,69 @@ class Database:
             now = datetime.now().isoformat()
             conn.execute("UPDATE notes SET last_tagged = ? WHERE path = ?", (now, path))
             conn.commit()
+
+    # ── Categories ─────────────────────────────────────────────────────────
+
+    def set_note_category(self, note_id: int, category: Optional[str]) -> None:
+        """Set (or clear with ``None``) the canonical category path of a note."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE notes SET category = ? WHERE id = ?",
+                (category, note_id),
+            )
+            conn.commit()
+
+    def get_category_frequency(self) -> list[tuple[str, int]]:
+        """All categories currently in use, sorted by number of notes (desc)."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT category, COUNT(*) AS n
+                FROM notes
+                WHERE category IS NOT NULL AND category <> ''
+                GROUP BY category
+                ORDER BY n DESC, category ASC
+                """
+            ).fetchall()
+        return [(name, count) for name, count in rows]
+
+    def count_notes_under_category(self, category: str) -> int:
+        """Count notes whose category is ``category`` or a descendant of it."""
+        if not category:
+            return 0
+        prefix = category + "/"
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM notes
+                WHERE category = ? OR category LIKE ?
+                """,
+                (category, prefix + "%"),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_notes_by_category(self, category: str, recursive: bool = True) -> list[tuple[int, str, str]]:
+        """
+        Return ``(id, path, title)`` for notes assigned to ``category``.
+        When ``recursive`` is True (default) descendants are included too.
+        """
+        with self._get_connection() as conn:
+            if recursive:
+                prefix = category + "/"
+                rows = conn.execute(
+                    """
+                    SELECT id, path, title FROM notes
+                    WHERE category = ? OR category LIKE ?
+                    ORDER BY category, title
+                    """,
+                    (category, prefix + "%"),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, path, title FROM notes WHERE category = ? ORDER BY title",
+                    (category,),
+                ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
 
     def store_embedding(self, note_id: int, chunk_index: int, text_content: str, vector_blob: bytes):
         """Stores a vector embedding for a specific note chunk."""
