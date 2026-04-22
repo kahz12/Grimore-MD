@@ -24,6 +24,9 @@ class CognitionConfig:
     model_llm_local: str = "qwen2.5:3b"
     model_embeddings_local: str = "nomic-embed-text"
     allow_remote: bool = False  # If False, only loopback addresses are allowed for Ollama
+    # Retrieval: fuse BM25 (FTS5) and cosine similarity via Reciprocal Rank Fusion.
+    hybrid_search: bool = True
+    rrf_k: int = 60
 
 @dataclass
 class MemoryConfig:

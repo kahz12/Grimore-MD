@@ -41,14 +41,27 @@ class Oracle:
         """
         logger.info("oracle_query", question=question)
         
-        # Step 1: Vectorize the question
+        # Step 1: Vectorize the question (BM25 alone is still useful if the
+        # embedder is down, so we don't abort on a failed embed anymore).
         query_vector = self.embedder.embed(question)
-        if not query_vector:
+
+        # Step 2: Retrieve relevant fragments (hybrid when possible).
+        use_hybrid = (
+            getattr(self.config.cognition, "hybrid_search", True)
+            and self.db.fts_available
+        )
+        if use_hybrid:
+            similar = self.connector.find_hybrid(
+                query_text=question,
+                query_vector=query_vector,
+                top_k=top_k,
+                rrf_k=getattr(self.config.cognition, "rrf_k", 60),
+            )
+        elif query_vector:
+            similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
+        else:
             return {"answer": "I could not understand the question's essence.", "sources": []}
 
-        # Step 2: Retrieve semantically relevant fragments
-        similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
-        
         if not similar:
             return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
 

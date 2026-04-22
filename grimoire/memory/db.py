@@ -86,6 +86,7 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category)"
             )
+            self._fts_available = self._migrate_fts_index(conn)
             conn.commit()
 
     @staticmethod
@@ -94,6 +95,96 @@ class Database:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
         if "category" not in cols:
             conn.execute("ALTER TABLE notes ADD COLUMN category TEXT")
+
+    @staticmethod
+    def _migrate_fts_index(conn) -> bool:
+        """
+        Create the FTS5 full-text index over ``embeddings.text_content`` plus
+        synchronisation triggers. Uses external-content mode so FTS doesn't
+        duplicate the chunk text. Returns False when the SQLite build lacks
+        FTS5 support (the caller will then fall back to pure-vector search).
+
+        Idempotent: safe to call on every startup.
+        """
+        try:
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_fts USING fts5(
+                    text_content,
+                    content='embeddings',
+                    content_rowid='id',
+                    tokenize = "unicode61 remove_diacritics 2"
+                )
+                """
+            )
+        except sqlite3.OperationalError as e:
+            logger.warning("fts5_unavailable", error=str(e))
+            return False
+
+        # Keep the FTS index in sync with the embeddings table.
+        conn.executescript(
+            """
+            CREATE TRIGGER IF NOT EXISTS embeddings_ai AFTER INSERT ON embeddings BEGIN
+                INSERT INTO embeddings_fts(rowid, text_content)
+                VALUES (new.id, new.text_content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS embeddings_ad AFTER DELETE ON embeddings BEGIN
+                INSERT INTO embeddings_fts(embeddings_fts, rowid, text_content)
+                VALUES ('delete', old.id, old.text_content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS embeddings_au AFTER UPDATE ON embeddings BEGIN
+                INSERT INTO embeddings_fts(embeddings_fts, rowid, text_content)
+                VALUES ('delete', old.id, old.text_content);
+                INSERT INTO embeddings_fts(rowid, text_content)
+                VALUES (new.id, new.text_content);
+            END;
+            """
+        )
+
+        # One-time rebuild when the FTS table exists but is empty and the
+        # source table already has rows (fresh upgrade path).
+        fts_count = conn.execute("SELECT COUNT(*) FROM embeddings_fts").fetchone()[0]
+        src_count = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+        if fts_count == 0 and src_count > 0:
+            conn.execute("INSERT INTO embeddings_fts(embeddings_fts) VALUES ('rebuild')")
+            logger.info("fts_rebuilt", chunks=src_count)
+        return True
+
+    @property
+    def fts_available(self) -> bool:
+        """Whether FTS5 is compiled in and wired up on this database."""
+        return bool(getattr(self, "_fts_available", False))
+
+    def fts_search(self, query: str, limit: int = 20) -> list[tuple[int, int, str, float]]:
+        """
+        BM25 full-text search over embeddings.text_content.
+
+        Returns ``[(embedding_id, note_id, text_content, bm25_score), …]``
+        sorted by relevance (lower BM25 = more relevant; SQLite's bm25()
+        returns negative values where smaller is better). Safe no-op when
+        FTS5 isn't available.
+        """
+        if not self.fts_available or not query or not query.strip():
+            return []
+        # FTS5 match string: quote to avoid operator parsing on user input.
+        match = '"' + query.replace('"', '""') + '"'
+        with self._get_connection() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT e.id, e.note_id, e.text_content, bm25(embeddings_fts) AS score
+                    FROM embeddings_fts
+                    JOIN embeddings e ON e.id = embeddings_fts.rowid
+                    WHERE embeddings_fts MATCH ?
+                    ORDER BY score ASC
+                    LIMIT ?
+                    """,
+                    (match, limit),
+                ).fetchall()
+            except sqlite3.OperationalError as e:
+                logger.warning("fts_query_failed", error=str(e))
+                return []
+        return [(r[0], r[1], r[2], float(r[3])) for r in rows]
 
     def get_note_by_path(self, path: str):
         """Retrieves a note record by its file path."""
@@ -207,6 +298,18 @@ class Database:
         """Returns all embeddings in the database for connection discovery."""
         with self._get_connection() as conn:
             cursor = conn.execute("SELECT note_id, text_content, vector FROM embeddings")
+            return cursor.fetchall()
+
+    def get_all_embeddings_with_id(self):
+        """
+        Like :py:meth:`get_all_embeddings` but also returns the embedding's
+        primary-key id, which is needed to align dense and FTS5 rankings.
+        Rows: ``(id, note_id, text_content, vector)``.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "SELECT id, note_id, text_content, vector FROM embeddings"
+            )
             return cursor.fetchall()
 
     def get_cached_embedding(self, key: str) -> Optional[bytes]:
