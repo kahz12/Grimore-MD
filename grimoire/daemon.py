@@ -10,6 +10,7 @@ from grimoire.utils.logger import setup_logger, get_logger
 from grimoire.ingest.observer import VaultObserver
 from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
+from grimoire.memory.maintenance import MaintenanceRunner
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.cognition.llm_router import LLMRouter
@@ -39,6 +40,7 @@ class GrimoireDaemon:
         self.notifier = Notifier()
         self.security = SecurityGuard(config.vault.path)
         self.backup = BackupManager(config.memory.db_path)
+        self.maintenance = MaintenanceRunner(self.db, config.maintenance)
         
         # Initialize cognitive components
         self.router = LLMRouter(config)
@@ -52,6 +54,7 @@ class GrimoireDaemon:
         self.processed_count = 0
         self.last_batch_time = time.time()
         self.last_backup_time = time.time()
+        self.last_maintenance_time = time.time()
 
     def _log_path(self, file_path: Path) -> str:
         """Helper to get a relative path for cleaner logging."""
@@ -86,7 +89,15 @@ class GrimoireDaemon:
                 if current_time - self.last_backup_time > 86400:
                     self.backup.create_backup()
                     self.last_backup_time = current_time
-                
+
+                # Periodic DB maintenance (VACUUM + WAL checkpoint + tag purge).
+                mcfg = self.config.maintenance
+                if mcfg.enabled:
+                    interval = max(1, mcfg.interval_hours) * 3600
+                    if current_time - self.last_maintenance_time > interval:
+                        self.maintenance.run(reason="scheduled")
+                        self.last_maintenance_time = current_time
+
                 time.sleep(10)
         except KeyboardInterrupt:
             self.stop()

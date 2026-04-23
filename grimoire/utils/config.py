@@ -40,12 +40,26 @@ class OutputConfig:
     dry_run: bool = True     # If True, no changes are actually written to disk
 
 @dataclass
+class MaintenanceConfig:
+    """
+    Periodic housekeeping performed by the daemon: VACUUM, WAL checkpoint,
+    purge of unused tags. Runs once per ``interval_hours`` while the daemon
+    is idle enough for a brief exclusive lock.
+    """
+    enabled: bool = True
+    interval_hours: int = 24
+    vacuum: bool = True
+    purge_tags: bool = True
+    wal_checkpoint: bool = True
+
+@dataclass
 class Config:
     """Main configuration container."""
     vault: VaultConfig = field(default_factory=VaultConfig)
     cognition: CognitionConfig = field(default_factory=CognitionConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
 
 def load_config(config_path: str = "grimoire.toml") -> Config:
     """
@@ -64,10 +78,12 @@ def load_config(config_path: str = "grimoire.toml") -> Config:
     cognition_data = data.get("cognition", {})
     memory_data = data.get("memory", {})
     output_data = data.get("output", {})
-    
+    maintenance_data = data.get("maintenance", {})
+
     return Config(
         vault=VaultConfig(**vault_data),
         cognition=CognitionConfig(**cognition_data),
         memory=MemoryConfig(**memory_data),
-        output=OutputConfig(**output_data)
+        output=OutputConfig(**output_data),
+        maintenance=MaintenanceConfig(**maintenance_data),
     )

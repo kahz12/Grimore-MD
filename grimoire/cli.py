@@ -16,6 +16,7 @@ from grimoire.cognition.oracle import Oracle
 from grimoire.cognition.tagger import Tagger
 from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
+from grimoire.memory.maintenance import MaintenanceRunner
 from grimoire.memory.taxonomy import load_taxonomy_from_vault, save_taxonomy_to_vault
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
@@ -829,6 +830,90 @@ def category_notes(
     console.print(Text.assemble(
         ("  ", ""),
         (f"{len(rows)} notas", "grimoire.accent"),
+    ))
+
+
+maintenance_app = typer.Typer(
+    help="🧹 Database housekeeping: VACUUM, WAL checkpoint, tag purge.",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+app.add_typer(maintenance_app, name="maintenance", rich_help_panel="Operations")
+
+
+def _fmt_bytes(n: int) -> str:
+    """Compact human-readable size — KB/MB are plenty for a note DB."""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.2f} MB"
+
+
+@maintenance_app.command("run")
+def maintenance_run(
+    skip_vacuum: bool = typer.Option(False, "--skip-vacuum", help="Don't rewrite the DB file"),
+    skip_purge: bool = typer.Option(False, "--skip-purge", help="Don't drop orphan tags"),
+    skip_checkpoint: bool = typer.Option(False, "--skip-checkpoint", help="Don't fold the -wal sidecar"),
+):
+    """🧹 Run the periodic housekeeping pipeline on demand."""
+    setup_logger()
+    config = load_config()
+    db = Database(config.memory.db_path)
+
+    # Clone the configured defaults, then apply the CLI overrides.
+    from dataclasses import replace
+    mcfg = replace(
+        config.maintenance,
+        vacuum=config.maintenance.vacuum and not skip_vacuum,
+        purge_tags=config.maintenance.purge_tags and not skip_purge,
+        wal_checkpoint=config.maintenance.wal_checkpoint and not skip_checkpoint,
+    )
+
+    ui.command_header("maintenance run", config.memory.db_path)
+    report = MaintenanceRunner(db, mcfg).run(reason="manual")
+
+    console.print()
+    console.print(Text.assemble(
+        ("  ◆ ", "grimoire.rune"),
+        ("Tags purgados", "grimoire.primary"),
+        ("  ", ""),
+        (str(report.tags_purged), "grimoire.accent"),
+    ))
+    if report.checkpoint:
+        console.print(Text.assemble(
+            ("  ◆ ", "grimoire.rune"),
+            ("WAL checkpoint", "grimoire.primary"),
+            ("  ", ""),
+            (
+                f"{report.checkpoint.get('checkpointed_frames', 0)}/"
+                f"{report.checkpoint.get('log_frames', 0)} frames",
+                "grimoire.accent",
+            ),
+        ))
+    if report.vacuum:
+        reclaimed = report.vacuum.get("reclaimed_bytes", 0)
+        console.print(Text.assemble(
+            ("  ◆ ", "grimoire.rune"),
+            ("VACUUM", "grimoire.primary"),
+            ("  ", ""),
+            (f"{_fmt_bytes(reclaimed)} liberados", "grimoire.accent"),
+            ("  ", ""),
+            (
+                f"({_fmt_bytes(report.vacuum.get('before_bytes', 0))} → "
+                f"{_fmt_bytes(report.vacuum.get('after_bytes', 0))})",
+                "grimoire.muted",
+            ),
+        ))
+    if report.skipped:
+        console.print(Text.assemble(
+            ("  ↳ ", "grimoire.muted"),
+            (f"Omitido: {', '.join(report.skipped)}", "grimoire.muted"),
+        ))
+    console.print()
+    console.print(Text.assemble(
+        ("  ", ""),
+        (f"{report.duration_s:.2f}s", "grimoire.accent"),
     ))
 
 
