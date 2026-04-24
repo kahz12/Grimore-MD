@@ -113,7 +113,7 @@ graph TD
 **Setup**
 
 ```bash
-git clone https://github.com/youruser/grimoire.git
+git clone https://github.com/kahz12/grimoire.git
 cd Grimoire
 
 python -m venv .venv && source .venv/bin/activate
