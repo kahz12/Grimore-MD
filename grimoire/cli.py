@@ -24,6 +24,7 @@ from grimoire.output.link_injector import LinkInjector
 from grimoire.utils import ui
 from grimoire.utils.config import load_config
 from grimoire.utils.logger import get_logger, setup_logger
+from grimoire.utils.preflight import PreflightChecker, PreflightReport
 from grimoire.utils.security import SecurityGuard
 
 
@@ -44,6 +45,52 @@ logger = get_logger(__name__)
 def _mode_badge(is_dry_run: bool) -> Text:
     """Returns a visual badge indicating if the current execution is a dry run or live."""
     return ui.dry_run_badge() if is_dry_run else ui.live_mode_badge()
+
+
+def _render_preflight_report(report: PreflightReport) -> None:
+    """Print each preflight check with a ✓/⚠/✗ bullet and its fix suggestion."""
+    for c in report.checks:
+        if c.ok:
+            bullet = ("  ✓ ", "grimoire.success")
+        elif c.severity == "warning":
+            bullet = ("  ⚠ ", "grimoire.warning")
+        else:
+            bullet = ("  ✗ ", "grimoire.danger")
+        console.print(Text.assemble(
+            bullet,
+            (c.name, "grimoire.primary"),
+            ("  ", ""),
+            (c.message, "grimoire.muted"),
+        ))
+        if not c.ok and c.fix:
+            for line in c.fix.splitlines():
+                console.print(Text.assemble(
+                    ("     ↳ ", "grimoire.accent"),
+                    (line, "grimoire.muted"),
+                ))
+
+
+def _preflight_or_exit(config, *, check_git: bool | None = None) -> PreflightReport:
+    """
+    Run preflight and exit loudly on hard failure. On success, warnings are
+    still printed (e.g. missing git with auto_commit on) so the user knows.
+    """
+    report = PreflightChecker(config).run(check_git=check_git)
+    if not report.ok:
+        console.print()
+        console.print(ui.error_panel(
+            "La validación previa detectó problemas bloqueantes.",
+            title="Preflight",
+        ))
+        _render_preflight_report(report)
+        console.print()
+        ui.tip("Ejecuta [cyan]grimoire preflight[/] para volver a verificar sin lanzar el scan.")
+        raise typer.Exit(code=1)
+    if report.has_warnings:
+        console.print()
+        _render_preflight_report(report)
+        console.print()
+    return report
 
 
 @app.command(rich_help_panel="Knowledge ops")
@@ -75,6 +122,10 @@ def scan(
             title="Vault missing",
         ))
         raise typer.Exit(code=1)
+
+    # Preflight: catch "Ollama is down" or "model not pulled" before the first
+    # file hits the LLM. Uses the effective auto_commit setting for git check.
+    _preflight_or_exit(config)
 
     # Initialize core services
     git_guard = GitGuard(str(actual_vault_path))
@@ -348,6 +399,9 @@ def ask(
 
     ui.command_header("ask", "Consultando al Oráculo")
 
+    # ask doesn't write to the vault, so don't nag about missing git.
+    _preflight_or_exit(config, check_git=False)
+
     db = Database(config.memory.db_path)
     router = LLMRouter(config)
     embedder = Embedder(config, cache=db)
@@ -431,6 +485,8 @@ def daemon(
         config = load_config()
         from grimoire.daemon import GrimoireDaemon
 
+        _preflight_or_exit(config)
+
         console.print(ui.info_panel(
             "El daemon correrá en primer plano. [bold]Ctrl-C[/] para detener.",
             title="Foreground mode",
@@ -445,6 +501,9 @@ def daemon(
                 title="Ya está corriendo",
             ))
             return
+        # Validate BEFORE forking — otherwise the user would only find the
+        # failure by tailing the log file.
+        _preflight_or_exit(load_config())
         start_daemon_background(pid_file, log_file)
         console.print(ui.success_panel(
             f"Daemon en segundo plano. Logs → [cyan]{log_file}[/].",
@@ -830,6 +889,43 @@ def category_notes(
     console.print(Text.assemble(
         ("  ", ""),
         (f"{len(rows)} notas", "grimoire.accent"),
+    ))
+
+
+@app.command(rich_help_panel="System")
+def preflight(
+    check_git: bool = typer.Option(
+        None,
+        "--check-git/--no-check-git",
+        help="Override whether to require a git repo (defaults to output.auto_commit).",
+    ),
+):
+    """🛫 Validate config, Ollama connectivity and vault access before running the pipeline."""
+    setup_logger()
+    config = load_config()
+
+    ui.command_header("preflight", config.vault.path)
+    report = PreflightChecker(config).run(check_git=check_git)
+
+    console.print()
+    _render_preflight_report(report)
+    console.print()
+
+    if report.errors:
+        console.print(ui.error_panel(
+            f"{len(report.errors)} error(es) bloqueante(s). Soluciónalos antes de lanzar `scan` o `ask`.",
+            title="Preflight",
+        ))
+        raise typer.Exit(code=1)
+    if report.warnings:
+        console.print(ui.warn_panel(
+            f"{len(report.warnings)} aviso(s) no bloqueante(s).",
+            title="Preflight",
+        ))
+        return
+    console.print(ui.success_panel(
+        "Todos los checks pasaron. El pipeline está listo.",
+        title="Preflight",
     ))
 
 
