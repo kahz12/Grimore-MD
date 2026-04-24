@@ -51,6 +51,21 @@ class BackupManager:
         except Exception as e:
             logger.error("backup_failed", error=str(e))
 
+    def latest_backup_mtime(self) -> float | None:
+        """
+        Return the mtime of the most recent backup file, or None when no
+        backups exist. Used by the daemon to anchor its daily window against
+        real history instead of process-start time — otherwise a daemon that
+        restarts every few hours would never reach the 24h threshold.
+        """
+        backups = list(self.backup_dir.glob("grimoire_*.db"))
+        if not backups:
+            return None
+        try:
+            return max(b.stat().st_mtime for b in backups)
+        except OSError:
+            return None
+
     def _rotate_backups(self):
         """
         Deletes the oldest backups if the count exceeds max_backups.

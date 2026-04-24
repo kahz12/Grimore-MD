@@ -203,6 +203,45 @@ class Database:
             ).fetchone()
         return row[0] if row else None
 
+    def get_note_location(self, note_id: int) -> Optional[tuple[str, str]]:
+        """Returns ``(path, title)`` for the given note_id, or None if absent."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT path, title FROM notes WHERE id = ?", (note_id,)
+            ).fetchone()
+        return (row[0], row[1]) if row else None
+
+    def get_note_title(self, note_id: int) -> Optional[str]:
+        """Returns the title for the given note_id, or None if absent."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT title FROM notes WHERE id = ?", (note_id,)
+            ).fetchone()
+        return row[0] if row else None
+
+    def get_dashboard_stats(self) -> dict:
+        """
+        Aggregates the counters shown on the ``grimoire status`` screen in a
+        single round-trip. Keeps the CLI out of the raw connection.
+        """
+        with self._get_connection() as conn:
+            total_notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
+            tagged_notes = conn.execute(
+                "SELECT COUNT(*) FROM notes WHERE last_tagged IS NOT NULL"
+            ).fetchone()[0]
+            total_embeddings = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+            cached_embeddings = conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0]
+            categorised_notes = conn.execute(
+                "SELECT COUNT(*) FROM notes WHERE category IS NOT NULL AND category <> ''"
+            ).fetchone()[0]
+        return {
+            "total_notes": int(total_notes),
+            "tagged_notes": int(tagged_notes),
+            "total_embeddings": int(total_embeddings),
+            "cached_embeddings": int(cached_embeddings),
+            "categorised_notes": int(categorised_notes),
+        }
+
     def upsert_note(self, path: str, title: str, content_hash: str) -> int:
         """Inserts or updates a note record. Returns the internal note ID."""
         with self._get_connection() as conn:

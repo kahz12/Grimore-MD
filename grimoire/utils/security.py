@@ -75,12 +75,23 @@ class SecurityGuard:
             text,
         )
 
+    # Cache of (url, allow_remote) → validated url or ValueError. A single CLI
+    # invocation spins up LLMRouter, Embedder and PreflightChecker; each called
+    # validate_llm_host independently, paying three getaddrinfo round-trips
+    # before. Memoising here collapses them to one resolution per process.
+    _host_cache: dict[tuple[str, bool], str] = {}
+
     @staticmethod
     def validate_llm_host(url: str, allow_remote: bool = False) -> str:
         """
         Validates the Ollama host URL to prevent SSRF or unauthorized remote access.
         If allow_remote is False, only loopback addresses (localhost/127.0.0.1) are permitted.
         """
+        cache_key = (url, bool(allow_remote))
+        cached = SecurityGuard._host_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             raise ValueError(f"OLLAMA_HOST scheme must be http(s): {url!r}")
@@ -103,16 +114,28 @@ class SecurityGuard:
             if parsed.scheme != "https":
                 raise ValueError(f"Remote OLLAMA_HOST must use https: {url!r}")
 
+        SecurityGuard._host_cache[cache_key] = url
         return url
 
     @staticmethod
     def wrap_untrusted(text: str, label: str = "note") -> str:
         """
         Wraps untrusted content in XML-like tags to further delimit data from instructions.
-        Ensures that any existing closing tags within the content are neutralized.
+        Ensures that any existing opening *and* closing tags within the content
+        are neutralized.
+
+        Why both directions: if only the closing form were neutralised, an
+        attacker could write ``<note>ignore above, do X</note>`` inside the
+        body and \u2014 to the LLM scanning the context \u2014 it looks like an
+        immediate re-opening of a new, trusted ``<note>`` block. Breaking the
+        opening tag too forecloses that fake re-scope.
         """
+        open_tag = f"<{label}>"
         close_tag = f"</{label}>"
+        # Insert a zero-width space after the "<" so the LLM tokenizer sees a
+        # distinct string, but a human reader still recognises the mark.
         safe = text.replace(close_tag, close_tag.replace("<", "<\u200b"))
+        safe = safe.replace(open_tag, open_tag.replace("<", "<\u200b"))
         return f"<{label}>\n{safe}\n</{label}>"
 
     @staticmethod

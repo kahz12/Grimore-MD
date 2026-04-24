@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 _TAG_MAX_LEN = 64
 _SUMMARY_MAX = 300
 _TAG_LIMIT = 16
+_TAGGER_INPUT_MAX = 4000
 
 
 def _sanitize_tag(raw, taxonomy: Taxonomy) -> str | None:
@@ -88,7 +89,13 @@ class Tagger:
         """
         logger.info("tagging_note_start")
 
-        prompt = f"Content:\n---\n{content[:4000]}\n---"
+        if len(content) > _TAGGER_INPUT_MAX:
+            logger.info(
+                "tagger_input_truncated",
+                kept=_TAGGER_INPUT_MAX,
+                original=len(content),
+            )
+        prompt = f"Content:\n---\n{content[:_TAGGER_INPUT_MAX]}\n---"
         result = self.router.complete(prompt, system_prompt=self._system_prompt())
 
         if not result or "tags" not in result:

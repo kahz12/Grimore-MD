@@ -22,7 +22,7 @@ from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
 from grimoire.utils import ui
-from grimoire.utils.config import load_config
+from grimoire.utils.config import is_ignored_path, load_config
 from grimoire.utils.logger import get_logger, setup_logger
 from grimoire.utils.preflight import PreflightChecker, PreflightReport
 from grimoire.utils.security import SecurityGuard
@@ -149,7 +149,7 @@ def scan(
     vault_root = actual_vault_path.resolve()
     files = []
     for f in actual_vault_path.glob("**/*.md"):
-        if any(part in str(f) for part in config.vault.ignored_dirs):
+        if is_ignored_path(f, config.vault.ignored_dirs):
             continue
         try:
             SecurityGuard.resolve_within_vault(f, vault_root)
@@ -276,16 +276,23 @@ def scan(
 @app.command(rich_help_panel="Knowledge ops")
 def connect(
     dry_run: bool = typer.Option(None, "--dry-run/--no-dry-run", help="Simulate link injection"),
+    threshold: float = typer.Option(
+        None,
+        "--threshold",
+        "-t",
+        help="Min. cosine similarity to propose a link (default: cognition.connect_threshold).",
+    ),
 ):
     """
     🕸️  Discover semantic connections between notes and inject [[wikilinks]].
-    
+
     This command uses vector embeddings and cosine similarity to find related notes.
     It then injects a 'Suggested Connections' section into the Markdown files.
     """
     setup_logger()
     config = load_config()
     is_dry_run = dry_run if dry_run is not None else config.output.dry_run
+    effective_threshold = threshold if threshold is not None else config.cognition.connect_threshold
 
     ui.command_header("connect", "Tejiendo hilos entre ideas")
     console.print(Text.assemble("  ", _mode_badge(is_dry_run)))
@@ -317,14 +324,11 @@ def connect(
                 continue
             processed_notes.add(note_id)
 
-            with db._get_connection() as conn:
-                row = conn.execute(
-                    "SELECT path, title FROM notes WHERE id = ?", (note_id,)
-                ).fetchone()
-            if not row:
+            location = db.get_note_location(note_id)
+            if not location:
                 logger.warning("orphan_embedding", note_id=note_id)
                 continue
-            path, title = row
+            path, title = location
 
             # Find similar notes using cosine similarity on embeddings.
             # dedupe_by_note guarantees we see distinct notes (not 12 chunks
@@ -334,7 +338,7 @@ def connect(
                 vector, top_k=12, exclude_note_id=note_id, dedupe_by_note=True,
             )
 
-            candidates = [s for s in similar if s["score"] > 0.7][:3]
+            candidates = [s for s in similar if s["score"] > effective_threshold][:3]
 
             if not candidates:
                 continue
@@ -342,13 +346,9 @@ def connect(
             connections_to_inject = []
             bullet_lines = []
             for c in candidates:
-                with db._get_connection() as conn:
-                    c_row = conn.execute(
-                        "SELECT title FROM notes WHERE id = ?", (c["note_id"],)
-                    ).fetchone()
-                if not c_row:
+                c_title = db.get_note_title(c["note_id"])
+                if not c_title:
                     continue
-                c_title = c_row[0]
                 bullet_lines.append(f"  ↳ [cyan]{c_title}[/]  [grimoire.muted](score {c['score']:.2f})[/]")
                 connections_to_inject.append({"title": c_title, "reason": "High semantic similarity."})
 
@@ -593,7 +593,7 @@ def prune(
     # Scan disk for existing files to identify orphans in DB
     existing_paths = {
         str(f) for f in actual_vault_path.glob("**/*.md")
-        if not any(part in str(f) for part in config.vault.ignored_dirs)
+        if not is_ignored_path(f, config.vault.ignored_dirs)
     }
 
     stale = db.find_stale_notes(existing_paths)
@@ -650,16 +650,12 @@ def status():
     db = Database(config.memory.db_path)
 
     # Gather metrics from database
-    with db._get_connection() as conn:
-        total_notes = conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0]
-        tagged_notes = conn.execute(
-            "SELECT COUNT(*) FROM notes WHERE last_tagged IS NOT NULL"
-        ).fetchone()[0]
-        total_embeddings = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
-        cached_embeddings = conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()[0]
-        categorised_notes = conn.execute(
-            "SELECT COUNT(*) FROM notes WHERE category IS NOT NULL AND category <> ''"
-        ).fetchone()[0]
+    stats = db.get_dashboard_stats()
+    total_notes = stats["total_notes"]
+    tagged_notes = stats["tagged_notes"]
+    total_embeddings = stats["total_embeddings"]
+    cached_embeddings = stats["cached_embeddings"]
+    categorised_notes = stats["categorised_notes"]
     unique_tags = db.get_tag_count()
     category_rows = db.get_category_frequency()
 

@@ -9,6 +9,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from queue import Queue, Empty
 from threading import Thread
+from grimoire.utils.config import is_ignored_path
 from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +28,7 @@ class VaultEventHandler(FileSystemEventHandler):
         if not raw_path.endswith(".md"):
             return
         path = Path(raw_path)
-        if any(ignored in str(path) for ignored in self.ignored_dirs):
+        if is_ignored_path(path, self.ignored_dirs):
             return
         self.queue.put((path, time.time()))
         logger.debug("file_event", type=event_type, path=str(path))

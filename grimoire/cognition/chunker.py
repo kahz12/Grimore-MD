@@ -68,6 +68,12 @@ def _sliding_window(text: str, size: int, overlap: int) -> list[str]:
     """
     if size <= 0 or len(text) <= size:
         return [text] if text else []
+    # Clamp overlap so step is always meaningful progress. If overlap >= size,
+    # step would degenerate to 1 and emit len(text) near-identical windows —
+    # trivial OOM path for any hostile or mis-configured note. Capping at
+    # size // 2 keeps the "overlap" semantics without the runaway.
+    if overlap >= size:
+        overlap = size // 2
     step = max(1, size - overlap)
     out: list[str] = []
     for i in range(0, len(text), step):

@@ -55,7 +55,10 @@ class GrimoireDaemon:
         self._counter_lock = threading.Lock()
         self.processed_count = 0
         self.last_batch_time = time.time()
-        self.last_backup_time = time.time()
+        # Anchor the daily-backup window to the newest file under backups/
+        # rather than process start — otherwise a daemon that restarts often
+        # resets the 24h timer on every boot and never actually triggers.
+        self.last_backup_time = self.backup.latest_backup_mtime() or time.time()
         self.last_maintenance_time = time.time()
 
     def _log_path(self, file_path: Path) -> str:

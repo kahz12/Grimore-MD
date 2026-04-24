@@ -7,7 +7,11 @@ import os
 from pathlib import Path
 import tomllib
 from dotenv import load_dotenv
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+
+from grimoire.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +22,22 @@ class VaultConfig:
     path: str = "./vault"
     ignored_dirs: list[str] = field(default_factory=lambda: [".obsidian", ".trash", ".git", "Templates"])
 
+
+def is_ignored_path(file_path, ignored_dirs: list[str]) -> bool:
+    """
+    Whether ``file_path`` sits under one of the ``ignored_dirs`` *as a real
+    path component*.
+
+    Why not substring matching: ``".git" in str(path)`` also hits
+    ``/vault/.gitignore-test/`` or any note whose title contains ".git". We
+    want the segment to match a full directory name.
+    """
+    if not ignored_dirs:
+        return False
+    parts = Path(file_path).parts
+    ignored = set(ignored_dirs)
+    return any(part in ignored for part in parts)
+
 @dataclass
 class CognitionConfig:
     """Settings for the LLM and Embedding models (Ollama)."""
@@ -27,6 +47,10 @@ class CognitionConfig:
     # Retrieval: fuse BM25 (FTS5) and cosine similarity via Reciprocal Rank Fusion.
     hybrid_search: bool = True
     rrf_k: int = 60
+    # Minimum cosine-similarity score for `connect` to propose a wikilink.
+    # Below this the candidate is dropped; exposed so vaults that lean more
+    # on RAG recall can relax it and vice versa.
+    connect_threshold: float = 0.7
 
 @dataclass
 class MemoryConfig:
@@ -61,6 +85,24 @@ class Config:
     output: OutputConfig = field(default_factory=OutputConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
 
+def _filter_known(cls, data: dict, section: str) -> dict:
+    """
+    Keep only keys the dataclass knows about.
+
+    Why: TOML is edited by hand. An unknown key should warn, not crash the
+    whole CLI with TypeError — especially for people copy-pasting snippets
+    from an older README.
+    """
+    known = {f.name for f in fields(cls)}
+    filtered = {}
+    for key, value in data.items():
+        if key in known:
+            filtered[key] = value
+        else:
+            logger.warning("unknown_config_key", section=section, key=key)
+    return filtered
+
+
 def load_config(config_path: str = "grimoire.toml") -> Config:
     """
     Loads configuration from a TOML file.
@@ -69,21 +111,14 @@ def load_config(config_path: str = "grimoire.toml") -> Config:
     path = Path(config_path)
     if not path.exists():
         return Config()
-    
+
     with open(path, "rb") as f:
         data = tomllib.load(f)
-    
-    # Map TOML data to dataclasses
-    vault_data = data.get("vault", {})
-    cognition_data = data.get("cognition", {})
-    memory_data = data.get("memory", {})
-    output_data = data.get("output", {})
-    maintenance_data = data.get("maintenance", {})
 
     return Config(
-        vault=VaultConfig(**vault_data),
-        cognition=CognitionConfig(**cognition_data),
-        memory=MemoryConfig(**memory_data),
-        output=OutputConfig(**output_data),
-        maintenance=MaintenanceConfig(**maintenance_data),
+        vault=VaultConfig(**_filter_known(VaultConfig, data.get("vault", {}), "vault")),
+        cognition=CognitionConfig(**_filter_known(CognitionConfig, data.get("cognition", {}), "cognition")),
+        memory=MemoryConfig(**_filter_known(MemoryConfig, data.get("memory", {}), "memory")),
+        output=OutputConfig(**_filter_known(OutputConfig, data.get("output", {}), "output")),
+        maintenance=MaintenanceConfig(**_filter_known(MaintenanceConfig, data.get("maintenance", {}), "maintenance")),
     )
