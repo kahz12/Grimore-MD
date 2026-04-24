@@ -190,8 +190,7 @@ def scan(
                 continue
 
             # Idempotency check: Skip if content hasn't changed
-            existing = db.get_note_by_path(str(file))
-            if existing and existing[3] == note.content_hash:
+            if db.get_content_hash_by_path(str(file)) == note.content_hash:
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
@@ -228,7 +227,7 @@ def scan(
                     "tags": cognition_data["tags"],
                     "summary": cognition_data["summary"],
                     "category": cognition_data.get("category", ""),
-                    "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
                 writer.write_metadata(file, metadata_updates, dry_run=False)
 
@@ -327,20 +326,15 @@ def connect(
                 continue
             path, title = row
 
-            # Find similar notes using cosine similarity on embeddings
+            # Find similar notes using cosine similarity on embeddings.
+            # dedupe_by_note guarantees we see distinct notes (not 12 chunks
+            # of the same note) so the 3-candidate budget is always fillable.
             vector = embedder.deserialize_vector(vector_blob)
-            similar = connector.find_similar_notes(vector, top_k=12, exclude_note_id=note_id)
+            similar = connector.find_similar_notes(
+                vector, top_k=12, exclude_note_id=note_id, dedupe_by_note=True,
+            )
 
-            seen_ids: set[int] = set()
-            candidates = []
-            for s in similar:
-                # Threshold for similarity and avoiding duplicates/self
-                if s["score"] <= 0.7 or s["note_id"] in seen_ids:
-                    continue
-                seen_ids.add(s["note_id"])
-                candidates.append(s)
-                if len(candidates) >= 3:
-                    break
+            candidates = [s for s in similar if s["score"] > 0.7][:3]
 
             if not candidates:
                 continue
@@ -445,9 +439,20 @@ def ask(
             raise typer.BadParameter("--export must resolve to a path inside the vault")
 
         export_path.parent.mkdir(parents=True, exist_ok=True)
+        import yaml
+        frontmatter_payload = {
+            "title": f"Oracle: {question[:30]}...",
+            "date": time.strftime("%Y-%m-%d"),
+            "type": "oracle_response",
+        }
+        frontmatter_yaml = yaml.safe_dump(
+            frontmatter_payload,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        )
         with open(export_path, "w", encoding="utf-8") as f:
-            f.write(f'---\ntitle: "Oracle: {question[:30]}..."\n')
-            f.write(f"date: {time.strftime('%Y-%m-%d')}\ntype: oracle_response\n---\n\n")
+            f.write(f"---\n{frontmatter_yaml}---\n\n")
             f.write(f"# 🔮 Question: {question}\n\n")
             f.write(result["answer"])
             f.write("\n\n## Sources\n")

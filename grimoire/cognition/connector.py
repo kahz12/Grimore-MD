@@ -31,12 +31,18 @@ class Connector:
         query_vector: List[float],
         top_k: int = 5,
         exclude_note_id: int = None,
+        dedupe_by_note: bool = False,
     ):
         """
         Finds the top_k most similar chunks in the database compared to a query vector.
 
         Note: Stored and query vectors are unit-normalized by the embedder,
         so cosine similarity simplifies to a basic dot product.
+
+        When ``dedupe_by_note`` is True, only the best-scoring chunk per note
+        is kept — useful for the ``connect`` pass that needs distinct notes
+        rather than chunks. Oracle-style RAG keeps it False so multiple
+        chunks of the same note can all feed the context window.
         """
         query = list(query_vector)
         # Fetch all indexed embeddings for comparison
@@ -54,6 +60,17 @@ class Connector:
 
         # Sort results by similarity score in descending order
         similarities.sort(key=lambda x: x["score"], reverse=True)
+
+        if dedupe_by_note:
+            seen: set[int] = set()
+            unique: list[dict] = []
+            for item in similarities:
+                if item["note_id"] in seen:
+                    continue
+                seen.add(item["note_id"])
+                unique.append(item)
+            similarities = unique
+
         return similarities[:top_k]
 
     def _vector_candidates(

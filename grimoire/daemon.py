@@ -3,6 +3,7 @@ Background service for Project Grimoire.
 This module implements the GrimoireDaemon, which monitors the vault for real-time
 changes and automatically triggers cognitive processing (tagging, embedding).
 """
+import threading
 import time
 from pathlib import Path
 from grimoire.utils.config import Config, load_config
@@ -51,6 +52,7 @@ class GrimoireDaemon:
         
         self.vault_root = Path(config.vault.path).resolve()
         self.observer = None
+        self._counter_lock = threading.Lock()
         self.processed_count = 0
         self.last_batch_time = time.time()
         self.last_backup_time = time.time()
@@ -80,9 +82,14 @@ class GrimoireDaemon:
             while True:
                 current_time = time.time()
                 # Batch notification: send summary every 5 minutes if activity occurred
-                if self.processed_count > 0 and (current_time - self.last_batch_time > 300):
-                    self.notifier.notify_batch_processed(self.processed_count)
-                    self.processed_count = 0
+                with self._counter_lock:
+                    pending = self.processed_count
+                if pending > 0 and (current_time - self.last_batch_time > 300):
+                    self.notifier.notify_batch_processed(pending)
+                    with self._counter_lock:
+                        # Subtract the count we just flushed; a worker may have
+                        # incremented further during notify, so don't zero blind.
+                        self.processed_count -= pending
                     self.last_batch_time = current_time
                 
                 # Daily backup check (every 24h)
@@ -144,8 +151,7 @@ class GrimoireDaemon:
                                    reason="sensitive_data_detected")
 
             # 3. Check hash idempotency to avoid redundant LLM calls
-            existing_note = self.db.get_note_by_path(str(file_path))
-            if existing_note and existing_note[3] == note.content_hash:
+            if self.db.get_content_hash_by_path(str(file_path)) == note.content_hash:
                 logger.info("file_unchanged", path=rel)
                 return
 
@@ -162,7 +168,7 @@ class GrimoireDaemon:
                 "tags": cognition_data["tags"],
                 "summary": cognition_data["summary"],
                 "category": cognition_data.get("category", ""),
-                "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%S")
+                "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             }
             self.writer.write_metadata(file_path, metadata_updates, dry_run=self.config.output.dry_run)
 
@@ -176,7 +182,7 @@ class GrimoireDaemon:
                 self.db.upsert_tags(note_id, cognition_data["tags"])
                 self.db.set_note_category(note_id, cognition_data.get("category") or None)
 
-            if embedded:
+            if embedded and note_id is not None:
                 # Store new chunks and their vectors
                 self.db.delete_note_embeddings(note_id)
                 for idx, (chunk_text, vector) in enumerate(embedded):
@@ -188,7 +194,8 @@ class GrimoireDaemon:
                     )
                 logger.info("file_embedded", path=rel, chunks=len(embedded))
 
-            self.processed_count += 1
+            with self._counter_lock:
+                self.processed_count += 1
             self.last_batch_time = time.time()
             logger.info("file_processed_complete", path=rel)
 

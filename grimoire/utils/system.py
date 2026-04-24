@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -99,9 +100,23 @@ def start_daemon_background(pid_file: str, log_file: str):
     print(f"Daemon started in background (PID: {process.pid})")
 
 
+def _wait_for_exit(pid: int, timeout: float = 5.0, interval: float = 0.1) -> bool:
+    """Poll with signal-0 until ``pid`` is gone or the timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+        time.sleep(interval)
+    return False
+
+
 def stop_daemon(pid_file: str):
     """
-    Stops a running daemon by sending a SIGTERM signal to the recorded PID.
+    Stops a running daemon by sending SIGTERM and waiting for it to exit
+    before clearing the PID file — otherwise a quick stop→start can leave
+    two daemons competing for the same database.
     """
     if not os.path.exists(pid_file):
         print("No PID file found. Is it running?")
@@ -123,7 +138,26 @@ def stop_daemon(pid_file: str):
 
     try:
         os.kill(pid, 15)  # SIGTERM (Request graceful shutdown)
-        os.remove(pid_file)
-        print(f"Stopped daemon (PID: {pid})")
     except Exception as e:
         print(f"Error stopping daemon: {e}")
+        return
+
+    if _wait_for_exit(pid, timeout=5.0):
+        os.remove(pid_file)
+        print(f"Stopped daemon (PID: {pid})")
+        return
+
+    # Graceful window exhausted — escalate to SIGKILL and give it another beat.
+    print(f"Daemon (PID {pid}) ignored SIGTERM after 5s; escalating to SIGKILL.")
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
+    if _wait_for_exit(pid, timeout=2.0):
+        os.remove(pid_file)
+        print(f"Force-killed daemon (PID: {pid})")
+    else:
+        print(
+            f"WARNING: PID {pid} still alive after SIGKILL. "
+            "Leaving PID file in place; investigate manually."
+        )

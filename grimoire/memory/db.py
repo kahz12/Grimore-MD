@@ -192,6 +192,17 @@ class Database:
             cursor = conn.execute("SELECT * FROM notes WHERE path = ?", (path,))
             return cursor.fetchone()
 
+    def get_content_hash_by_path(self, path: str) -> Optional[str]:
+        """
+        Returns the stored content hash for ``path`` (or None if unknown).
+        Named columns keep idempotency checks robust against schema drift.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT content_hash FROM notes WHERE path = ?", (path,)
+            ).fetchone()
+        return row[0] if row else None
+
     def upsert_note(self, path: str, title: str, content_hash: str) -> int:
         """Inserts or updates a note record. Returns the internal note ID."""
         with self._get_connection() as conn:

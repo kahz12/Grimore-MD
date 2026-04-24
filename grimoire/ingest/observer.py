@@ -80,6 +80,14 @@ class VaultObserver:
         self._stop = True
         self.observer.stop()
         self.observer.join()
+        # Also wait for the debounce/processor thread so in-flight callbacks
+        # finish before the process tears down (daemon=True alone lets them
+        # die mid-write on interpreter exit).
+        processor = getattr(self, "processor_thread", None)
+        if processor is not None:
+            # Slightly over the 1s poll inside _process_queue so a tick in
+            # progress can complete cleanly.
+            processor.join(timeout=2.0)
 
     def _process_queue(self):
         """

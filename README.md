@@ -113,10 +113,8 @@ graph TD
 ## Installation
 
 ```bash
-<<<<<<< HEAD
 git clone https://github.com/kahz12/Grimore-MD.git
 cd Grimore-MD
-=======
 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
