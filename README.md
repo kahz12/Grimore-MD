@@ -117,9 +117,6 @@ graph TD
 git clone https://github.com/kahz12/Grimore-MD.git
 cd Grimore-MD
 =======
-git clone https://github.com/kahz12/grimoire.git
-cd Grimoire
->>>>>>> bcd4f4997a9fe785cbe9d6b0153100ab234fa1ed
 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
