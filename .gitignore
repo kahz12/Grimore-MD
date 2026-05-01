@@ -30,6 +30,9 @@ grimoire.log
 backups/
 test_vault/
 
+# Security audits
+security_audit.txt
+
 # Tooling caches
 .pytest_cache/
 .mypy_cache/
