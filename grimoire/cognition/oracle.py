@@ -69,17 +69,10 @@ class Oracle:
         context_parts = []
         sources = []
         for item in similar:
-            # Fetch note title for citation
-            with self.db._get_connection() as conn:
-                row = conn.execute(
-                    "SELECT title FROM notes WHERE id = ?",
-                    (item['note_id'],),
-                ).fetchone()
-            if not row:
-                # Handle potential orphan data
+            title = self.db.get_note_title(item['note_id'])
+            if not title:
                 logger.warning("orphan_embedding", note_id=item['note_id'])
                 continue
-            title = row[0]
 
             # Sanitize and wrap content to prevent prompt injection from notes
             safe_text = SecurityGuard.wrap_untrusted(

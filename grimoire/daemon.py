@@ -23,6 +23,11 @@ from grimoire.output.link_injector import LinkInjector
 from grimoire.utils.notifications import Notifier
 from grimoire.utils.security import SecurityGuard
 from grimoire.utils.backup import BackupManager
+from grimoire.utils.system import (
+    DEFAULT_PID_FILE,
+    acquire_pid_lock,
+    release_pid_lock,
+)
 
 logger = get_logger(__name__)
 
@@ -31,8 +36,10 @@ class GrimoireDaemon:
     Orchestrates background tasks: file system watching, periodic backups,
     and automated processing of new/modified notes.
     """
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, pid_file: str = DEFAULT_PID_FILE):
         self.config = config
+        self.pid_file = pid_file
+        self._pid_lock_fd: int | None = None
         self.db = Database(config.memory.db_path)
         self.parser = MarkdownParser()
         self.git_guard = GitGuard(config.vault.path)
@@ -73,6 +80,18 @@ class GrimoireDaemon:
         Starts the file system observer and enters a management loop
         for notifications and backups.
         """
+        # Take the advisory lock before doing anything expensive: if another
+        # daemon already owns the vault, we want to fail fast rather than
+        # half-initialise (and risk e.g. clobbering DB connections).
+        self._pid_lock_fd = acquire_pid_lock(self.pid_file)
+        if self._pid_lock_fd is None:
+            logger.error("daemon_already_running", pid_file=self.pid_file)
+            print(
+                f"Another Grimoire daemon already holds the lock on "
+                f"{self.pid_file}. Refusing to start a second instance."
+            )
+            raise SystemExit(1)
+
         logger.info("daemon_starting", vault=self.config.vault.path)
         self.observer = VaultObserver(
             vault_path=self.config.vault.path,
@@ -94,7 +113,7 @@ class GrimoireDaemon:
                         # incremented further during notify, so don't zero blind.
                         self.processed_count -= pending
                     self.last_batch_time = current_time
-                
+
                 # Daily backup check (every 24h)
                 if current_time - self.last_backup_time > 86400:
                     self.backup.create_backup()
@@ -110,13 +129,21 @@ class GrimoireDaemon:
 
                 time.sleep(10)
         except KeyboardInterrupt:
+            pass
+        finally:
+            # Release the lock and clean up the PID file even if the loop
+            # exits by exception. The kernel would release the flock on
+            # process death anyway; this just keeps the on-disk file tidy.
             self.stop()
 
     def stop(self):
-        """Gracefully stops the file system observer."""
+        """Gracefully stops the file system observer and releases the lock."""
         logger.info("daemon_stopping")
         if self.observer:
             self.observer.stop()
+        if self._pid_lock_fd is not None:
+            release_pid_lock(self._pid_lock_fd, self.pid_file)
+            self._pid_lock_fd = None
 
     def process_file(self, file_path: Path):
         """

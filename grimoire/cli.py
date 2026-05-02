@@ -496,7 +496,7 @@ def daemon(
             "El daemon correrá en primer plano. [bold]Ctrl-C[/] para detener.",
             title="Foreground mode",
         ))
-        instance = GrimoireDaemon(config)
+        instance = GrimoireDaemon(config, pid_file=pid_file)
         instance.start()
     elif action == "start":
         # Start daemon in background
