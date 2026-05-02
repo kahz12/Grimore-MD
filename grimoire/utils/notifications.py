@@ -42,8 +42,8 @@ class Notifier:
         """Sends a notification after a batch of notes has been processed."""
         if count >= 3:
             self.notify(
-                "Grimorio: Notas Procesadas",
-                f"Se han analizado y etiquetado {count} notas nuevas.",
+                "Grimoire: Notes Processed",
+                f"{count} new notes have been analyzed and tagged.",
                 "low"
             )
 
@@ -51,7 +51,7 @@ class Notifier:
         """Sends a notification when new semantic connections are discovered."""
         if count > 0:
             self.notify(
-                "Grimorio: Nuevas Conexiones",
-                f"El Oráculo ha descubierto {count} hilos conductores en tu bóveda.",
+                "Grimoire: New Connections",
+                f"The Oracle has discovered {count} common threads in your vault.",
                 "default"
             )

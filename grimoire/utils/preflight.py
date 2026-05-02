@@ -140,10 +140,10 @@ class PreflightChecker:
                 name="ollama_reachable",
                 ok=False,
                 severity="error",
-                message=f"No se pudo contactar Ollama en {self.ollama_host} ({exc.__class__.__name__}).",
+                message=f"Could not contact Ollama at {self.ollama_host} ({exc.__class__.__name__}).",
                 fix=(
-                    "Arranca Ollama con `ollama serve`, o ajusta la variable "
-                    "`OLLAMA_HOST` si corre en otro equipo."
+                    "Start Ollama with `ollama serve`, or adjust the "
+                    "`OLLAMA_HOST` variable if it runs on another machine."
                 ),
             ))
             return None
@@ -152,7 +152,7 @@ class PreflightChecker:
         report.add(CheckResult(
             name="ollama_reachable",
             ok=True,
-            message=f"Ollama responde en {self.ollama_host} ({len(models)} modelos cargados).",
+            message=f"Ollama responds at {self.ollama_host} ({len(models)} models loaded).",
         ))
         return models
 
@@ -165,8 +165,8 @@ class PreflightChecker:
                 name="models_pulled",
                 ok=False,
                 severity="error",
-                message="No se pudo verificar los modelos (Ollama inaccesible).",
-                fix="Resuelve primero el check `ollama_reachable`.",
+                message="Could not verify models (Ollama unreachable).",
+                fix="Resolve the `ollama_reachable` check first.",
             ))
             return
 
@@ -189,15 +189,15 @@ class PreflightChecker:
                 name="models_pulled",
                 ok=False,
                 severity="error",
-                message=f"Faltan modelos pulled: {pretty}.",
-                fix=f"Ejecuta:\n{commands}",
+                message=f"Missing pulled models: {pretty}.",
+                fix=f"Run:\n{commands}",
             ))
         else:
             report.add(CheckResult(
                 name="models_pulled",
                 ok=True,
                 message=(
-                    f"Modelos presentes: {required['chat']} (chat), "
+                    f"Models present: {required['chat']} (chat), "
                     f"{required['embeddings']} (embeddings)."
                 ),
             ))

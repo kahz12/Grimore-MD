@@ -12,19 +12,52 @@ import time
 DEFAULT_PID_FILE = "grimoire.pid"
 
 
-def _read_cmdline(pid: int) -> str:
-    """Returns /proc/<pid>/cmdline as a string, used to identify processes."""
+def _read_cmdline_argv(pid: int) -> list[str]:
+    """Return /proc/<pid>/cmdline parsed into argv tokens."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            return f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+            raw = f.read()
     except (FileNotFoundError, PermissionError, OSError):
-        return ""
+        return []
+    if not raw:
+        return []
+    # cmdline is NUL-separated and usually NUL-terminated.
+    parts = raw.split(b"\x00")
+    if parts and parts[-1] == b"":
+        parts.pop()
+    return [p.decode("utf-8", errors="replace") for p in parts]
 
 
 def _is_grimoire_process(pid: int) -> bool:
-    """Best-effort check that the PID corresponds to a Grimoire daemon process."""
-    cmdline = _read_cmdline(pid)
-    return "grimoire" in cmdline
+    """
+    Strict argv-shape check that the PID corresponds to a Grimoire daemon.
+
+    Accepts the two ways the daemon can legitimately enter the process table:
+      1. Background form spawned by ``start_daemon_background``:
+             [<python>, "-m", "grimoire", "daemon", ...]
+      2. Console-script form (foreground ``grimoire daemon run``):
+             [<.../grimoire>, "daemon", ...]
+
+    A bare substring match for "grimoire" used to be enough but had
+    false positives (e.g. an editor opened on this repo, an unrelated
+    script with "grimoire" in its argv). Matching argv structure
+    eliminates that ambiguity. (B-06)
+    """
+    argv = _read_cmdline_argv(pid)
+    if len(argv) < 2:
+        return False
+
+    head = os.path.basename(argv[0])
+
+    # Form 1: python -m grimoire daemon [...]
+    if argv[1:4] == ["-m", "grimoire", "daemon"]:
+        return True
+
+    # Form 2: <prefix>/bin/grimoire daemon [...]
+    if head == "grimoire" and argv[1] == "daemon":
+        return True
+
+    return False
 
 
 def _read_pid(pid_file: str) -> int | None:

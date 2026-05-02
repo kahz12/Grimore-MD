@@ -238,4 +238,4 @@ class GrimoireDaemon:
 
         except Exception as e:
             logger.error("processing_failed", path=rel, error=str(e))
-            self.notifier.notify("Grimorio: Error Crítico", f"Error al procesar {file_path.name}")
+            self.notifier.notify("Grimoire: Critical Error", f"Error processing {file_path.name}")

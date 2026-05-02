@@ -159,8 +159,8 @@ def tag_frequency_table(rows: list[tuple[str, int]], width: int = 20) -> Table:
         pad_edge=False,
     )
     t.add_column("Tag", style="grimoire.primary", no_wrap=True)
-    t.add_column("Usos", justify="right", style="grimoire.accent", no_wrap=True)
-    t.add_column("Frecuencia")
+    t.add_column("Uses", justify="right", style="grimoire.accent", no_wrap=True)
+    t.add_column("Frequency")
 
     if not rows:
         return t

@@ -291,20 +291,20 @@ def load_taxonomy_from_vault(vault_path: Path) -> VaultTaxonomy:
     Load ``<vault>/taxonomy.yml``. Expected schema::
 
         vocabulary:
-          - filosofia
-          - nihilismo
+          - philosophy
+          - nihilism
 
         categories:
-          Historia:
-            - Antigua
-            - Moderna
-          Ciencia:
-            Física:
-              - Cuántica
+          History:
+            - Ancient
+            - Modern
+          Science:
+            Physics:
+              - Quantum
 
     A malformed or missing file falls back to ``VaultTaxonomy`` defaults so
     ingestion is never blocked. When no ``categories:`` key is present, the
-    tree is seeded with the built-in defaults (Historia · Ciencia · …).
+    tree is seeded with the built-in defaults (History · Science · …).
     """
     candidate = Path(vault_path) / "taxonomy.yml"
     if not candidate.exists():
@@ -371,3 +371,4 @@ def save_taxonomy_to_vault(vault_path: Path, taxonomy: VaultTaxonomy) -> Path:
     atomic_write(target, lambda fh: fh.write(body.encode("utf-8")), mode="wb")
     logger.info("taxonomy_saved", path=str(target))
     return target
+arget

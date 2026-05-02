@@ -13,6 +13,14 @@ from grimoire.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
+# Hard cap on the total context (\n\n-joined sources) injected into the LLM
+# system prompt. With top_k×500 chars per chunk, a high --top-k could push
+# >25 KB into a 32 k-token window — fine on qwen2.5:3b, fragile on smaller
+# local models. 16 KB leaves headroom for the question, the prompt template
+# and the model's own answer space (B-07).
+_ORACLE_CONTEXT_MAX_CHARS = 16_000
+_CONTEXT_SEPARATOR = "\n\n"
+
 class Oracle:
     """
     Implements the RAG pipeline to provide context-aware answers to user queries.
@@ -65,9 +73,8 @@ class Oracle:
         if not similar:
             return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
 
-        # Step 3: Format the context for the LLM
-        context_parts = []
-        sources = []
+        # Step 3: Format candidate parts (highest-ranked first).
+        candidate_parts: list[tuple[str, str]] = []
         for item in similar:
             title = self.db.get_note_title(item['note_id'])
             if not title:
@@ -79,13 +86,41 @@ class Oracle:
                 SecurityGuard.sanitize_prompt(item['text']),
                 label="source",
             )
-            context_parts.append(f"--- Source: [[{title}]] ---\n{safe_text}")
-            sources.append(title)
+            candidate_parts.append(
+                (title, f"--- Source: [[{title}]] ---\n{safe_text}")
+            )
 
-        if not context_parts:
+        # Apply the hard char cap. Whole sources only — truncating mid-block
+        # would tear the <source>…</source> wrapper that wrap_untrusted set
+        # up specifically to defend against prompt-injection. If a top-ranked
+        # source overflows on its own, skip it and try the next one rather
+        # than starving the entire context.
+        accepted_parts: list[str] = []
+        sources: list[str] = []
+        used = 0
+        dropped = 0
+        for title, part in candidate_parts:
+            extra = len(part) + (len(_CONTEXT_SEPARATOR) if accepted_parts else 0)
+            if used + extra > _ORACLE_CONTEXT_MAX_CHARS:
+                dropped += 1
+                continue
+            accepted_parts.append(part)
+            sources.append(title)
+            used += extra
+
+        if dropped:
+            logger.info(
+                "oracle_context_truncated",
+                kept=len(accepted_parts),
+                dropped=dropped,
+                cap=_ORACLE_CONTEXT_MAX_CHARS,
+                used_chars=used,
+            )
+
+        if not accepted_parts:
             return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
-        
-        full_context = "\n\n".join(context_parts)
+
+        full_context = _CONTEXT_SEPARATOR.join(accepted_parts)
         
         # Step 4: LLM Generation
         # Inject retrieved context into the system prompt template

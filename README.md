@@ -132,22 +132,22 @@ Drop a `taxonomy.yml` at the root of your vault to pin your tag vocabulary and c
 
 ```yaml
 vocabulary:
-  - filosofia
-  - ocultismo-clasico
-  - nihilismo
+  - philosophy
+  - classical-occultism
+  - nihilism
 
 categories:
-  Historia:
-    - Antigua
-    - Moderna
-  Ciencia:
-    Física:
-      - Cuántica
-    - Biología
-  Arte: []
+  History:
+    - Ancient
+    - Modern
+  Science:
+    Physics:
+      - Quantum
+    - Biology
+  Art: []
 ```
 
-Tags are normalised (`"Ocultismo Clásico"` → `ocultismo-clasico`) and rewritten to the canonical form when known; unknown tags are kept verbatim. Categories are the hierarchical counterpart — one canonical path per note (`Ciencia/Física/Cuántica`). The LLM picks from the live menu; unknown paths are rejected. Input resolution is accent- and case-insensitive (`"ciencia / fisica"` → `"Ciencia/Física"`).
+Tags are normalised (`"Classical Occultism"` → `classical-occultism`) and rewritten to the canonical form when known; unknown tags are kept verbatim. Categories are the hierarchical counterpart — one canonical path per note (`Science/Physics/Quantum`). The LLM picks from the live menu; unknown paths are rejected. Input resolution is accent- and case-insensitive (`"science / physics"` → `"Science/Physics"`).
 
 Missing or malformed files fall back to sensible defaults — ingestion is never blocked.
 
@@ -158,6 +158,19 @@ Missing or malformed files fall back to sensible defaults — ingestion is never
 - **Prompt-injection hardening** — role markers in note content are neutralised before reaching the LLM.
 - **Git Guard** — every mutation is preceded by an auto-commit, so `git reflog` is always your undo.
 - **Rolling backups** — the daemon snapshots the SQLite DB daily, keeping the last five under `backups/`.
+
+### Backup hygiene
+
+Backup files under `backups/` are **raw, unencrypted copies of your SQLite database**. The DB stores per-chunk `text_content` (the first 500 characters of every embedded chunk), so anything sensitive that ends up inside a note — passwords, tokens, private addresses — also ends up readable inside every backup, even if the daemon never sent that content to a remote LLM.
+
+Defaults that already help:
+- `backups/` is created `chmod 0o700` and each `grimoire_*.db` is written `chmod 0o600` (owner-only on POSIX).
+- The `.gitignore` shipped with this repo excludes `backups/` from version control.
+
+What you should still do if your vault holds secrets:
+- **Encrypt the directory.** Mount `backups/` (or the whole project) on `gocryptfs` / `eCryptfs` / `age`-based wrappers. Grimoire makes no attempt to encrypt at rest — that's the operator's job.
+- **Trim retention.** The default keeps the last 5 daily snapshots (`max_backups=5` in `grimoire/utils/backup.py`). Lower it if your threat model treats the DB as toxic waste.
+- **Treat the device as the trust boundary.** Full-disk encryption (LUKS, FileVault, Termux's own data partition encryption) covers the at-rest case for the local-first / single-user threat model Grimoire targets.
 
 ## Stack
 

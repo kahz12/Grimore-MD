@@ -37,13 +37,13 @@ class TestReconcile:
         assert Taxonomy().reconcile([]) == []
 
     def test_maps_to_canonical(self):
-        tax = Taxonomy(["Ocultismo Clásico"])
+        tax = Taxonomy(["Classical Occultism"])
         # normalized form → canonical spelling
-        assert tax.reconcile(["ocultismo-clasico"]) == ["Ocultismo Clásico"]
+        assert tax.reconcile(["classical-occultism"]) == ["Classical Occultism"]
 
     def test_unknown_kept_verbatim(self):
-        tax = Taxonomy(["filosofia"])
-        assert tax.reconcile(["nihilismo"]) == ["nihilismo"]
+        tax = Taxonomy(["philosophy"])
+        assert tax.reconcile(["nihilism"]) == ["nihilism"]
 
     def test_preserves_first_seen_order(self):
         tax = Taxonomy()
@@ -181,13 +181,16 @@ class TestSaveTaxonomyToVault:
     def test_roundtrip_preserves_tree(self, tmp_path):
         vt = VaultTaxonomy()
         vt.categories = CategoryTree()
-        vt.categories.add("Historia/Moderna")
-        vt.categories.add("Ciencia/Física/Cuántica")
-        vt.tags = Taxonomy(["filosofia"])
+        vt.categories.add("History/Modern")
+        vt.categories.add("Science/Physics/Quantum")
+        vt.tags = Taxonomy(["philosophy"])
 
         save_taxonomy_to_vault(tmp_path, vt)
 
         reloaded = load_taxonomy_from_vault(tmp_path)
-        assert reloaded.tags.vocabulary == ["filosofia"]
-        assert reloaded.categories.has("Historia/Moderna")
-        assert reloaded.categories.has("Ciencia/Física/Cuántica")
+        assert reloaded.tags.vocabulary == ["philosophy"]
+        assert reloaded.categories.has("History/Modern")
+        assert reloaded.categories.has("Science/Physics/Quantum")
+)
+ca")
+)

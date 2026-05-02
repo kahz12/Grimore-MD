@@ -268,10 +268,10 @@ def scan(
         ("Chunks",      Text(str(stats["chunks"]),    style="grimoire.accent")),
     ]
     console.print()
-    console.print(ui.success_panel(ui.kv_table(summary_rows), title="Resumen del escaneo"))
+    console.print(ui.success_panel(ui.kv_table(summary_rows), title="Scan Summary"))
 
     if is_dry_run and stats["processed"] > 0:
-        ui.tip("Fue un ensayo. Ejecuta [cyan]grimoire scan --no-dry-run[/] para aplicar cambios.")
+        ui.tip("This was a dry run. Run [cyan]grimoire scan --no-dry-run[/] to apply changes.")
 
 
 def _validate_threshold(value: Optional[float]) -> Optional[float]:
@@ -321,7 +321,7 @@ def connect(
     all_embeddings = db.get_all_embeddings()
     if not all_embeddings:
         console.print(ui.warn_panel(
-            "No hay embeddings aún. Ejecuta [cyan]grimoire scan --no-dry-run[/] primero.",
+            "No embeddings yet. Run [cyan]grimoire scan --no-dry-run[/] first.",
             title="Sin memoria vectorial",
         ))
         return
@@ -384,10 +384,10 @@ def connect(
     console.print()
     console.print(ui.success_panel(
         ui.kv_table([
-            ("Notas conectadas", Text(str(unique_sources), style="grimoire.success")),
-            ("Enlaces sugeridos", Text(str(total_links), style="grimoire.accent")),
+            ("Connected notes", Text(str(unique_sources), style="grimoire.success")),
+            ("Suggested links", Text(str(total_links), style="grimoire.accent")),
         ]),
-        title="Resumen de conexiones",
+        title="Connection summary",
     ))
 
 
@@ -420,10 +420,10 @@ def ask(
     console.print()
     console.print(ui.info_panel(
         Text(question, style="bold white"),
-        title="Pregunta",
+        title="Question",
     ))
 
-    with console.status("[grimoire.mystic]El Oráculo escucha los susurros...[/]", spinner="dots12"):
+    with console.status("[grimoire.mystic]The Oracle listens to the whispers...[/]", spinner="dots12"):
         # Perform the RAG query
         result = oracle.ask(question, top_k=top_k)
 
@@ -431,14 +431,14 @@ def ask(
     console.print(ui.oracle_panel(result["answer"]))
 
     if result["sources"]:
-        ui.section("Fuentes citadas")
+        ui.section("Cited sources")
         for source in result["sources"]:
             console.print(Text.assemble(
                 ("  • ", "grimoire.muted"),
                 (f"[[{source}]]", "grimoire.accent"),
             ))
     else:
-        ui.tip("El Oráculo no ha encontrado notas relevantes. ¿Has ejecutado [cyan]grimoire scan[/]?")
+        ui.tip("The Oracle found no relevant notes. Have you run [cyan]grimoire scan[/]?")
 
     if export:
         # Export the Oracle's response as a new Markdown file in the vault
@@ -533,18 +533,18 @@ def daemon(
     elif action == "stop":
         # Stop background daemon
         if not is_running(pid_file):
-            console.print(ui.info_panel("No hay daemon corriendo.", title="Nada que detener"))
+            console.print(ui.info_panel("No daemon running.", title="Nothing to stop"))
             return
         stop_daemon(pid_file)
-        console.print(ui.success_panel("Daemon detenido.", title="Stop"))
+        console.print(ui.success_panel("Daemon stopped.", title="Stop"))
     elif action == "status":
         # Check if daemon is active
         active = is_running(pid_file)
         console.print(Text.assemble("  ", ui.daemon_badge(active)))
     else:
         console.print(ui.error_panel(
-            f"Acción desconocida: [bold]{action}[/]\nUsa [cyan]run · start · stop · status[/].",
-            title="Comando inválido",
+            f"Unknown action: [bold]{action}[/]\nUse [cyan]run · start · stop · status[/].",
+            title="Invalid command",
         ))
         raise typer.Exit(code=2)
 
@@ -754,9 +754,9 @@ def category_list(
     tree = vault_tax.categories
     if tree.is_empty():
         console.print(ui.info_panel(
-            "No hay categorías configuradas todavía.\n"
-            "Añade la primera con [cyan]grimoire category add <ruta>[/].",
-            title="Árbol vacío",
+            "No categories configured yet.\n"
+            "Add the first one with [cyan]grimoire category add <path>[/].",
+            title="Empty tree",
         ))
         return
 
@@ -773,7 +773,7 @@ def category_list(
                 (f"  {indent}{bullet} ", "grimoire.rune"),
                 (name, style),
                 ("  ", ""),
-                (f"({count} notas)" if count else "(vacía)", "grimoire.muted"),
+                (f"({count} notes)" if count else "(empty)", "grimoire.muted"),
             ))
             render(child, depth + 1)
 
@@ -781,13 +781,13 @@ def category_list(
     console.print()
     console.print(Text.assemble(
         ("  ", ""),
-        (f"{len(tree.paths())} categorías totales", "grimoire.accent"),
+        (f"{len(tree.paths())} total categories", "grimoire.accent"),
     ))
 
 
 @category_app.command("add")
 def category_add(
-    path: str = typer.Argument(..., help="Ruta jerárquica, ej. 'Ciencia/Física/Cuántica'"),
+    path: str = typer.Argument(..., help="Hierarchical path, e.g. 'Science/Physics/Quantum'"),
     vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
 ):
     """➕ Create a category (and any missing ancestors)."""
@@ -800,27 +800,27 @@ def category_add(
     try:
         created = vault_tax.categories.add(path)
     except ValueError as e:
-        console.print(ui.error_panel(str(e), title="Ruta inválida"))
+        console.print(ui.error_panel(str(e), title="Invalid path"))
         raise typer.Exit(code=2)
 
     if not created:
         console.print(ui.info_panel(
-            f"[bold]{path}[/] ya existe en el árbol.",
-            title="Sin cambios",
+            f"[bold]{path}[/] already exists in the tree.",
+            title="No changes",
         ))
         return
 
     save_taxonomy_to_vault(actual_vault_path, vault_tax)
     console.print(ui.success_panel(
-        f"Categoría [bold]{path}[/] añadida y persistida en [cyan]taxonomy.yml[/].",
-        title="Creada",
+        f"Category [bold]{path}[] added and persisted in [cyan]taxonomy.yml[/].",
+        title="Created",
     ))
 
 
 @category_app.command("rm")
 def category_rm(
-    path: str = typer.Argument(..., help="Categoría a eliminar (incluye sus hijas)"),
-    force: bool = typer.Option(False, "--force", "-f", help="Borrar aunque haya notas asignadas"),
+    path: str = typer.Argument(..., help="Category to remove (includes children)"),
+    force: bool = typer.Option(False, "--force", "-f", help="Delete even if notes are assigned"),
     vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
 ):
     """➖ Remove a category and its entire subtree."""
@@ -836,33 +836,34 @@ def category_rm(
     notes_affected = db.count_notes_under_category(canonical)
     if notes_affected and not force:
         console.print(ui.warn_panel(
-            f"[bold]{canonical}[/] tiene {notes_affected} notas asignadas.\n"
-            f"Usa [cyan]--force[/] para eliminarla de todos modos "
-            f"(el campo quedará vacío en la DB pero no en los ficheros).",
-            title="Categoría en uso",
+            f"[bold]{canonical}[/] has {notes_affected} notes assigned.\n"
+            f"Use [cyan]--force[/] to delete it anyway "
+            f"(the field will remain empty in the DB but not in the files).",
+            title="Category in use",
         ))
         raise typer.Exit(code=1)
 
     removed = vault_tax.categories.remove(canonical)
     if not removed:
         console.print(ui.info_panel(
-            f"[bold]{path}[/] no existe en el árbol.",
-            title="Nada que borrar",
+            f"[bold]{path}[/] does not exist in the tree.",
+            title="Nothing to delete",
         ))
         return
 
     save_taxonomy_to_vault(actual_vault_path, vault_tax)
     console.print(ui.success_panel(
-        f"Categoría [bold]{canonical}[/] eliminada del árbol.\n"
-        f"{notes_affected} notas quedan sin categoría en la DB.",
-        title="Eliminada",
+        f"Category [bold]{canonical}[/] removed from the tree.\n"
+        f"{notes_affected} notes remain without category in the DB.",
+        title="Deleted",
     ))
+
 
 
 @category_app.command("notes")
 def category_notes(
-    path: str = typer.Argument(..., help="Categoría a inspeccionar"),
-    recursive: bool = typer.Option(True, "--recursive/--flat", help="Incluir descendientes"),
+    path: str = typer.Argument(..., help="Category to inspect"),
+    recursive: bool = typer.Option(True, "--recursive/--flat", help="Include descendants"),
     vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
 ):
     """📄 List notes filed under a category."""
@@ -1032,3 +1033,17 @@ def maintenance_run(
 
 if __name__ == "__main__":
     app()
+
+p()
+app()
+
+p()
+()
+
+p()
+()
+
+p()
+()
+)
+()

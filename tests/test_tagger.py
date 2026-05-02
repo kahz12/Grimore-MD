@@ -33,10 +33,10 @@ class TestSanitizeTag:
         assert _sanitize_tag(long, tax) is None
 
     def test_maps_to_canonical_from_taxonomy(self):
-        tax = Taxonomy(["Ocultismo Clásico"])
+        tax = Taxonomy(["Classical Occultism"])
         # sanitize returns normalized form; reconciliation to canonical
         # happens later in Tagger.tag_note via taxonomy.reconcile
-        assert _sanitize_tag("ocultismo clasico", tax) == "ocultismo-clasico"
+        assert _sanitize_tag("classical occultism", tax) == "classical-occultism"
 
 
 class TestSanitizeSummary:
@@ -61,13 +61,13 @@ class TestSanitizeSummary:
 class TestSanitizeCategory:
     def test_resolves_match(self):
         tree = CategoryTree()
-        tree.add("Ciencia/Física")
-        assert _sanitize_category("ciencia/fisica", tree) == "Ciencia/Física"
+        tree.add("Science/Physics")
+        assert _sanitize_category("science/physics", tree) == "Science/Physics"
 
     def test_unknown_returns_none(self):
         tree = CategoryTree()
-        tree.add("Arte")
-        assert _sanitize_category("Matemáticas", tree) is None
+        tree.add("Art")
+        assert _sanitize_category("Mathematics", tree) is None
 
     def test_non_string_returns_none(self):
         tree = CategoryTree()
