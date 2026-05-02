@@ -94,6 +94,63 @@ class TestValidateLLMHost:
         assert SecurityGuard.validate_llm_host("https://8.8.8.8", allow_remote=True)
 
 
+class TestValidateLLMHostCache:
+    """B-01: TTL eviction + no caching when allow_remote=True."""
+
+    def setup_method(self):
+        SecurityGuard._host_cache.clear()
+
+    def teardown_method(self):
+        SecurityGuard._host_cache.clear()
+
+    def test_loopback_results_are_cached(self, monkeypatch):
+        import grimoire.utils.security as sec
+        calls = {"n": 0}
+        real = sec.socket.getaddrinfo
+
+        def counting(*a, **kw):
+            calls["n"] += 1
+            return real(*a, **kw)
+
+        monkeypatch.setattr(sec.socket, "getaddrinfo", counting)
+        SecurityGuard.validate_llm_host("http://localhost:11434")
+        SecurityGuard.validate_llm_host("http://localhost:11434")
+        assert calls["n"] == 1
+
+    def test_cache_expires_after_ttl(self, monkeypatch):
+        import grimoire.utils.security as sec
+        calls = {"n": 0}
+        real = sec.socket.getaddrinfo
+
+        def counting(*a, **kw):
+            calls["n"] += 1
+            return real(*a, **kw)
+
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(sec.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(sec.socket, "getaddrinfo", counting)
+
+        SecurityGuard.validate_llm_host("http://localhost:11434")
+        clock["t"] += sec._HOST_CACHE_TTL_SECONDS + 1
+        SecurityGuard.validate_llm_host("http://localhost:11434")
+        assert calls["n"] == 2
+
+    def test_allow_remote_bypasses_cache(self, monkeypatch):
+        import grimoire.utils.security as sec
+        calls = {"n": 0}
+        real = sec.socket.getaddrinfo
+
+        def counting(*a, **kw):
+            calls["n"] += 1
+            return real(*a, **kw)
+
+        monkeypatch.setattr(sec.socket, "getaddrinfo", counting)
+        SecurityGuard.validate_llm_host("https://1.1.1.1:11434", allow_remote=True)
+        SecurityGuard.validate_llm_host("https://1.1.1.1:11434", allow_remote=True)
+        assert calls["n"] == 2
+        assert ("https://1.1.1.1:11434", True) not in SecurityGuard._host_cache
+
+
 class TestWrapUntrusted:
     def test_wraps_with_label(self):
         out = SecurityGuard.wrap_untrusted("hi", label="source")

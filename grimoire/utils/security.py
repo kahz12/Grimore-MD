@@ -6,12 +6,19 @@ sanitizing prompts to prevent injection, and validating LLM host URLs.
 import ipaddress
 import re
 import socket
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# How long a cached host validation is trusted before re-resolving. Keeps
+# long-running processes (notably the daemon) from honouring a stale loopback
+# answer if DNS later swaps the host's IP — a defence-in-depth bound on the
+# DNS-rebinding window.
+_HOST_CACHE_TTL_SECONDS = 300
 
 # Common patterns for sensitive information (API keys, secrets, PII)
 SENSITIVE_PATTERNS = {
@@ -75,11 +82,15 @@ class SecurityGuard:
             text,
         )
 
-    # Cache of (url, allow_remote) → validated url or ValueError. A single CLI
-    # invocation spins up LLMRouter, Embedder and PreflightChecker; each called
-    # validate_llm_host independently, paying three getaddrinfo round-trips
-    # before. Memoising here collapses them to one resolution per process.
-    _host_cache: dict[tuple[str, bool], str] = {}
+    # Cache of (url, allow_remote) → (validated_url, monotonic_timestamp).
+    # A single CLI invocation spins up LLMRouter, Embedder and PreflightChecker;
+    # each calls validate_llm_host independently, paying a getaddrinfo round-trip
+    # apiece. Memoising collapses them to one resolution per host within the
+    # TTL. The TTL caps the DNS-rebinding window for long-running processes
+    # (the daemon). When allow_remote=True we skip the cache entirely: that's
+    # the only setting where an attacker controls authoritative DNS for the
+    # host, so re-resolving on every call is the right default.
+    _host_cache: dict[tuple[str, bool], tuple[str, float]] = {}
 
     @staticmethod
     def validate_llm_host(url: str, allow_remote: bool = False) -> str:
@@ -88,9 +99,14 @@ class SecurityGuard:
         If allow_remote is False, only loopback addresses (localhost/127.0.0.1) are permitted.
         """
         cache_key = (url, bool(allow_remote))
-        cached = SecurityGuard._host_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        if not allow_remote:
+            cached = SecurityGuard._host_cache.get(cache_key)
+            if cached is not None:
+                cached_url, cached_at = cached
+                if time.monotonic() - cached_at < _HOST_CACHE_TTL_SECONDS:
+                    return cached_url
+                # Stale: drop and fall through to re-resolve.
+                SecurityGuard._host_cache.pop(cache_key, None)
 
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
@@ -114,7 +130,8 @@ class SecurityGuard:
             if parsed.scheme != "https":
                 raise ValueError(f"Remote OLLAMA_HOST must use https: {url!r}")
 
-        SecurityGuard._host_cache[cache_key] = url
+        if not allow_remote:
+            SecurityGuard._host_cache[cache_key] = (url, time.monotonic())
         return url
 
     @staticmethod

@@ -61,12 +61,14 @@ class GrimoireDaemon:
         self.observer = None
         self._counter_lock = threading.Lock()
         self.processed_count = 0
-        self.last_batch_time = time.time()
-        # Anchor the daily-backup window to the newest file under backups/
-        # rather than process start — otherwise a daemon that restarts often
-        # resets the 24h timer on every boot and never actually triggers.
+        # Internal cadence counters use the monotonic clock so they're
+        # immune to NTP steps, manual TZ changes and Termux suspend/resume.
+        self.last_batch_time = time.monotonic()
+        self.last_maintenance_time = time.monotonic()
+        # The daily-backup window stays on the wall clock because it's
+        # anchored to the mtime of files under backups/ — those mtimes are
+        # wall-clock by definition. Fallback to time.time() for first run.
         self.last_backup_time = self.backup.latest_backup_mtime() or time.time()
-        self.last_maintenance_time = time.time()
 
     def _log_path(self, file_path: Path) -> str:
         """Helper to get a relative path for cleaner logging."""
@@ -102,30 +104,35 @@ class GrimoireDaemon:
         
         try:
             while True:
-                current_time = time.time()
+                # Two clocks: monotonic for internal cadences (batch, maintenance)
+                # which must not jump if the wall clock is adjusted; wall clock
+                # for the backup window since it's compared against file mtimes.
+                now_mono = time.monotonic()
+                now_wall = time.time()
+
                 # Batch notification: send summary every 5 minutes if activity occurred
                 with self._counter_lock:
                     pending = self.processed_count
-                if pending > 0 and (current_time - self.last_batch_time > 300):
+                if pending > 0 and (now_mono - self.last_batch_time > 300):
                     self.notifier.notify_batch_processed(pending)
                     with self._counter_lock:
                         # Subtract the count we just flushed; a worker may have
                         # incremented further during notify, so don't zero blind.
                         self.processed_count -= pending
-                    self.last_batch_time = current_time
+                    self.last_batch_time = now_mono
 
-                # Daily backup check (every 24h)
-                if current_time - self.last_backup_time > 86400:
+                # Daily backup check (every 24h, anchored to wall clock + mtimes).
+                if now_wall - self.last_backup_time > 86400:
                     self.backup.create_backup()
-                    self.last_backup_time = current_time
+                    self.last_backup_time = now_wall
 
                 # Periodic DB maintenance (VACUUM + WAL checkpoint + tag purge).
                 mcfg = self.config.maintenance
                 if mcfg.enabled:
                     interval = max(1, mcfg.interval_hours) * 3600
-                    if current_time - self.last_maintenance_time > interval:
+                    if now_mono - self.last_maintenance_time > interval:
                         self.maintenance.run(reason="scheduled")
-                        self.last_maintenance_time = current_time
+                        self.last_maintenance_time = now_mono
 
                 time.sleep(10)
         except KeyboardInterrupt:
@@ -162,8 +169,8 @@ class GrimoireDaemon:
                 logger.warning("path_escape_skipped", path=rel)
                 return
 
-            # 1. Parse file
-            note = self.parser.parse_file(file_path)
+            # 1. Parse file (defence-in-depth: parser re-validates vault scope)
+            note = self.parser.parse_file(file_path, vault_root=self.vault_root)
 
             # 2. Security & Policy Check
             privacy = note.metadata.get("privacy", "local")
@@ -226,7 +233,7 @@ class GrimoireDaemon:
 
             with self._counter_lock:
                 self.processed_count += 1
-            self.last_batch_time = time.time()
+            self.last_batch_time = time.monotonic()
             logger.info("file_processed_complete", path=rel)
 
         except Exception as e:

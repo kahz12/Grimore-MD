@@ -72,6 +72,26 @@ class TestCountNotesUnderCategory:
         db = _make_db(tmp_path)
         assert db.count_notes_under_category("") == 0
 
+    def test_underscore_in_category_does_not_match_other_chars(self, tmp_path):
+        # B-04: a literal "_" must not behave like a SQL wildcard.
+        db = _make_db(tmp_path)
+        legit = _add_note(db, "a.md", "A")
+        sneaky = _add_note(db, "b.md", "B")
+        db.set_note_category(legit, "50_off/sub")          # belongs under "50_off"
+        db.set_note_category(sneaky, "50aoff/sub")         # would falsely match if "_" stayed wild
+
+        assert db.count_notes_under_category("50_off") == 1
+
+    def test_percent_in_category_does_not_match_anything(self, tmp_path):
+        # B-04: a literal "%" must not behave like a SQL wildcard.
+        db = _make_db(tmp_path)
+        legit = _add_note(db, "a.md", "A")
+        unrelated = _add_note(db, "b.md", "B")
+        db.set_note_category(legit, "100%/sub")
+        db.set_note_category(unrelated, "100xyz/sub")
+
+        assert db.count_notes_under_category("100%") == 1
+
 
 class TestGetNotesByCategory:
     def test_recursive_includes_descendants(self, tmp_path):
@@ -95,3 +115,14 @@ class TestGetNotesByCategory:
         rows = db.get_notes_by_category("Ciencia", recursive=False)
         titles = {r[2] for r in rows}
         assert titles == {"A"}
+
+    def test_recursive_treats_underscore_literally(self, tmp_path):
+        # B-04: same fix path through get_notes_by_category.
+        db = _make_db(tmp_path)
+        legit = _add_note(db, "a.md", "Legit")
+        sneaky = _add_note(db, "b.md", "Sneaky")
+        db.set_note_category(legit, "50_off/sub")
+        db.set_note_category(sneaky, "50aoff/sub")
+
+        titles = {r[2] for r in db.get_notes_by_category("50_off", recursive=True)}
+        assert titles == {"Legit"}

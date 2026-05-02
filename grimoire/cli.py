@@ -5,6 +5,7 @@ consulting the Oracle (RAG), and managing the background daemon.
 """
 import time
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.text import Text
@@ -176,7 +177,7 @@ def scan(
 
             try:
                 # Step 1: Parse Markdown and metadata
-                note = parser.parse_file(file)
+                note = parser.parse_file(file, vault_root=vault_root)
             except Exception as e:
                 stats["errors"] += 1
                 logger.error("parse_failed", path=str(file), error=str(e))
@@ -273,6 +274,20 @@ def scan(
         ui.tip("Fue un ensayo. Ejecuta [cyan]grimoire scan --no-dry-run[/] para aplicar cambios.")
 
 
+def _validate_threshold(value: Optional[float]) -> Optional[float]:
+    """
+    --threshold is a cosine-similarity floor. Cosine ranges in [-1, 1] but
+    a value below 0 would propose every pair (spam) and above 1 would
+    reject every pair (no-op). Constrain to the meaningful sub-range so
+    a typo doesn't silently flood the vault with wikilinks.
+    """
+    if value is None:
+        return None
+    if not (0.0 <= value <= 1.0):
+        raise typer.BadParameter("--threshold must be in [0.0, 1.0]")
+    return value
+
+
 @app.command(rich_help_panel="Knowledge ops")
 def connect(
     dry_run: bool = typer.Option(None, "--dry-run/--no-dry-run", help="Simulate link injection"),
@@ -280,7 +295,8 @@ def connect(
         None,
         "--threshold",
         "-t",
-        help="Min. cosine similarity to propose a link (default: cognition.connect_threshold).",
+        help="Min. cosine similarity to propose a link, in [0.0, 1.0] (default: cognition.connect_threshold).",
+        callback=_validate_threshold,
     ),
 ):
     """

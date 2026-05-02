@@ -6,9 +6,10 @@ import frontmatter
 import re
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Union
 from grimoire.utils.hashing import calculate_content_hash
 from grimoire.utils.logger import get_logger
+from grimoire.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
@@ -29,13 +30,37 @@ class ParsedNote:
 class MarkdownParser:
     """
     Responsible for reading Markdown files and extracting structured data.
+
+    Vault-scope contract
+    --------------------
+    Callers MUST ensure ``file_path`` resolves inside the vault before
+    calling :py:meth:`parse_file`. The two in-tree consumers (``cli.scan``
+    and ``daemon.process_file``) do this via ``SecurityGuard.resolve_within_vault``.
+    For defence-in-depth, callers can also pass ``vault_root`` to
+    :py:meth:`parse_file` and the parser will re-validate internally —
+    use this whenever the parser is invoked from a new code path so a
+    forgotten outer check cannot turn into a path-traversal bug.
     """
-    def parse_file(self, file_path: Path) -> ParsedNote:
+    def parse_file(
+        self,
+        file_path: Path,
+        *,
+        vault_root: Optional[Union[str, Path]] = None,
+    ) -> ParsedNote:
         """
         Parses a Markdown file into a ParsedNote object.
         Extracts title from frontmatter, first H1, or filename as fallback.
         Calculates a SHA-256 hash of the content for change detection.
+
+        If ``vault_root`` is provided, the resolved ``file_path`` is required
+        to live under it (symlinks followed, ``..`` rejected). Raises
+        :class:`ValueError` if the file escapes the vault.
         """
+        if vault_root is not None:
+            # Defence-in-depth: even if the caller already filtered, re-check
+            # here so the parser is safe to drop into a new call site.
+            SecurityGuard.resolve_within_vault(file_path, vault_root)
+
         try:
             size = file_path.stat().st_size
         except OSError as e:

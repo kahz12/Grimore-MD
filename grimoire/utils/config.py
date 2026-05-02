@@ -13,8 +13,23 @@ from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Load environment variables from .env file
-load_dotenv()
+
+def _load_project_env() -> bool:
+    """
+    Load Grimoire's ``.env`` from the current working directory ONLY.
+
+    python-dotenv's default ``load_dotenv()`` walks upward from the cwd
+    until it finds a ``.env``. If Grimoire happens to be run from a nested
+    directory whose ancestor holds an unrelated project's ``.env``, that
+    file's variables (potentially OLLAMA_HOST or other secrets) would
+    silently leak into Grimoire's environment. Pinning the path matches
+    how ``grimoire.toml`` is discovered — both anchored to the cwd — and
+    closes B-03.
+    """
+    return load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
+
+
+_load_project_env()
 
 @dataclass
 class VaultConfig:

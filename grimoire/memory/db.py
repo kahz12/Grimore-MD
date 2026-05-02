@@ -11,6 +11,20 @@ from grimoire.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _escape_like(text: str) -> str:
+    """
+    Escape SQLite LIKE wildcards (``%``, ``_``) and the escape char itself
+    (``\\``) so a literal user-supplied prefix matches only that prefix.
+
+    Without this, a category named e.g. ``"50_off"`` in taxonomy.yml would
+    also match ``"50aoff/sub"`` because the bare ``_`` is a one-character
+    wildcard. Use together with ``LIKE ? ESCAPE '\\'`` in the query.
+    """
+    # Backslash first — otherwise we'd double-escape the % and _ we just
+    # added a backslash in front of.
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
 class Database:
     """
     Manages all database operations for Project Grimoire.
@@ -295,14 +309,14 @@ class Database:
         """Count notes whose category is ``category`` or a descendant of it."""
         if not category:
             return 0
-        prefix = category + "/"
+        prefix_pattern = _escape_like(category + "/") + "%"
         with self._get_connection() as conn:
             row = conn.execute(
                 """
                 SELECT COUNT(*) FROM notes
-                WHERE category = ? OR category LIKE ?
+                WHERE category = ? OR category LIKE ? ESCAPE '\\'
                 """,
-                (category, prefix + "%"),
+                (category, prefix_pattern),
             ).fetchone()
         return int(row[0]) if row else 0
 
@@ -313,14 +327,14 @@ class Database:
         """
         with self._get_connection() as conn:
             if recursive:
-                prefix = category + "/"
+                prefix_pattern = _escape_like(category + "/") + "%"
                 rows = conn.execute(
                     """
                     SELECT id, path, title FROM notes
-                    WHERE category = ? OR category LIKE ?
+                    WHERE category = ? OR category LIKE ? ESCAPE '\\'
                     ORDER BY category, title
                     """,
-                    (category, prefix + "%"),
+                    (category, prefix_pattern),
                 ).fetchall()
             else:
                 rows = conn.execute(
