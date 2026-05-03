@@ -9,5 +9,6 @@ pyyaml
 gitpython
 pydantic
 requests
+prompt-toolkit
 pytest
 pytest-mock

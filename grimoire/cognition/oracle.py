@@ -4,6 +4,8 @@ This module combines semantic search (via the Connector) with LLM completion
 (via the LLMRouter) to answer questions based on the vault's content.
 """
 from pathlib import Path
+from typing import Iterator
+
 from grimoire.cognition.llm_router import LLMRouter
 from grimoire.cognition.embedder import Embedder
 from grimoire.cognition.connector import Connector
@@ -139,3 +141,124 @@ class Oracle:
             "answer": response.get("answer", "The Oracle is silent."),
             "sources": list(set(sources))
         }
+
+    def _build_context(self, question: str, top_k: int):
+        """Run retrieval + context-cap and return (full_context, sources).
+
+        Returns ``(None, [])`` when retrieval finds nothing usable, so the
+        caller can short-circuit without a second branch. Pulled out of
+        ``ask()`` so ``ask_stream()`` can reuse the exact same retrieval
+        logic — keeping JSON and streaming paths in lockstep.
+        """
+        query_vector = self.embedder.embed(question)
+        use_hybrid = (
+            getattr(self.config.cognition, "hybrid_search", True)
+            and self.db.fts_available
+        )
+        if use_hybrid:
+            similar = self.connector.find_hybrid(
+                query_text=question,
+                query_vector=query_vector,
+                top_k=top_k,
+                rrf_k=getattr(self.config.cognition, "rrf_k", 60),
+            )
+        elif query_vector:
+            similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
+        else:
+            return None, []
+
+        if not similar:
+            return None, []
+
+        candidate_parts: list[tuple[str, str]] = []
+        for item in similar:
+            title = self.db.get_note_title(item['note_id'])
+            if not title:
+                logger.warning("orphan_embedding", note_id=item['note_id'])
+                continue
+            safe_text = SecurityGuard.wrap_untrusted(
+                SecurityGuard.sanitize_prompt(item['text']),
+                label="source",
+            )
+            candidate_parts.append(
+                (title, f"--- Source: [[{title}]] ---\n{safe_text}")
+            )
+
+        accepted_parts: list[str] = []
+        sources: list[str] = []
+        used = 0
+        dropped = 0
+        for title, part in candidate_parts:
+            extra = len(part) + (len(_CONTEXT_SEPARATOR) if accepted_parts else 0)
+            if used + extra > _ORACLE_CONTEXT_MAX_CHARS:
+                dropped += 1
+                continue
+            accepted_parts.append(part)
+            sources.append(title)
+            used += extra
+
+        if dropped:
+            logger.info(
+                "oracle_context_truncated",
+                kept=len(accepted_parts),
+                dropped=dropped,
+                cap=_ORACLE_CONTEXT_MAX_CHARS,
+                used_chars=used,
+            )
+
+        if not accepted_parts:
+            return None, []
+
+        return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources))
+
+    def ask_stream(self, question: str, top_k: int = 5) -> Iterator[dict]:
+        """Streaming variant of :meth:`ask`.
+
+        Yields events::
+
+            {"type": "token", "text": "..."}       # zero-or-more, as LLM emits
+            {"type": "done",  "sources": [...]}    # exactly one, terminal
+
+        Falls back to a single ``done`` with an empty ``sources`` list when
+        retrieval finds nothing or when the streaming call returns no tokens
+        (Ollama unreachable, circuit open). Always emits a terminal ``done``
+        so the caller can render its final UI state in one place.
+
+        The streaming path strips the JSON-only rule from the system prompt
+        so the model emits plain prose; ``ask()`` keeps its JSON contract
+        for callers like ``--export`` that depend on a structured payload.
+        """
+        logger.info("oracle_query_stream", question=question)
+        full_context, sources = self._build_context(question, top_k)
+        if full_context is None:
+            yield {"type": "done", "sources": []}
+            return
+
+        # Drop the JSON-output rule and example block from the template so
+        # the streamed answer is plain prose. The marker we anchor on is
+        # the literal "6. Return ONLY..." rule line; if the prompt is ever
+        # rewritten, this falls back to the full template (model still
+        # produces valid prose, just wrapped in JSON the user will see).
+        streaming_template = self.system_prompt_template
+        json_rule_idx = streaming_template.find('6. Return ONLY')
+        if json_rule_idx != -1:
+            context_idx = streaming_template.find('Context:', json_rule_idx)
+            if context_idx != -1:
+                streaming_template = (
+                    streaming_template[:json_rule_idx]
+                    + streaming_template[context_idx:]
+                )
+
+        system_prompt = streaming_template.replace("{context}", full_context)
+
+        produced = False
+        for chunk in self.router.complete_streaming(
+            prompt=f"Question: {question}",
+            system_prompt=system_prompt,
+        ):
+            produced = True
+            yield {"type": "token", "text": chunk}
+
+        if not produced:
+            logger.warning("oracle_stream_no_response")
+        yield {"type": "done", "sources": sources}

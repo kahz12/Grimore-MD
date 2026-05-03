@@ -7,7 +7,7 @@ import json
 import os
 import re
 import time
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from grimoire.utils.http import build_session
 from grimoire.utils.logger import get_logger
@@ -181,3 +181,58 @@ class LLMRouter:
             logger.error("llm_call_failed", model=model, error=str(e))
             self._record_failure()
             return None
+
+    def complete_streaming(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        model_override: Optional[str] = None,
+    ) -> Iterator[str]:
+        """Yield response chunks as Ollama emits them (NDJSON stream).
+
+        Used by the interactive shell so the user sees the answer being
+        typed instead of waiting for the full payload. Always plain text
+        (no json_format) — the Oracle uses this only for the final answer
+        rendering, never for structured calls like the tagger.
+
+        Errors degrade silently: an empty iterator is returned and the
+        circuit-breaker counter advances, so callers can fall back to
+        the non-streaming path without special handling.
+        """
+        if self._circuit_open():
+            logger.warning("llm_skipped_circuit_open")
+            return
+
+        model = model_override or self.config.cognition.model_llm_local
+        url = f"{self.ollama_host}/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "system": system_prompt,
+            "stream": True,
+        }
+
+        try:
+            with self.session.post(url, json=payload, timeout=120, stream=True) as resp:
+                resp.raise_for_status()
+                got_anything = False
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    piece = chunk.get("response", "")
+                    if piece:
+                        got_anything = True
+                        yield piece
+                    if chunk.get("done"):
+                        break
+            if got_anything:
+                self._record_success()
+            else:
+                self._record_failure()
+        except Exception as e:
+            logger.error("llm_stream_failed", model=model, error=str(e))
+            self._record_failure()

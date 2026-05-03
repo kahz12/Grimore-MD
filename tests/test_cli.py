@@ -67,13 +67,17 @@ class _FakeOracle:
 
 
 def _patch_ask_dependencies(monkeypatch, config):
-    """Mock everything `ask` builds so only the export path is exercised."""
+    """Mock everything `ask` builds so only the export path is exercised.
+
+    Services are now instantiated lazily by ``grimoire.session.Session``,
+    so the patches target that module instead of ``grimoire.cli``.
+    """
     monkeypatch.setattr("grimoire.cli.load_config", lambda: config)
     monkeypatch.setattr("grimoire.cli._preflight_or_exit", lambda *a, **k: None)
-    monkeypatch.setattr("grimoire.cli.Database", lambda *a, **k: object())
-    monkeypatch.setattr("grimoire.cli.LLMRouter", lambda *a, **k: object())
-    monkeypatch.setattr("grimoire.cli.Embedder", lambda *a, **k: object())
-    monkeypatch.setattr("grimoire.cli.Oracle", _FakeOracle)
+    monkeypatch.setattr("grimoire.session.Database", lambda *a, **k: object())
+    monkeypatch.setattr("grimoire.session.LLMRouter", lambda *a, **k: object())
+    monkeypatch.setattr("grimoire.session.Embedder", lambda *a, **k: object())
+    monkeypatch.setattr("grimoire.session.Oracle", _FakeOracle)
 
 
 def test_ask_export_writes_full_document(runner, tmp_path, monkeypatch):

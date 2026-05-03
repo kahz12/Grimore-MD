@@ -19,9 +19,11 @@ from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
 from grimoire.memory.maintenance import MaintenanceRunner
 from grimoire.memory.taxonomy import load_taxonomy_from_vault, save_taxonomy_to_vault
+from grimoire.operations import _do_ask
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
+from grimoire.session import Session
 from grimoire.utils import ui
 from grimoire.utils.atomic import atomic_write
 from grimoire.utils.config import is_ignored_path, load_config
@@ -413,81 +415,8 @@ def ask(
     # ask doesn't write to the vault, so don't nag about missing git.
     _preflight_or_exit(config, check_git=False)
 
-    db = Database(config.memory.db_path)
-    router = LLMRouter(config)
-    embedder = Embedder(config, cache=db)
-    oracle = Oracle(config, db, router, embedder)
-
-    console.print()
-    console.print(ui.info_panel(
-        Text(question, style="bold white"),
-        title="Question",
-    ))
-
-    with console.status("[grimoire.mystic]The Oracle listens to the whispers...[/]", spinner="dots12"):
-        # Perform the RAG query
-        result = oracle.ask(question, top_k=top_k)
-
-    console.print()
-    console.print(ui.oracle_panel(result["answer"]))
-
-    if result["sources"]:
-        ui.section("Cited sources")
-        for source in result["sources"]:
-            console.print(Text.assemble(
-                ("  • ", "grimoire.muted"),
-                (f"[[{source}]]", "grimoire.accent"),
-            ))
-    else:
-        ui.tip("The Oracle found no relevant notes. Have you run [cyan]grimoire scan[/]?")
-
-    if export:
-        # Export the Oracle's response as a new Markdown file in the vault
-        vault_root = Path(config.vault.path).resolve()
-        try:
-            export_path = SecurityGuard.resolve_within_vault(
-                vault_root / export, vault_root
-            )
-        except ValueError:
-            console.print(ui.error_panel(
-                f"[bold]--export[/] must point inside the vault ({vault_root}).",
-                title="Invalid path",
-            ))
-            raise typer.BadParameter("--export must resolve to a path inside the vault")
-
-        import yaml
-        frontmatter_payload = {
-            "title": f"Oracle: {question[:30]}...",
-            "date": time.strftime("%Y-%m-%d"),
-            "type": "oracle_response",
-        }
-        frontmatter_yaml = yaml.safe_dump(
-            frontmatter_payload,
-            allow_unicode=True,
-            sort_keys=False,
-            default_flow_style=False,
-        )
-        # Build the full payload first so atomic_write either lands the
-        # whole document or nothing at all — a SIGINT mid-write can no
-        # longer leave a half-written export visible to the user.
-        body = (
-            f"---\n{frontmatter_yaml}---\n\n"
-            f"# 🔮 Question: {question}\n\n"
-            f"{result['answer']}"
-            f"\n\n## Sources\n"
-            + "".join(f"- [[{source}]]\n" for source in result["sources"])
-        )
-        atomic_write(
-            export_path,
-            lambda fh: fh.write(body.encode("utf-8")),
-            mode="wb",
-        )
-
-        console.print()
-        console.print(ui.success_panel(
-            f"Answer saved to [bold cyan]{export_path}[/].",
-            title="Exported",
-        ))
+    session = Session(config)
+    _do_ask(session, question, top_k=top_k, export=export)
 
 
 @app.command(rich_help_panel="Daemon")
@@ -1037,6 +966,28 @@ def maintenance_run(
         ("  ", ""),
         (f"{report.duration_s:.2f}s", "grimoire.accent"),
     ))
+
+
+@app.command(rich_help_panel="System")
+def shell():
+    """
+    🌀 Open the interactive Grimoire shell.
+
+    Keeps the database, embedder and LLM router warm across commands so
+    consecutive [bold]ask[/]s skip the cold-start cost. Type [cyan]help[/]
+    inside the shell, or Ctrl+D to leave.
+    """
+    setup_logger()
+    config = load_config()
+    ui.command_header("shell", config.vault.path)
+    _preflight_or_exit(config, check_git=False)
+
+    from grimoire.shell import GrimoireShell
+    session = Session(config)
+    try:
+        GrimoireShell(session).run()
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
