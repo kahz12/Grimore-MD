@@ -20,5 +20,5 @@ Example output:
 {
   "tags": ["philosophy", "nihilism", "heidegger"],
   "summary": "An exploration of Heidegger's perspective on nihilism and the void.",
-  "category": "Historia"
+  "category": "History"
 }

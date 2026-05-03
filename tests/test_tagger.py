@@ -10,11 +10,11 @@ from grimoire.memory.taxonomy import CategoryTree, Taxonomy
 class TestSanitizeTag:
     def test_normalizes_via_taxonomy(self):
         tax = Taxonomy()
-        assert _sanitize_tag("Ocultismo Clásico", tax) == "ocultismo-clasico"
+        assert _sanitize_tag("Classical Occultism", tax) == "classical-occultism"
 
     def test_strips_hash_prefix(self):
         tax = Taxonomy()
-        assert _sanitize_tag("#filosofia", tax) == "filosofia"
+        assert _sanitize_tag("#philosophy", tax) == "philosophy"
 
     def test_rejects_non_string(self):
         tax = Taxonomy()
@@ -82,12 +82,12 @@ class TestRenderCategoryMenu:
 
     def test_lists_all_paths(self):
         tree = CategoryTree()
-        tree.add("Ciencia/Física")
-        tree.add("Arte")
+        tree.add("Science/Physics")
+        tree.add("Art")
         menu = _render_category_menu(tree)
-        assert "- Ciencia" in menu
-        assert "- Ciencia/Física" in menu
-        assert "- Arte" in menu
+        assert "- Science" in menu
+        assert "- Science/Physics" in menu
+        assert "- Art" in menu
 
     def test_truncates_to_max_paths(self):
         tree = CategoryTree()

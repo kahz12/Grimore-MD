@@ -108,7 +108,7 @@ def oracle_panel(answer: str) -> Panel:
     """Custom panel for displaying the Oracle's answers with specific styling."""
     return Panel(
         Text(answer, style="white"),
-        title=Text("🔮  Oráculo", style="grimoire.primary"),
+        title=Text("🔮  Oracle", style="grimoire.primary"),
         border_style="grimoire.secondary",
         padding=(1, 2),
     )

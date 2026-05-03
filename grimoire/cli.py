@@ -23,6 +23,7 @@ from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
 from grimoire.utils import ui
+from grimoire.utils.atomic import atomic_write
 from grimoire.utils.config import is_ignored_path, load_config
 from grimoire.utils.logger import get_logger, setup_logger
 from grimoire.utils.preflight import PreflightChecker, PreflightReport
@@ -80,12 +81,12 @@ def _preflight_or_exit(config, *, check_git: bool | None = None) -> PreflightRep
     if not report.ok:
         console.print()
         console.print(ui.error_panel(
-            "La validación previa detectó problemas bloqueantes.",
+            "Preflight validation detected blocking issues.",
             title="Preflight",
         ))
         _render_preflight_report(report)
         console.print()
-        ui.tip("Ejecuta [cyan]grimoire preflight[/] para volver a verificar sin lanzar el scan.")
+        ui.tip("Run [cyan]grimoire preflight[/] to re-check without launching the scan.")
         raise typer.Exit(code=1)
     if report.has_warnings:
         console.print()
@@ -119,7 +120,7 @@ def scan(
     if not actual_vault_path.exists():
         console.print(ui.error_panel(
             f"Vault not found at [bold]{actual_vault_path}[/]\n"
-            f"Comprueba la ruta o ajusta [cyan]grimoire.toml[/].",
+            f"Check the path or update [cyan]grimoire.toml[/].",
             title="Vault missing",
         ))
         raise typer.Exit(code=1)
@@ -132,9 +133,9 @@ def scan(
     git_guard = GitGuard(str(actual_vault_path))
     if not git_guard.is_repo_ready():
         console.print(ui.warn_panel(
-            "El directorio no es un repositorio git. El escaneo continuará sin red de seguridad.\n"
-            "Inicialízalo con [cyan]git init[/] dentro del vault para activar snapshots automáticos.",
-            title="Git no detectado",
+            "The directory is not a git repository. The scan will continue without a safety net.\n"
+            "Initialise it with [cyan]git init[/] inside the vault to enable automatic snapshots.",
+            title="Git not detected",
         ))
 
     db = Database(config.memory.db_path)
@@ -161,16 +162,16 @@ def scan(
 
     if not files:
         console.print(ui.info_panel(
-            f"No se encontraron notas [bold].md[/] en [cyan]{actual_vault_path}[/].",
-            title="Vault vacío",
+            f"No [bold].md[/] notes found in [cyan]{actual_vault_path}[/].",
+            title="Empty vault",
         ))
         return
 
     stats = {"unchanged": 0, "processed": 0, "skipped": 0, "errors": 0, "chunks": 0}
-    ui.section(f"Analizando {len(files)} notas")
+    ui.section(f"Scanning {len(files)} notes")
 
     with ui.progress_bar() as progress:
-        task = progress.add_task("Escaneando", total=len(files))
+        task = progress.add_task("Scanning", total=len(files))
         for file in files:
             rel = file.relative_to(actual_vault_path)
             progress.update(task, description=f"[grimoire.muted]{rel}[/]")
@@ -261,11 +262,11 @@ def scan(
 
     # ── Summary ────────────────────────────────────────────────────────────
     summary_rows = [
-        ("Procesadas",  Text(str(stats["processed"]), style="grimoire.success")),
-        ("Sin cambios", Text(str(stats["unchanged"]), style="grimoire.muted")),
-        ("Omitidas",    Text(str(stats["skipped"]),   style="grimoire.warning")),
-        ("Errores",     Text(str(stats["errors"]),    style="grimoire.danger" if stats["errors"] else "grimoire.muted")),
-        ("Chunks",      Text(str(stats["chunks"]),    style="grimoire.accent")),
+        ("Processed",  Text(str(stats["processed"]), style="grimoire.success")),
+        ("Unchanged",  Text(str(stats["unchanged"]), style="grimoire.muted")),
+        ("Skipped",    Text(str(stats["skipped"]),   style="grimoire.warning")),
+        ("Errors",     Text(str(stats["errors"]),    style="grimoire.danger" if stats["errors"] else "grimoire.muted")),
+        ("Chunks",     Text(str(stats["chunks"]),    style="grimoire.accent")),
     ]
     console.print()
     console.print(ui.success_panel(ui.kv_table(summary_rows), title="Scan Summary"))
@@ -310,7 +311,7 @@ def connect(
     is_dry_run = dry_run if dry_run is not None else config.output.dry_run
     effective_threshold = threshold if threshold is not None else config.cognition.connect_threshold
 
-    ui.command_header("connect", "Tejiendo hilos entre ideas")
+    ui.command_header("connect", "Weaving threads between ideas")
     console.print(Text.assemble("  ", _mode_badge(is_dry_run)))
 
     db = Database(config.memory.db_path)
@@ -322,18 +323,18 @@ def connect(
     if not all_embeddings:
         console.print(ui.warn_panel(
             "No embeddings yet. Run [cyan]grimoire scan --no-dry-run[/] first.",
-            title="Sin memoria vectorial",
+            title="No vector memory",
         ))
         return
 
-    ui.section(f"Buscando conexiones entre {len(all_embeddings)} fragmentos")
+    ui.section(f"Searching connections between {len(all_embeddings)} fragments")
 
     processed_notes: set[int] = set()
     total_links = 0
     unique_sources = 0
 
     with ui.progress_bar() as progress:
-        task = progress.add_task("Conectando", total=len(all_embeddings))
+        task = progress.add_task("Connecting", total=len(all_embeddings))
         for note_id, _text, vector_blob in all_embeddings:
             progress.advance(task)
             if note_id in processed_notes:
@@ -393,9 +394,9 @@ def connect(
 
 @app.command(rich_help_panel="Knowledge ops")
 def ask(
-    question: str = typer.Argument(..., help="La pregunta al Oráculo"),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Fragmentos de contexto a recuperar"),
-    export: Path = typer.Option(None, "--export", "-e", help="Guardar la respuesta como nota markdown"),
+    question: str = typer.Argument(..., help="The question to ask the Oracle"),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Context fragments to retrieve"),
+    export: Path = typer.Option(None, "--export", "-e", help="Save the answer as a markdown note"),
 ):
     """
     🔮 Consult the Grimoire Oracle about your vault's knowledge.
@@ -407,7 +408,7 @@ def ask(
     setup_logger()
     config = load_config()
 
-    ui.command_header("ask", "Consultando al Oráculo")
+    ui.command_header("ask", "Consulting the Oracle")
 
     # ask doesn't write to the vault, so don't nag about missing git.
     _preflight_or_exit(config, check_git=False)
@@ -449,12 +450,11 @@ def ask(
             )
         except ValueError:
             console.print(ui.error_panel(
-                f"[bold]--export[/] debe apuntar dentro del vault ({vault_root}).",
-                title="Ruta inválida",
+                f"[bold]--export[/] must point inside the vault ({vault_root}).",
+                title="Invalid path",
             ))
             raise typer.BadParameter("--export must resolve to a path inside the vault")
 
-        export_path.parent.mkdir(parents=True, exist_ok=True)
         import yaml
         frontmatter_payload = {
             "title": f"Oracle: {question[:30]}...",
@@ -467,24 +467,32 @@ def ask(
             sort_keys=False,
             default_flow_style=False,
         )
-        with open(export_path, "w", encoding="utf-8") as f:
-            f.write(f"---\n{frontmatter_yaml}---\n\n")
-            f.write(f"# 🔮 Question: {question}\n\n")
-            f.write(result["answer"])
-            f.write("\n\n## Sources\n")
-            for source in result["sources"]:
-                f.write(f"- [[{source}]]\n")
+        # Build the full payload first so atomic_write either lands the
+        # whole document or nothing at all — a SIGINT mid-write can no
+        # longer leave a half-written export visible to the user.
+        body = (
+            f"---\n{frontmatter_yaml}---\n\n"
+            f"# 🔮 Question: {question}\n\n"
+            f"{result['answer']}"
+            f"\n\n## Sources\n"
+            + "".join(f"- [[{source}]]\n" for source in result["sources"])
+        )
+        atomic_write(
+            export_path,
+            lambda fh: fh.write(body.encode("utf-8")),
+            mode="wb",
+        )
 
         console.print()
         console.print(ui.success_panel(
-            f"Respuesta guardada en [bold cyan]{export_path}[/].",
-            title="Exportado",
+            f"Answer saved to [bold cyan]{export_path}[/].",
+            title="Exported",
         ))
 
 
 @app.command(rich_help_panel="Daemon")
 def daemon(
-    action: str = typer.Argument("run", help="Acción: run · start · stop · status"),
+    action: str = typer.Argument("run", help="Action: run · start · stop · status"),
     json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format"),
 ):
     """
@@ -509,7 +517,7 @@ def daemon(
         _preflight_or_exit(config)
 
         console.print(ui.info_panel(
-            "El daemon correrá en primer plano. [bold]Ctrl-C[/] para detener.",
+            "The daemon will run in the foreground. [bold]Ctrl-C[/] to stop.",
             title="Foreground mode",
         ))
         instance = GrimoireDaemon(config, pid_file=pid_file)
@@ -518,8 +526,8 @@ def daemon(
         # Start daemon in background
         if is_running(pid_file):
             console.print(ui.warn_panel(
-                f"Ya hay un daemon activo. PID file: [cyan]{pid_file}[/].",
-                title="Ya está corriendo",
+                f"A daemon is already running. PID file: [cyan]{pid_file}[/].",
+                title="Already running",
             ))
             return
         # Validate BEFORE forking — otherwise the user would only find the
@@ -527,8 +535,8 @@ def daemon(
         _preflight_or_exit(load_config())
         start_daemon_background(pid_file, log_file)
         console.print(ui.success_panel(
-            f"Daemon en segundo plano. Logs → [cyan]{log_file}[/].",
-            title="Arrancado",
+            f"Daemon running in the background. Logs → [cyan]{log_file}[/].",
+            title="Started",
         ))
     elif action == "stop":
         # Stop background daemon
@@ -551,7 +559,7 @@ def daemon(
 
 @app.command(rich_help_panel="Knowledge ops")
 def tags(
-    limit: int = typer.Option(30, "--limit", "-n", help="Cuántos tags mostrar (por frecuencia)"),
+    limit: int = typer.Option(30, "--limit", "-n", help="How many tags to show (by frequency)"),
 ):
     """🏷️  List the most-used tags and how many notes each one labels."""
     setup_logger()
@@ -563,8 +571,8 @@ def tags(
     rows = db.get_tag_frequency(limit=limit)
     if not rows:
         console.print(ui.info_panel(
-            "Todavía no hay tags registrados. Ejecuta [cyan]grimoire scan --no-dry-run[/] primero.",
-            title="Sin tags",
+            "No tags recorded yet. Run [cyan]grimoire scan --no-dry-run[/] first.",
+            title="No tags",
         ))
         return
 
@@ -575,14 +583,14 @@ def tags(
         ("  ", ""),
         (f"{len(rows)} tags", "grimoire.accent"),
         ("  ·  ", "grimoire.muted"),
-        (f"{db.get_tag_count()} únicos en uso", "grimoire.muted"),
+        (f"{db.get_tag_count()} unique in use", "grimoire.muted"),
     ))
 
 
 @app.command(rich_help_panel="System")
 def prune(
     vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
-    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Solo listar, no borrar"),
+    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="List only, don't delete"),
 ):
     """
     🧹 Remove DB entries for notes that no longer exist on disk.
@@ -615,12 +623,12 @@ def prune(
     stale = db.find_stale_notes(existing_paths)
     if not stale:
         console.print(ui.success_panel(
-            "Ninguna nota huérfana. La base de datos está sincronizada con el vault.",
-            title="Todo limpio",
+            "No orphaned notes. The database is synchronised with the vault.",
+            title="All clean",
         ))
         return
 
-    ui.section(f"Notas huérfanas detectadas ({len(stale)})")
+    ui.section(f"Orphaned notes detected ({len(stale)})")
     for _, path in stale[:50]:
         try:
             display = Path(path).relative_to(actual_vault_path)
@@ -631,11 +639,11 @@ def prune(
             (str(display), "grimoire.muted"),
         ))
     if len(stale) > 50:
-        console.print(Text(f"  … y {len(stale) - 50} más", style="grimoire.muted"))
+        console.print(Text(f"  … and {len(stale) - 50} more", style="grimoire.muted"))
 
     if dry_run:
         console.print()
-        ui.tip("Ensayo completado. Ejecuta [cyan]grimoire prune --no-dry-run[/] para borrar.")
+        ui.tip("Dry run complete. Run [cyan]grimoire prune --no-dry-run[/] to delete.")
         return
 
     # Delete records from DB
@@ -645,10 +653,10 @@ def prune(
     console.print()
     console.print(ui.success_panel(
         ui.kv_table([
-            ("Notas borradas", Text(str(removed), style="grimoire.success")),
-            ("Tags purgados", Text(str(purged), style="grimoire.accent")),
+            ("Notes deleted", Text(str(removed), style="grimoire.success")),
+            ("Tags purged",   Text(str(purged),  style="grimoire.accent")),
         ]),
-        title="Prune completado",
+        title="Prune complete",
     ))
 
 
@@ -680,23 +688,23 @@ def status():
 
     ui.section("Vault")
     console.print(ui.kv_table([
-        ("Ruta",          Text(config.vault.path, style="grimoire.accent")),
-        ("Notas",         ui.coverage_bar(tagged_notes, total_notes)),
-        ("Chunks",        Text(str(total_embeddings), style="grimoire.accent")),
-        ("Cache",         Text(f"{cached_embeddings} vectores", style="grimoire.accent")),
-        ("Modo",          _mode_badge(config.output.dry_run)),
-        ("Auto-commit",   Text("sí" if config.output.auto_commit else "no", style="grimoire.accent")),
+        ("Path",         Text(config.vault.path, style="grimoire.accent")),
+        ("Notes",        ui.coverage_bar(tagged_notes, total_notes)),
+        ("Chunks",       Text(str(total_embeddings), style="grimoire.accent")),
+        ("Cache",        Text(f"{cached_embeddings} vectors", style="grimoire.accent")),
+        ("Mode",         _mode_badge(config.output.dry_run)),
+        ("Auto-commit",  Text("yes" if config.output.auto_commit else "no", style="grimoire.accent")),
     ]))
 
-    ui.section("Cognición")
+    ui.section("Cognition")
     console.print(ui.kv_table([
-        ("LLM",         Text(config.cognition.model_llm_local,        style="grimoire.accent")),
-        ("Embeddings",  Text(config.cognition.model_embeddings_local, style="grimoire.accent")),
-        ("Tags únicos", Text(str(unique_tags),                        style="grimoire.accent")),
-        ("Categorías",  Text(f"{len(category_rows)} activas · {categorised_notes} notas",
-                             style="grimoire.accent")),
-        ("Remoto",      Text("permitido" if config.cognition.allow_remote else "local-first",
-                             style="grimoire.warning" if config.cognition.allow_remote else "grimoire.success")),
+        ("LLM",          Text(config.cognition.model_llm_local,        style="grimoire.accent")),
+        ("Embeddings",   Text(config.cognition.model_embeddings_local, style="grimoire.accent")),
+        ("Unique tags",  Text(str(unique_tags),                        style="grimoire.accent")),
+        ("Categories",   Text(f"{len(category_rows)} active · {categorised_notes} notes",
+                              style="grimoire.accent")),
+        ("Remote",       Text("allowed" if config.cognition.allow_remote else "local-first",
+                              style="grimoire.warning" if config.cognition.allow_remote else "grimoire.success")),
     ]))
 
     ui.section("Daemon")
@@ -709,17 +717,17 @@ def status():
     # ── Hints ───────────────────────────────────────────────────────────────
     if total_notes == 0:
         console.print()
-        ui.tip("El vault está vacío. Añade notas [bold].md[/] y lanza [cyan]grimoire scan[/].")
+        ui.tip("The vault is empty. Add [bold].md[/] notes and run [cyan]grimoire scan[/].")
     elif total_embeddings == 0:
         console.print()
-        ui.tip("Hay notas pero ninguna indexada. Prueba [cyan]grimoire scan --no-dry-run[/].")
+        ui.tip("There are notes but none indexed. Try [cyan]grimoire scan --no-dry-run[/].")
     elif config.output.dry_run:
         console.print()
-        ui.tip("Estás en modo ensayo. Ajusta [cyan]dry_run = false[/] en [cyan]grimoire.toml[/] para escribir.")
+        ui.tip("You are in dry-run mode. Set [cyan]dry_run = false[/] in [cyan]grimoire.toml[/] to write.")
 
 
 category_app = typer.Typer(
-    help="🗂️  Manage the hierarchical category tree (Historia · Ciencia · …).",
+    help="🗂️  Manage the hierarchical category tree (History · Science · …).",
     rich_markup_mode="rich",
     no_args_is_help=True,
 )
@@ -878,16 +886,16 @@ def category_notes(
     canonical = vault_tax.categories.resolve(path)
     if canonical is None:
         console.print(ui.warn_panel(
-            f"[bold]{path}[/] no existe en el árbol. Usa [cyan]grimoire category list[/] para ver las disponibles.",
-            title="Categoría desconocida",
+            f"[bold]{path}[/] does not exist in the tree. Use [cyan]grimoire category list[/] to see available ones.",
+            title="Unknown category",
         ))
         raise typer.Exit(code=1)
 
     rows = db.get_notes_by_category(canonical, recursive=recursive)
     if not rows:
         console.print(ui.info_panel(
-            f"No hay notas bajo [bold]{canonical}[/].",
-            title="Vacía",
+            f"No notes under [bold]{canonical}[/].",
+            title="Empty",
         ))
         return
 
@@ -906,7 +914,7 @@ def category_notes(
     console.print()
     console.print(Text.assemble(
         ("  ", ""),
-        (f"{len(rows)} notas", "grimoire.accent"),
+        (f"{len(rows)} notes", "grimoire.accent"),
     ))
 
 
@@ -931,18 +939,18 @@ def preflight(
 
     if report.errors:
         console.print(ui.error_panel(
-            f"{len(report.errors)} error(es) bloqueante(s). Soluciónalos antes de lanzar `scan` o `ask`.",
+            f"{len(report.errors)} blocking error(s). Fix them before running `scan` or `ask`.",
             title="Preflight",
         ))
         raise typer.Exit(code=1)
     if report.warnings:
         console.print(ui.warn_panel(
-            f"{len(report.warnings)} aviso(s) no bloqueante(s).",
+            f"{len(report.warnings)} non-blocking warning(s).",
             title="Preflight",
         ))
         return
     console.print(ui.success_panel(
-        "Todos los checks pasaron. El pipeline está listo.",
+        "All checks passed. The pipeline is ready.",
         title="Preflight",
     ))
 
@@ -990,7 +998,7 @@ def maintenance_run(
     console.print()
     console.print(Text.assemble(
         ("  ◆ ", "grimoire.rune"),
-        ("Tags purgados", "grimoire.primary"),
+        ("Tags purged", "grimoire.primary"),
         ("  ", ""),
         (str(report.tags_purged), "grimoire.accent"),
     ))
@@ -1011,7 +1019,7 @@ def maintenance_run(
             ("  ◆ ", "grimoire.rune"),
             ("VACUUM", "grimoire.primary"),
             ("  ", ""),
-            (f"{_fmt_bytes(reclaimed)} liberados", "grimoire.accent"),
+            (f"{_fmt_bytes(reclaimed)} freed", "grimoire.accent"),
             ("  ", ""),
             (
                 f"({_fmt_bytes(report.vacuum.get('before_bytes', 0))} → "
@@ -1022,7 +1030,7 @@ def maintenance_run(
     if report.skipped:
         console.print(Text.assemble(
             ("  ↳ ", "grimoire.muted"),
-            (f"Omitido: {', '.join(report.skipped)}", "grimoire.muted"),
+            (f"Skipped: {', '.join(report.skipped)}", "grimoire.muted"),
         ))
     console.print()
     console.print(Text.assemble(
@@ -1033,17 +1041,3 @@ def maintenance_run(
 
 if __name__ == "__main__":
     app()
-
-p()
-app()
-
-p()
-()
-
-p()
-()
-
-p()
-()
-)
-()

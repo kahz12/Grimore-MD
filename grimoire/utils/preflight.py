@@ -226,10 +226,10 @@ class PreflightChecker:
                 name="vault_accessible",
                 ok=False,
                 severity="error",
-                message=f"El vault {path} no existe.",
+                message=f"The vault {path} does not exist.",
                 fix=(
-                    f"Crea el directorio (`mkdir -p {path}`) o actualiza "
-                    "`[vault].path` en grimoire.toml."
+                    f"Create the directory (`mkdir -p {path}`) or update "
+                    "`[vault].path` in grimoire.toml."
                 ),
             ))
             return
@@ -238,8 +238,8 @@ class PreflightChecker:
                 name="vault_accessible",
                 ok=False,
                 severity="error",
-                message=f"La ruta {path} existe pero no es un directorio.",
-                fix="Ajusta `[vault].path` para que apunte a una carpeta.",
+                message=f"The path {path} exists but is not a directory.",
+                fix="Update `[vault].path` to point to a directory.",
             ))
             return
         if not os.access(path, os.R_OK):
@@ -247,14 +247,14 @@ class PreflightChecker:
                 name="vault_accessible",
                 ok=False,
                 severity="error",
-                message=f"El vault {path} no es legible con el usuario actual.",
-                fix=f"Revisa los permisos: `chmod -R u+r {path}`.",
+                message=f"The vault {path} is not readable by the current user.",
+                fix=f"Check permissions: `chmod -R u+r {path}`.",
             ))
             return
         report.add(CheckResult(
             name="vault_accessible",
             ok=True,
-            message=f"Vault accesible en {path}.",
+            message=f"Vault accessible at {path}.",
         ))
 
     def _check_git_ready(self, report: PreflightReport) -> None:
@@ -264,7 +264,7 @@ class PreflightChecker:
             report.add(CheckResult(
                 name="git_ready",
                 ok=True,
-                message="Repositorio git detectado; auto_commit funcionará.",
+                message="Git repository detected; auto_commit will work.",
             ))
         else:
             report.add(CheckResult(
@@ -272,11 +272,11 @@ class PreflightChecker:
                 ok=False,
                 severity="warning",
                 message=(
-                    "`auto_commit` está activo pero el vault no es un repositorio git; "
-                    "los snapshots de seguridad no se crearán."
+                    "`auto_commit` is enabled but the vault is not a git repository; "
+                    "safety snapshots will not be created."
                 ),
                 fix=(
-                    f"Inicializa el repo: `git -C {self.config.vault.path} init` "
-                    "o desactiva `[output].auto_commit`."
+                    f"Initialise the repo: `git -C {self.config.vault.path} init` "
+                    "or disable `[output].auto_commit`."
                 ),
             ))

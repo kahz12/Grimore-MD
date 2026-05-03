@@ -19,10 +19,10 @@ class TestCategoryColumn:
     def test_set_and_clear_category(self, tmp_path):
         db = _make_db(tmp_path)
         nid = _add_note(db, "a.md", "A")
-        db.set_note_category(nid, "Ciencia/Física")
+        db.set_note_category(nid, "Science/Physics")
         with db._get_connection() as conn:
             row = conn.execute("SELECT category FROM notes WHERE id = ?", (nid,)).fetchone()
-        assert row[0] == "Ciencia/Física"
+        assert row[0] == "Science/Physics"
 
         db.set_note_category(nid, None)
         with db._get_connection() as conn:
@@ -36,12 +36,12 @@ class TestCategoryFrequency:
         a = _add_note(db, "a.md", "A")
         b = _add_note(db, "b.md", "B")
         c = _add_note(db, "c.md", "C")
-        db.set_note_category(a, "Ciencia")
-        db.set_note_category(b, "Ciencia")
-        db.set_note_category(c, "Arte")
+        db.set_note_category(a, "Science")
+        db.set_note_category(b, "Science")
+        db.set_note_category(c, "Art")
 
         freq = db.get_category_frequency()
-        assert freq == [("Ciencia", 2), ("Arte", 1)]
+        assert freq == [("Science", 2), ("Art", 1)]
 
     def test_ignores_null_and_empty(self, tmp_path):
         db = _make_db(tmp_path)
@@ -59,14 +59,14 @@ class TestCountNotesUnderCategory:
         a = _add_note(db, "a.md", "A")
         b = _add_note(db, "b.md", "B")
         c = _add_note(db, "c.md", "C")
-        db.set_note_category(a, "Ciencia")
-        db.set_note_category(b, "Ciencia/Física")
-        db.set_note_category(c, "Arte")
+        db.set_note_category(a, "Science")
+        db.set_note_category(b, "Science/Physics")
+        db.set_note_category(c, "Art")
 
-        assert db.count_notes_under_category("Ciencia") == 2
-        assert db.count_notes_under_category("Ciencia/Física") == 1
-        assert db.count_notes_under_category("Arte") == 1
-        assert db.count_notes_under_category("Matemáticas") == 0
+        assert db.count_notes_under_category("Science") == 2
+        assert db.count_notes_under_category("Science/Physics") == 1
+        assert db.count_notes_under_category("Art") == 1
+        assert db.count_notes_under_category("Mathematics") == 0
 
     def test_empty_path_returns_zero(self, tmp_path):
         db = _make_db(tmp_path)
@@ -98,10 +98,10 @@ class TestGetNotesByCategory:
         db = _make_db(tmp_path)
         a = _add_note(db, "a.md", "A")
         b = _add_note(db, "b.md", "B")
-        db.set_note_category(a, "Ciencia")
-        db.set_note_category(b, "Ciencia/Física")
+        db.set_note_category(a, "Science")
+        db.set_note_category(b, "Science/Physics")
 
-        rows = db.get_notes_by_category("Ciencia", recursive=True)
+        rows = db.get_notes_by_category("Science", recursive=True)
         titles = {r[2] for r in rows}
         assert titles == {"A", "B"}
 
@@ -109,10 +109,10 @@ class TestGetNotesByCategory:
         db = _make_db(tmp_path)
         a = _add_note(db, "a.md", "A")
         b = _add_note(db, "b.md", "B")
-        db.set_note_category(a, "Ciencia")
-        db.set_note_category(b, "Ciencia/Física")
+        db.set_note_category(a, "Science")
+        db.set_note_category(b, "Science/Physics")
 
-        rows = db.get_notes_by_category("Ciencia", recursive=False)
+        rows = db.get_notes_by_category("Science", recursive=False)
         titles = {r[2] for r in rows}
         assert titles == {"A"}
 

@@ -14,10 +14,10 @@ from grimoire.memory.taxonomy import (
 
 class TestNormalize:
     def test_lowercases(self):
-        assert Taxonomy().normalize("Filosofia") == "filosofia"
+        assert Taxonomy().normalize("Philosophy") == "philosophy"
 
     def test_strips_accents(self):
-        assert Taxonomy().normalize("Ocultismo Clásico") == "ocultismo-clasico"
+        assert Taxonomy().normalize("Classical Occultism") == "classical-occultism"
 
     def test_non_alnum_to_hyphens(self):
         assert Taxonomy().normalize("foo/bar_baz!qux") == "foo-bar-baz-qux"
@@ -50,10 +50,10 @@ class TestReconcile:
         assert tax.reconcile(["b", "a", "c"]) == ["b", "a", "c"]
 
     def test_deduplicates_after_canonicalization(self):
-        tax = Taxonomy(["Filosofia"])
-        # both map to canonical "Filosofia"; only one should survive
-        out = tax.reconcile(["filosofia", "Filosofia"])
-        assert out == ["Filosofia"]
+        tax = Taxonomy(["Philosophy"])
+        # both map to canonical "Philosophy"; only one should survive
+        out = tax.reconcile(["philosophy", "Philosophy"])
+        assert out == ["Philosophy"]
 
     def test_skips_empty_tags(self):
         assert Taxonomy().reconcile(["", "a", ""]) == ["a"]
@@ -69,10 +69,10 @@ class TestLoadTaxonomyFromVault:
 
     def test_loads_valid_yaml(self, tmp_path):
         (tmp_path / "taxonomy.yml").write_text(
-            "vocabulary:\n  - filosofia\n  - nihilismo\n"
+            "vocabulary:\n  - philosophy\n  - nihilism\n"
         )
         vt = load_taxonomy_from_vault(tmp_path)
-        assert vt.tags.vocabulary == ["filosofia", "nihilismo"]
+        assert vt.tags.vocabulary == ["philosophy", "nihilism"]
 
     def test_malformed_yaml_returns_empty(self, tmp_path):
         (tmp_path / "taxonomy.yml").write_text("vocabulary: [unclosed\n")
@@ -86,24 +86,24 @@ class TestLoadTaxonomyFromVault:
 
     def test_filters_non_string_entries(self, tmp_path):
         (tmp_path / "taxonomy.yml").write_text(
-            "vocabulary:\n  - filosofia\n  - null\n  - \"\"\n  - nihilismo\n"
+            "vocabulary:\n  - philosophy\n  - null\n  - \"\"\n  - nihilism\n"
         )
         vt = load_taxonomy_from_vault(tmp_path)
-        assert vt.tags.vocabulary == ["filosofia", "nihilismo"]
+        assert vt.tags.vocabulary == ["philosophy", "nihilism"]
 
     def test_categories_from_nested_yaml(self, tmp_path):
         (tmp_path / "taxonomy.yml").write_text(
             "categories:\n"
-            "  Ciencia:\n"
-            "    Física:\n"
-            "      - Cuántica\n"
-            "  Arte: []\n"
+            "  Science:\n"
+            "    Physics:\n"
+            "      - Quantum\n"
+            "  Art: []\n"
         )
         vt = load_taxonomy_from_vault(tmp_path)
-        assert vt.categories.has("Ciencia")
-        assert vt.categories.has("Ciencia/Física")
-        assert vt.categories.has("Ciencia/Física/Cuántica")
-        assert vt.categories.has("Arte")
+        assert vt.categories.has("Science")
+        assert vt.categories.has("Science/Physics")
+        assert vt.categories.has("Science/Physics/Quantum")
+        assert vt.categories.has("Art")
 
     def test_categories_key_present_but_empty_respects_user(self, tmp_path):
         (tmp_path / "taxonomy.yml").write_text("categories:\n")
@@ -118,15 +118,15 @@ class TestCategoryTree:
 
     def test_add_creates_ancestors(self):
         tree = CategoryTree()
-        assert tree.add("Ciencia/Física/Cuántica") is True
-        assert tree.has("Ciencia")
-        assert tree.has("Ciencia/Física")
-        assert tree.has("Ciencia/Física/Cuántica")
+        assert tree.add("Science/Physics/Quantum") is True
+        assert tree.has("Science")
+        assert tree.has("Science/Physics")
+        assert tree.has("Science/Physics/Quantum")
 
     def test_add_existing_returns_false(self):
         tree = CategoryTree()
-        tree.add("Arte")
-        assert tree.add("Arte") is False
+        tree.add("Art")
+        assert tree.add("Art") is False
 
     def test_add_rejects_empty_path(self):
         tree = CategoryTree()
@@ -135,26 +135,26 @@ class TestCategoryTree:
 
     def test_remove_drops_subtree(self):
         tree = CategoryTree()
-        tree.add("Ciencia/Física/Cuántica")
-        tree.add("Ciencia/Biología")
-        assert tree.remove("Ciencia/Física") is True
-        assert not tree.has("Ciencia/Física")
-        assert not tree.has("Ciencia/Física/Cuántica")
-        assert tree.has("Ciencia/Biología")
+        tree.add("Science/Physics/Quantum")
+        tree.add("Science/Biology")
+        assert tree.remove("Science/Physics") is True
+        assert not tree.has("Science/Physics")
+        assert not tree.has("Science/Physics/Quantum")
+        assert tree.has("Science/Biology")
 
     def test_remove_missing_returns_false(self):
         assert CategoryTree().remove("Nope") is False
 
     def test_resolve_normalises_input(self):
         tree = CategoryTree()
-        tree.add("Ciencia/Física")
-        assert tree.resolve("ciencia / fisica") == "Ciencia/Física"
-        assert tree.resolve("CIENCIA/FÍSICA") == "Ciencia/Física"
+        tree.add("Science/Physics")
+        assert tree.resolve("science / physics") == "Science/Physics"
+        assert tree.resolve("SCIENCE/PHYSICS") == "Science/Physics"
 
     def test_resolve_unknown_returns_none(self):
         tree = CategoryTree()
-        tree.add("Arte")
-        assert tree.resolve("Ciencia") is None
+        tree.add("Art")
+        assert tree.resolve("Science") is None
 
     def test_paths_preorder(self):
         tree = CategoryTree()
@@ -168,13 +168,13 @@ class TestCategoryTree:
 
     def test_to_yaml_dict_roundtrips(self, tmp_path):
         tree = CategoryTree()
-        tree.add("Ciencia/Física/Cuántica")
-        tree.add("Arte")
+        tree.add("Science/Physics/Quantum")
+        tree.add("Art")
         yaml_dict = tree.to_yaml_dict()
-        assert "Ciencia" in yaml_dict
-        assert "Física" in yaml_dict["Ciencia"]
-        assert "Cuántica" in yaml_dict["Ciencia"]["Física"]
-        assert yaml_dict["Arte"] == []
+        assert "Science" in yaml_dict
+        assert "Physics" in yaml_dict["Science"]
+        assert "Quantum" in yaml_dict["Science"]["Physics"]
+        assert yaml_dict["Art"] == []
 
 
 class TestSaveTaxonomyToVault:
@@ -191,6 +191,3 @@ class TestSaveTaxonomyToVault:
         assert reloaded.tags.vocabulary == ["philosophy"]
         assert reloaded.categories.has("History/Modern")
         assert reloaded.categories.has("Science/Physics/Quantum")
-)
-ca")
-)

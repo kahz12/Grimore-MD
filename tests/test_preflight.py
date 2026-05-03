@@ -104,7 +104,7 @@ class TestOllamaReachable:
 
         ollama = next(c for c in report.checks if c.name == "ollama_reachable")
         assert ollama.ok is True
-        assert "2 modelos" in ollama.message
+        assert "2 models" in ollama.message
 
     def test_connection_refused_is_actionable(self, tmp_path):
         config = _make_config(tmp_path)
@@ -188,7 +188,7 @@ class TestVaultAccess:
 
         vault = next(c for c in report.checks if c.name == "vault_accessible")
         assert vault.ok is False
-        assert "no existe" in vault.message
+        assert "does not exist" in vault.message
 
     def test_path_is_file_not_dir(self, tmp_path):
         config = _make_config(tmp_path)
@@ -200,7 +200,7 @@ class TestVaultAccess:
 
         vault = next(c for c in report.checks if c.name == "vault_accessible")
         assert vault.ok is False
-        assert "no es un directorio" in vault.message
+        assert "not a directory" in vault.message
 
 
 # ── Git readiness ───────────────────────────────────────────────────────────

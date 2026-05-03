@@ -66,11 +66,11 @@ class Taxonomy:
 
 
 DEFAULT_ROOTS: tuple[str, ...] = (
-    "Historia",
-    "Ciencia",
-    "Tecnología",
-    "Matemáticas",
-    "Arte",
+    "History",
+    "Science",
+    "Technology",
+    "Mathematics",
+    "Art",
 )
 
 
@@ -80,7 +80,7 @@ class CategoryTree:
 
     Internally we store the tree as ``dict[canonical_path, list[canonical_path]]``
     mapping each node (``""`` = root) to the *ordered* list of its direct
-    children, keyed by the canonical display path (``"Ciencia/Física"``).
+    children, keyed by the canonical display path (``"Science/Physics"``).
 
     Lookup by user/LLM input (potentially un-accented, lowercase, slash-form)
     goes through :py:meth:`resolve`, which normalises each segment.
@@ -113,7 +113,7 @@ class CategoryTree:
         * ``None`` / missing → empty tree.
         * dict: keys are categories; values are either ``None``, ``[]``, a list
           of leaf strings, or a nested dict following the same schema.
-        * list of strings: flat root categories with no subcategories.
+        * list of strings: flat root categories with no children.
         """
         tree = cls()
         tree._ingest(raw, parent="")
@@ -371,4 +371,3 @@ def save_taxonomy_to_vault(vault_path: Path, taxonomy: VaultTaxonomy) -> Path:
     atomic_write(target, lambda fh: fh.write(body.encode("utf-8")), mode="wb")
     logger.info("taxonomy_saved", path=str(target))
     return target
-arget
