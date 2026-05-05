@@ -26,6 +26,11 @@ from grimoire.operations import (
     _do_chronicler_check,
     _do_chronicler_list,
     _do_chronicler_verify,
+    _do_mirror_dismiss,
+    _do_mirror_list,
+    _do_mirror_resolve,
+    _do_mirror_scan,
+    _do_mirror_show,
 )
 from grimoire.session import Session
 from grimoire.utils import ui
@@ -101,6 +106,7 @@ class GrimoireShell:
             "prune": self._cmd_prune,
             "category": self._cmd_category,
             "chronicler": self._cmd_chronicler,
+            "mirror": self._cmd_mirror,
             "refresh": self._cmd_refresh,
             "help": self._cmd_help,
             "exit": self._cmd_exit,
@@ -346,6 +352,56 @@ class GrimoireShell:
                 (sub, "grimoire.primary"),
             ))
 
+    def _cmd_mirror(self, argv: Sequence[str]) -> None:
+        if not argv:
+            _do_mirror_list(self.session)
+            return
+        sub, *rest = argv
+        if sub == "scan":
+            parser = _NonExitingArgParser(prog="mirror scan", add_help=True)
+            parser.add_argument("-k", "--top-k", type=int, default=5)
+            parser.add_argument("--full", action="store_true")
+            args = parser.parse_args(rest)
+            _do_mirror_scan(self.session, top_k=args.top_k, full=args.full)
+        elif sub == "show":
+            if not rest:
+                console.print(Text("mirror show: missing id", style="grimoire.danger"))
+                return
+            try:
+                cid = int(rest[0])
+            except ValueError:
+                console.print(Text(f"mirror show: id must be an integer, got {rest[0]!r}",
+                                   style="grimoire.danger"))
+                return
+            _do_mirror_show(self.session, cid)
+        elif sub == "dismiss":
+            if not rest:
+                console.print(Text("mirror dismiss: missing id", style="grimoire.danger"))
+                return
+            try:
+                cid = int(rest[0])
+            except ValueError:
+                console.print(Text(f"mirror dismiss: id must be an integer, got {rest[0]!r}",
+                                   style="grimoire.danger"))
+                return
+            _do_mirror_dismiss(self.session, cid)
+        elif sub == "resolve":
+            if not rest:
+                console.print(Text("mirror resolve: missing id", style="grimoire.danger"))
+                return
+            try:
+                cid = int(rest[0])
+            except ValueError:
+                console.print(Text(f"mirror resolve: id must be an integer, got {rest[0]!r}",
+                                   style="grimoire.danger"))
+                return
+            _do_mirror_resolve(self.session, cid)
+        else:
+            console.print(Text.assemble(
+                ("Unknown mirror subcommand: ", "grimoire.danger"),
+                (sub, "grimoire.primary"),
+            ))
+
     # ── help text ──────────────────────────────────────────────────────
 
     _help_text = {
@@ -366,6 +422,10 @@ class GrimoireShell:
         "chronicler": (
             "chronicler list [--decay] | check <path> | verify <path>\n"
             "  Track which notes have likely gone stale."
+        ),
+        "mirror": (
+            "mirror | mirror scan [-k N] [--full] | show <id> | dismiss <id> | resolve <id>\n"
+            "  The Black Mirror — surface contradictions across notes."
         ),
         "refresh": "refresh\n  Drop cached services so the next call rebuilds them.",
         "help": "help [command]\n  Show this list, or details for one command.",

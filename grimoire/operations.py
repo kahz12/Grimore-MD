@@ -264,3 +264,172 @@ def _do_chronicler_verify(session: Session, path: str) -> None:
             f"The note's category is exempt — nothing to update.",
             title="Chronicler",
         ))
+
+
+# ── Black Mirror ─────────────────────────────────────────────────────────
+
+
+_SEVERITY_STYLE = {
+    "high": "grimoire.danger",
+    "medium": "grimoire.warning",
+    "low": "grimoire.muted",
+}
+
+
+def _do_mirror_list(session: Session) -> None:
+    """Body of ``grimoire mirror`` (default — list open contradictions)."""
+    from grimoire.cognition.mirror import Mirror
+
+    rows = Mirror(session).list_open()
+    if not rows:
+        total_seen = session.db.count_open_contradictions()  # 0 here
+        if session.db.count_claims() == 0:
+            console.print(ui.info_panel(
+                "No claims indexed yet. Run [cyan]grimoire mirror scan[/] first.",
+                title="Black Mirror",
+            ))
+        else:
+            console.print(ui.success_panel(
+                "No open contradictions. The vault is internally consistent.",
+                title="Black Mirror",
+            ))
+        return
+
+    ui.section(f"Open contradictions ({len(rows)})")
+    vault_root = session.vault_root.resolve()
+    for r in rows:
+        try:
+            display_a = Path(r.note_a).relative_to(vault_root)
+        except ValueError:
+            display_a = Path(r.note_a).name
+        try:
+            display_b = Path(r.note_b).relative_to(vault_root)
+        except ValueError:
+            display_b = Path(r.note_b).name
+        style = _SEVERITY_STYLE.get(r.severity, "grimoire.muted")
+        console.print(Text.assemble(
+            ("  ◆ ", "grimoire.rune"),
+            (f"#{r.id}", "grimoire.accent"),
+            ("  ", ""),
+            (r.severity.upper().ljust(6), style),
+            ("  ", ""),
+            (r.explanation, "grimoire.primary"),
+        ))
+        console.print(Text.assemble(
+            ("       A: ", "grimoire.muted"),
+            (str(display_a), "grimoire.muted"),
+            ("  ", ""),
+            (r.claim_a[:80], ""),
+        ))
+        console.print(Text.assemble(
+            ("       B: ", "grimoire.muted"),
+            (str(display_b), "grimoire.muted"),
+            ("  ", ""),
+            (r.claim_b[:80], ""),
+        ))
+    console.print()
+    ui.tip("Run [cyan]grimoire mirror show <id>[/] for full detail, "
+           "[cyan]dismiss <id>[/] for a false positive, "
+           "[cyan]resolve <id>[/] when you've fixed one note.")
+
+
+def _do_mirror_scan(session: Session, *, top_k: int = 5, full: bool = False) -> None:
+    """Body of ``grimoire mirror scan``.
+
+    Cost is dominated by LLM calls; we render a Rich progress bar so a
+    cold scan over a large vault doesn't look frozen.
+    """
+    from grimoire.cognition.mirror import Mirror
+
+    mirror = Mirror(session)
+    mode = "full" if full else "incremental"
+    ui.section(f"Mirror scan ({mode}, top_k={top_k})")
+
+    with ui.progress_bar() as progress:
+        extract_task = progress.add_task("Extracting claims", total=None)
+        pair_task = progress.add_task("Checking pairs", total=None, visible=False)
+
+        def on_progress(stage: str, current: int, total: int) -> None:
+            if stage == "extract":
+                if total and progress.tasks[extract_task].total != total:
+                    progress.update(extract_task, total=total)
+                progress.update(extract_task, completed=current)
+            elif stage == "pairs":
+                progress.update(pair_task, visible=True)
+                if total and progress.tasks[pair_task].total != total:
+                    progress.update(pair_task, total=total)
+                progress.update(pair_task, completed=current)
+
+        report = mirror.scan(top_k=top_k, full=full, progress=on_progress)
+
+    console.print()
+    console.print(ui.success_panel(
+        ui.kv_table([
+            ("Notes scanned",        Text(str(report.notes_scanned),        style="grimoire.accent")),
+            ("Claims extracted",     Text(str(report.claims_extracted),     style="grimoire.success")),
+            ("Pairs checked",        Text(str(report.pairs_checked),        style="grimoire.accent")),
+            ("Contradictions found", Text(str(report.contradictions_found), style="grimoire.warning" if report.contradictions_found else "grimoire.muted")),
+        ]),
+        title="Mirror scan summary",
+    ))
+    if report.contradictions_found:
+        ui.tip("Run [cyan]grimoire mirror[/] to review the new findings.")
+
+
+def _do_mirror_show(session: Session, contradiction_id: int) -> None:
+    from grimoire.cognition.mirror import Mirror
+
+    detail = Mirror(session).show(contradiction_id)
+    if detail is None:
+        console.print(ui.error_panel(
+            f"No contradiction with id [bold]{contradiction_id}[/].",
+            title="Black Mirror",
+        ))
+        return
+    style = _SEVERITY_STYLE.get(detail.severity, "grimoire.muted")
+    ui.section(f"Contradiction #{detail.id}  ·  {detail.severity.upper()}  ·  {detail.status}")
+    console.print(Text.assemble(
+        ("  ", ""),
+        (detail.explanation, style),
+    ))
+    console.print()
+    console.print(Text.assemble(("  Claim A  ", "grimoire.accent"), (detail.note_a, "grimoire.muted")))
+    console.print(Text.assemble(("    ", ""), (detail.claim_a, "grimoire.primary")))
+    if detail.context_a:
+        console.print(Text.assemble(("    ↳ ", "grimoire.muted"), (detail.context_a[:600], "grimoire.muted")))
+    console.print()
+    console.print(Text.assemble(("  Claim B  ", "grimoire.accent"), (detail.note_b, "grimoire.muted")))
+    console.print(Text.assemble(("    ", ""), (detail.claim_b, "grimoire.primary")))
+    if detail.context_b:
+        console.print(Text.assemble(("    ↳ ", "grimoire.muted"), (detail.context_b[:600], "grimoire.muted")))
+
+
+def _do_mirror_dismiss(session: Session, contradiction_id: int) -> None:
+    from grimoire.cognition.mirror import Mirror
+
+    if Mirror(session).dismiss(contradiction_id):
+        console.print(ui.success_panel(
+            f"Contradiction #{contradiction_id} dismissed. "
+            f"It will not be re-flagged on future scans.",
+            title="Black Mirror",
+        ))
+    else:
+        console.print(ui.error_panel(
+            f"No contradiction with id [bold]{contradiction_id}[/].",
+            title="Black Mirror",
+        ))
+
+
+def _do_mirror_resolve(session: Session, contradiction_id: int) -> None:
+    from grimoire.cognition.mirror import Mirror
+
+    if Mirror(session).resolve(contradiction_id):
+        console.print(ui.success_panel(
+            f"Contradiction #{contradiction_id} marked as resolved.",
+            title="Black Mirror",
+        ))
+    else:
+        console.print(ui.error_panel(
+            f"No contradiction with id [bold]{contradiction_id}[/].",
+            title="Black Mirror",
+        ))

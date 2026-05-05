@@ -24,6 +24,11 @@ from grimoire.operations import (
     _do_chronicler_check,
     _do_chronicler_list,
     _do_chronicler_verify,
+    _do_mirror_dismiss,
+    _do_mirror_list,
+    _do_mirror_resolve,
+    _do_mirror_scan,
+    _do_mirror_show,
 )
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
@@ -1023,6 +1028,92 @@ def chronicler_verify_cmd(
     ui.command_header("chronicler verify", path)
     try:
         _do_chronicler_verify(session, path)
+    finally:
+        session.close()
+
+
+mirror_app = typer.Typer(
+    help="🪞 The Black Mirror — surface contradictions across notes.",
+    rich_markup_mode="rich",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(mirror_app, name="mirror", rich_help_panel="Knowledge ops")
+
+
+@mirror_app.callback(invoke_without_command=True)
+def mirror_default(ctx: typer.Context):
+    """🪞 List open contradictions when no subcommand is given."""
+    if ctx.invoked_subcommand is not None:
+        return
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    ui.command_header("mirror", config.vault.path)
+    try:
+        _do_mirror_list(session)
+    finally:
+        session.close()
+
+
+@mirror_app.command("scan")
+def mirror_scan_cmd(
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Neighbors per claim during pair-search."),
+    full: bool = typer.Option(False, "--full", help="Re-extract every note (cold rebuild)."),
+):
+    """🔭 Extract claims and check pairs for contradictions."""
+    setup_logger()
+    config = load_config()
+    _preflight_or_exit(config, check_git=False)
+    session = Session(config)
+    ui.command_header("mirror scan", config.vault.path)
+    try:
+        _do_mirror_scan(session, top_k=top_k, full=full)
+    finally:
+        session.close()
+
+
+@mirror_app.command("show")
+def mirror_show_cmd(
+    contradiction_id: int = typer.Argument(..., help="Contradiction id (from `grimoire mirror`)."),
+):
+    """🔍 Show a contradiction in full, with surrounding context."""
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    ui.command_header("mirror show", str(contradiction_id))
+    try:
+        _do_mirror_show(session, contradiction_id)
+    finally:
+        session.close()
+
+
+@mirror_app.command("dismiss")
+def mirror_dismiss_cmd(
+    contradiction_id: int = typer.Argument(..., help="Contradiction id."),
+):
+    """🚫 Mark a contradiction as a false positive (won't be re-flagged)."""
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    ui.command_header("mirror dismiss", str(contradiction_id))
+    try:
+        _do_mirror_dismiss(session, contradiction_id)
+    finally:
+        session.close()
+
+
+@mirror_app.command("resolve")
+def mirror_resolve_cmd(
+    contradiction_id: int = typer.Argument(..., help="Contradiction id."),
+):
+    """✅ Mark a contradiction as resolved (you fixed one of the notes)."""
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    ui.command_header("mirror resolve", str(contradiction_id))
+    try:
+        _do_mirror_resolve(session, contradiction_id)
     finally:
         session.close()
 
