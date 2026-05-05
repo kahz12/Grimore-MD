@@ -26,6 +26,38 @@ console = ui.console
 logger = get_logger(__name__)
 
 
+def _resolve_note_path(session: Session, raw: str) -> Optional[str]:
+    """Resolve a user-supplied note path to the absolute string the DB uses.
+
+    Tries ``raw`` as absolute, then relative-to-cwd, then relative-to-vault.
+    Validates the result sits inside the vault to keep ``..`` traversal out.
+    Returns None and prints a user-facing error on failure.
+    """
+    vault_root = session.vault_root.resolve()
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        candidate = candidate.resolve()
+    else:
+        cwd_try = (Path.cwd() / candidate).resolve()
+        candidate = cwd_try if cwd_try.exists() else (vault_root / raw).resolve()
+
+    try:
+        SecurityGuard.resolve_within_vault(candidate, vault_root)
+    except ValueError:
+        console.print(ui.error_panel(
+            f"[bold]{raw}[/] resolves outside the vault ({vault_root}).",
+            title="Invalid path",
+        ))
+        return None
+    if not candidate.exists():
+        console.print(ui.error_panel(
+            f"[bold]{raw}[/] does not exist.",
+            title="Note not found",
+        ))
+        return None
+    return str(candidate)
+
+
 def _do_ask(
     session: Session,
     question: str,
@@ -131,4 +163,104 @@ def _do_ask(
         console.print(ui.success_panel(
             f"Answer saved to [bold cyan]{export_path}[/].",
             title="Exported",
+        ))
+
+
+# ── Chronicler ───────────────────────────────────────────────────────────
+
+
+def _do_chronicler_list(session: Session, *, decay: bool = False) -> None:
+    """Body of ``grimoire chronicler list``.
+
+    ``decay`` is informational — the LLM verdicts are always shown when
+    present (since they have already been computed by ``check``). The
+    flag exists so the CLI surface mirrors the documented option.
+    """
+    from grimoire.cognition.chronicler import Chronicler
+
+    chronicler = Chronicler(session)
+    stale = chronicler.list_stale()
+
+    if not stale:
+        console.print(ui.success_panel(
+            "No notes past their freshness window. The vault is current.",
+            title="Chronicler",
+        ))
+        return
+
+    ui.section(f"Notes past their freshness window ({len(stale)})")
+    vault_root = session.vault_root.resolve()
+    for note in stale:
+        try:
+            display = Path(note.path).relative_to(vault_root)
+        except ValueError:
+            display = Path(note.path).name
+        if note.likely_stale is True:
+            decay_marker = ("  ⚠ likely stale", "grimoire.danger")
+        elif note.likely_stale is False:
+            decay_marker = ("  ✓ ok per LLM", "grimoire.success")
+        else:
+            decay_marker = ("", "")
+        console.print(Text.assemble(
+            ("  ◆ ", "grimoire.rune"),
+            (note.title, "grimoire.primary"),
+            ("  ", ""),
+            (str(display), "grimoire.muted"),
+            ("  ", ""),
+            (f"{note.days_overdue}d overdue", "grimoire.warning"),
+            decay_marker,
+        ))
+    console.print()
+    ui.tip("Run [cyan]grimoire chronicler check <path>[/] for an LLM verdict on a single note.")
+
+
+def _do_chronicler_check(session: Session, path: str) -> None:
+    """Body of ``grimoire chronicler check``."""
+    from grimoire.cognition.chronicler import Chronicler
+
+    resolved = _resolve_note_path(session, path)
+    if resolved is None:
+        return
+    chronicler = Chronicler(session)
+    with console.status(
+        "[grimoire.mystic]Asking the LLM whether this note has gone stale...[/]",
+        spinner="dots12",
+    ):
+        result = chronicler.check_decay(resolved)
+
+    if result is None:
+        console.print(ui.warn_panel(
+            "No verdict. The note may be exempt from Chronicler\n"
+            "(its category has no freshness window) or the LLM call failed.",
+            title="Chronicler",
+        ))
+        return
+
+    likely = bool(result.get("likely_stale"))
+    reasons = result.get("reasons") or []
+    body = "\n".join(f"  • {r}" for r in reasons) or "(no reasons given)"
+    if likely:
+        console.print(ui.warn_panel(body, title="Chronicler — likely stale"))
+    else:
+        console.print(ui.success_panel(body, title="Chronicler — still current"))
+
+
+def _do_chronicler_verify(session: Session, path: str) -> None:
+    """Body of ``grimoire chronicler verify``."""
+    from grimoire.cognition.chronicler import Chronicler
+
+    resolved = _resolve_note_path(session, path)
+    if resolved is None:
+        return
+    chronicler = Chronicler(session)
+    if chronicler.verify(resolved):
+        console.print(ui.success_panel(
+            f"[bold]{resolved}[/] marked as verified.",
+            title="Chronicler",
+        ))
+    else:
+        console.print(ui.info_panel(
+            f"No freshness row for [bold]{resolved}[/].\n"
+            f"The note's category is exempt — nothing to update.",
+            title="Chronicler",
         ))

@@ -19,7 +19,12 @@ from grimoire.ingest.parser import MarkdownParser
 from grimoire.memory.db import Database
 from grimoire.memory.maintenance import MaintenanceRunner
 from grimoire.memory.taxonomy import load_taxonomy_from_vault, save_taxonomy_to_vault
-from grimoire.operations import _do_ask
+from grimoire.operations import (
+    _do_ask,
+    _do_chronicler_check,
+    _do_chronicler_list,
+    _do_chronicler_verify,
+)
 from grimoire.output.frontmatter_writer import FrontmatterWriter
 from grimoire.output.git_guard import GitGuard
 from grimoire.output.link_injector import LinkInjector
@@ -966,6 +971,60 @@ def maintenance_run(
         ("  ", ""),
         (f"{report.duration_s:.2f}s", "grimoire.accent"),
     ))
+
+
+chronicler_app = typer.Typer(
+    help="📜 Track which notes have likely gone stale.",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+app.add_typer(chronicler_app, name="chronicler", rich_help_panel="Knowledge ops")
+
+
+@chronicler_app.command("list")
+def chronicler_list_cmd(
+    decay: bool = typer.Option(False, "--decay/--no-decay", help="Annotate with cached LLM decay verdicts."),
+):
+    """📋 Show notes past their freshness window."""
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    ui.command_header("chronicler list", config.vault.path)
+    try:
+        _do_chronicler_list(session, decay=decay)
+    finally:
+        session.close()
+
+
+@chronicler_app.command("check")
+def chronicler_check_cmd(
+    path: str = typer.Argument(..., help="Note path (absolute, or relative to cwd / vault)"),
+):
+    """🔬 Run the LLM decay check on a single note."""
+    setup_logger()
+    config = load_config()
+    _preflight_or_exit(config, check_git=False)
+    session = Session(config)
+    ui.command_header("chronicler check", path)
+    try:
+        _do_chronicler_check(session, path)
+    finally:
+        session.close()
+
+
+@chronicler_app.command("verify")
+def chronicler_verify_cmd(
+    path: str = typer.Argument(..., help="Note path (absolute, or relative to cwd / vault)"),
+):
+    """✅ Mark a note as freshly verified."""
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    ui.command_header("chronicler verify", path)
+    try:
+        _do_chronicler_verify(session, path)
+    finally:
+        session.close()
 
 
 @app.command(rich_help_panel="System")

@@ -21,7 +21,12 @@ from typing import Callable, Sequence
 import typer
 from rich.text import Text
 
-from grimoire.operations import _do_ask
+from grimoire.operations import (
+    _do_ask,
+    _do_chronicler_check,
+    _do_chronicler_list,
+    _do_chronicler_verify,
+)
 from grimoire.session import Session
 from grimoire.utils import ui
 from grimoire.utils.logger import get_logger
@@ -95,6 +100,7 @@ class GrimoireShell:
             "connect": self._cmd_connect,
             "prune": self._cmd_prune,
             "category": self._cmd_category,
+            "chronicler": self._cmd_chronicler,
             "refresh": self._cmd_refresh,
             "help": self._cmd_help,
             "exit": self._cmd_exit,
@@ -313,6 +319,33 @@ class GrimoireShell:
                 (sub, "grimoire.primary"),
             ))
 
+    def _cmd_chronicler(self, argv: Sequence[str]) -> None:
+        if not argv:
+            console.print(Text("chronicler: missing subcommand (list · check · verify)",
+                               style="grimoire.danger"))
+            return
+        sub, *rest = argv
+        if sub == "list":
+            parser = _NonExitingArgParser(prog="chronicler list", add_help=True)
+            parser.add_argument("--decay", action="store_true")
+            args = parser.parse_args(rest)
+            _do_chronicler_list(self.session, decay=args.decay)
+        elif sub == "check":
+            if not rest:
+                console.print(Text("chronicler check: missing path", style="grimoire.danger"))
+                return
+            _do_chronicler_check(self.session, rest[0])
+        elif sub == "verify":
+            if not rest:
+                console.print(Text("chronicler verify: missing path", style="grimoire.danger"))
+                return
+            _do_chronicler_verify(self.session, rest[0])
+        else:
+            console.print(Text.assemble(
+                ("Unknown chronicler subcommand: ", "grimoire.danger"),
+                (sub, "grimoire.primary"),
+            ))
+
     # ── help text ──────────────────────────────────────────────────────
 
     _help_text = {
@@ -329,6 +362,10 @@ class GrimoireShell:
         "category": (
             "category list | add <path> | rm <path> [-f] | notes <path> [--flat]\n"
             "  Manage the hierarchical category tree."
+        ),
+        "chronicler": (
+            "chronicler list [--decay] | check <path> | verify <path>\n"
+            "  Track which notes have likely gone stale."
         ),
         "refresh": "refresh\n  Drop cached services so the next call rebuilds them.",
         "help": "help [command]\n  Show this list, or details for one command.",

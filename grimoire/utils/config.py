@@ -92,6 +92,31 @@ class MaintenanceConfig:
     wal_checkpoint: bool = True
 
 @dataclass
+class ChroniclerConfig:
+    """
+    Chronicler — temporal staleness tracking.
+
+    ``windows`` maps a (case-insensitive, prefix-matched) category path
+    to a freshness window in *days*. A value of ``0`` is the explicit
+    "never stale" sentinel — chosen over ``None`` because TOML users can
+    override 0 cleanly. Categories that don't match any rule are also
+    exempt from staleness reporting.
+
+    Defaults are the v2.1 plan's "Suggested" answer to Q3.
+    """
+    windows: dict[str, int] = field(default_factory=lambda: {
+        "tech/": 90,
+        "tools/": 90,
+        "infra/": 90,
+        "dev/": 180,
+        "code-snippets/": 180,
+        "concepts/": 0,
+        "theory/": 0,
+        "journal/": 0,
+        "daily/": 0,
+    })
+
+@dataclass
 class Config:
     """Main configuration container."""
     vault: VaultConfig = field(default_factory=VaultConfig)
@@ -99,6 +124,7 @@ class Config:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
+    chronicler: ChroniclerConfig = field(default_factory=ChroniclerConfig)
 
 def _filter_known(cls, data: dict, section: str) -> dict:
     """
@@ -136,4 +162,5 @@ def load_config(config_path: str = "grimoire.toml") -> Config:
         memory=MemoryConfig(**_filter_known(MemoryConfig, data.get("memory", {}), "memory")),
         output=OutputConfig(**_filter_known(OutputConfig, data.get("output", {}), "output")),
         maintenance=MaintenanceConfig(**_filter_known(MaintenanceConfig, data.get("maintenance", {}), "maintenance")),
+        chronicler=ChroniclerConfig(**_filter_known(ChroniclerConfig, data.get("chronicler", {}), "chronicler")),
     )
