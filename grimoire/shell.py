@@ -26,6 +26,7 @@ from grimoire.operations import (
     _do_chronicler_check,
     _do_chronicler_list,
     _do_chronicler_verify,
+    _do_distill,
     _do_mirror_dismiss,
     _do_mirror_list,
     _do_mirror_resolve,
@@ -107,6 +108,7 @@ class GrimoireShell:
             "category": self._cmd_category,
             "chronicler": self._cmd_chronicler,
             "mirror": self._cmd_mirror,
+            "distill": self._cmd_distill,
             "refresh": self._cmd_refresh,
             "help": self._cmd_help,
             "exit": self._cmd_exit,
@@ -402,6 +404,33 @@ class GrimoireShell:
                 (sub, "grimoire.primary"),
             ))
 
+    def _cmd_distill(self, argv: Sequence[str]) -> None:
+        parser = _NonExitingArgParser(prog="distill", add_help=True)
+        parser.add_argument("-t", "--tag", default=None)
+        parser.add_argument("-c", "--category", default=None)
+        parser.add_argument("-p", "--passages", type=int, default=3)
+        parser.add_argument("--dry-run", action="store_true")
+        args = parser.parse_args(argv)
+        if not args.tag and not args.category:
+            console.print(Text(
+                "distill: provide --tag <name> or --category <path>",
+                style="grimoire.danger",
+            ))
+            return
+        if args.tag and args.category:
+            console.print(Text(
+                "distill: pick one selector — not both --tag and --category",
+                style="grimoire.danger",
+            ))
+            return
+        _do_distill(
+            self.session,
+            tag=args.tag,
+            category=args.category,
+            passages_per_note=args.passages,
+            dry_run=args.dry_run,
+        )
+
     # ── help text ──────────────────────────────────────────────────────
 
     _help_text = {
@@ -426,6 +455,10 @@ class GrimoireShell:
         "mirror": (
             "mirror | mirror scan [-k N] [--full] | show <id> | dismiss <id> | resolve <id>\n"
             "  The Black Mirror — surface contradictions across notes."
+        ),
+        "distill": (
+            "distill --tag <name> | --category <path> [-p N] [--dry-run]\n"
+            "  Synthesize matching notes into a single _synthesis/ note."
         ),
         "refresh": "refresh\n  Drop cached services so the next call rebuilds them.",
         "help": "help [command]\n  Show this list, or details for one command.",

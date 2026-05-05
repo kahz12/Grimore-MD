@@ -24,6 +24,7 @@ from grimoire.operations import (
     _do_chronicler_check,
     _do_chronicler_list,
     _do_chronicler_verify,
+    _do_distill,
     _do_mirror_dismiss,
     _do_mirror_list,
     _do_mirror_resolve,
@@ -1114,6 +1115,38 @@ def mirror_resolve_cmd(
     ui.command_header("mirror resolve", str(contradiction_id))
     try:
         _do_mirror_resolve(session, contradiction_id)
+    finally:
+        session.close()
+
+
+@app.command(rich_help_panel="Knowledge ops")
+def distill(
+    tag: Optional[str] = typer.Option(None, "--tag", "-t", help="Distill notes carrying this tag."),
+    category: Optional[str] = typer.Option(None, "--category", "-c", help="Distill notes under this category (recursive)."),
+    passages: int = typer.Option(3, "--passages", "-p", help="Top-K passages per source note."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Build the synthesis but don't write the file."),
+):
+    """
+    🧪 Distill notes that share a tag or category into a single reference note.
+
+    The output lands in [cyan]<vault>/_synthesis/[/] with
+    [cyan]grimoire_generated: true[/] in frontmatter so subsequent
+    distills don't re-include their own outputs.
+    """
+    setup_logger()
+    config = load_config()
+    _preflight_or_exit(config, check_git=False)
+    session = Session(config)
+    selector_label = f"--tag {tag}" if tag else (f"--category {category}" if category else "")
+    ui.command_header("distill", selector_label or config.vault.path)
+    try:
+        _do_distill(
+            session,
+            tag=tag,
+            category=category,
+            passages_per_note=passages,
+            dry_run=dry_run,
+        )
     finally:
         session.close()
 

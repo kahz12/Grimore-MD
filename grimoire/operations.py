@@ -433,3 +433,88 @@ def _do_mirror_resolve(session: Session, contradiction_id: int) -> None:
             f"No contradiction with id [bold]{contradiction_id}[/].",
             title="Black Mirror",
         ))
+
+
+# ── Synthesizer ──────────────────────────────────────────────────────────
+
+
+def _do_distill(
+    session: Session,
+    *,
+    tag: Optional[str] = None,
+    category: Optional[str] = None,
+    passages_per_note: int = 3,
+    dry_run: bool = False,
+) -> None:
+    """Body of ``grimoire distill``.
+
+    Exactly one of ``tag`` / ``category`` is expected. Renders a summary
+    panel with the resolved sources and the output path.
+    """
+    from grimoire.cognition.synthesizer import Synthesizer
+
+    if not tag and not category:
+        console.print(ui.error_panel(
+            "Provide a selector: [cyan]--tag <name>[/] or [cyan]--category <path>[/].",
+            title="Synthesizer",
+        ))
+        return
+    if tag and category:
+        console.print(ui.error_panel(
+            "Pick one selector — not both [cyan]--tag[/] and [cyan]--category[/].",
+            title="Synthesizer",
+        ))
+        return
+
+    synth = Synthesizer(session)
+    with console.status(
+        "[grimoire.mystic]The Synthesizer distills the chosen notes...[/]",
+        spinner="dots12",
+    ):
+        try:
+            report = synth.distill(
+                tag=tag,
+                category=category,
+                passages_per_note=passages_per_note,
+                dry_run=dry_run,
+            )
+        except ValueError as e:
+            console.print(ui.error_panel(str(e), title="Synthesizer"))
+            return
+
+    if report.skipped_reason:
+        console.print(ui.warn_panel(report.skipped_reason, title="Synthesizer"))
+        return
+
+    if report.output_path is None:
+        console.print(ui.warn_panel(
+            "No output produced. Re-run with [cyan]--no-dry-run[/] to write the file.",
+            title="Synthesizer",
+        ))
+        return
+
+    vault_root = session.vault_root.resolve()
+    try:
+        display = Path(report.output_path).relative_to(vault_root)
+    except ValueError:
+        display = Path(report.output_path).name
+    rows = [
+        ("Selector",          Text(report.selector,                     style="grimoire.accent")),
+        ("Notes considered",  Text(str(report.notes_considered),        style="grimoire.accent")),
+        ("Excluded (generated)",
+                              Text(str(report.notes_excluded_generated), style="grimoire.muted")),
+        ("Notes used",        Text(str(report.notes_used),              style="grimoire.success")),
+        ("Output",            Text(str(display),                        style="grimoire.primary")),
+    ]
+    panel = ui.success_panel(ui.kv_table(rows), title="Synthesizer")
+    if dry_run:
+        panel = ui.info_panel(ui.kv_table(rows), title="Synthesizer (dry run)")
+    console.print()
+    console.print(panel)
+    if report.sources:
+        ui.section("Sources")
+        for src in report.sources:
+            console.print(Text.assemble(
+                ("  • ", "grimoire.muted"),
+                (f"[[{src}]]", "grimoire.accent"),
+            ))
