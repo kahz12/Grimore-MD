@@ -442,9 +442,12 @@ def daemon(
     processes them after a debounce period.
     """
     from grimoire.utils.system import is_running, start_daemon_background, stop_daemon
+    from grimoire.utils.paths import daemon_lock_path, daemon_log_path
 
-    pid_file = "grimoire.pid"
-    log_file = "grimoire.log"
+    # Both paths flow through platformdirs so the CLI, the shell history file
+    # and the daemon's own bookkeeping all agree on where state lives.
+    pid_file = str(daemon_lock_path())
+    log_file = str(daemon_log_path())
 
     ui.command_header("daemon", action)
 
@@ -460,6 +463,9 @@ def daemon(
             "The daemon will run in the foreground. [bold]Ctrl-C[/] to stop.",
             title="Foreground mode",
         ))
+        # Pass the resolved cache path explicitly so foreground and background
+        # forms always lock the same file (otherwise the daemon's default path
+        # could drift if platformdirs evaluates differently in some env).
         instance = GrimoireDaemon(config, pid_file=pid_file)
         instance.start()
     elif action == "start":

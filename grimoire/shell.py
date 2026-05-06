@@ -12,8 +12,6 @@ History is per-vault: questions never bleed between vaults.
 from __future__ import annotations
 
 import argparse
-import hashlib
-import os
 import shlex
 from pathlib import Path
 from typing import Callable, Sequence
@@ -36,6 +34,7 @@ from grimoire.operations import (
 from grimoire.session import Session
 from grimoire.utils import ui
 from grimoire.utils.logger import get_logger
+from grimoire.utils.paths import shell_history_path
 
 console = ui.console
 logger = get_logger(__name__)
@@ -65,28 +64,12 @@ class _NonExitingArgParser(argparse.ArgumentParser):
 
 
 def _shell_history_path(session: Session) -> Path:
-    """Per-vault history file under ``~/.cache/grimoire/``.
+    """Per-vault history file in the platform's user cache directory.
 
-    The vault path is hashed (sha256 truncated to 16 hex chars) so the
-    cache directory listing does not leak the absolute vault location,
-    and so two different vaults do not share question history.
-
-    Created at 0o600 with ``os.open`` to avoid umask-dependent perms
-    (same hardening pattern as M-02).
+    Thin wrapper around :func:`grimoire.utils.paths.shell_history_path` —
+    kept for back-compat with tests that import it by name.
     """
-    vault_abs = str(session.vault_root.resolve())
-    digest = hashlib.sha256(vault_abs.encode("utf-8")).hexdigest()[:16]
-    cache_dir = Path.home() / ".cache" / "grimoire"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        cache_dir.chmod(0o700)
-    except OSError:
-        pass
-    path = cache_dir / f"shell_history.{digest}"
-    if not path.exists():
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT, 0o600)
-        os.close(fd)
-    return path
+    return shell_history_path(session.vault_root)
 
 
 class GrimoireShell:

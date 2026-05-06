@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "requests>=2.31.0",
     "prompt-toolkit>=3.0.0",
+    "platformdirs>=4.0.0",
 ]
 
 [project.scripts]

@@ -10,5 +10,6 @@ gitpython
 pydantic
 requests
 prompt-toolkit
+platformdirs
 pytest
 pytest-mock

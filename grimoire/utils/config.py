@@ -117,6 +117,26 @@ class ChroniclerConfig:
     })
 
 @dataclass
+class DaemonConfig:
+    """
+    Ambient watcher mode (Section 4 of v2.1 plan).
+
+    Disabled by default — the daemon is opt-in. Setting ``enabled = true``
+    in ``grimoire.toml``'s ``[daemon]`` section signals to the CLI that the
+    user has chosen to run it; ``grimoire daemon start`` always works
+    regardless, but tooling that auto-starts the daemon (e.g. an `init`
+    hook) should respect this flag.
+
+    ``log_events`` controls whether per-save one-liners are appended to
+    ``daemon.log`` under the user cache dir. When false the daemon still
+    runs structured logging through ``structlog``; this just skips the
+    extra append-only file.
+    """
+    enabled: bool = False
+    log_events: bool = True
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     vault: VaultConfig = field(default_factory=VaultConfig)
@@ -125,6 +145,7 @@ class Config:
     output: OutputConfig = field(default_factory=OutputConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     chronicler: ChroniclerConfig = field(default_factory=ChroniclerConfig)
+    daemon: DaemonConfig = field(default_factory=DaemonConfig)
 
 def _filter_known(cls, data: dict, section: str) -> dict:
     """
@@ -163,4 +184,5 @@ def load_config(config_path: str = "grimoire.toml") -> Config:
         output=OutputConfig(**_filter_known(OutputConfig, data.get("output", {}), "output")),
         maintenance=MaintenanceConfig(**_filter_known(MaintenanceConfig, data.get("maintenance", {}), "maintenance")),
         chronicler=ChroniclerConfig(**_filter_known(ChroniclerConfig, data.get("chronicler", {}), "chronicler")),
+        daemon=DaemonConfig(**_filter_known(DaemonConfig, data.get("daemon", {}), "daemon")),
     )
