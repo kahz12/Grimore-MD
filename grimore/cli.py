@@ -614,6 +614,7 @@ def status():
     Displays a high-level overview of the system state, including
     indexing progress, model configurations, and daemon status.
     """
+    from grimore.utils.paths import daemon_lock_path
     from grimore.utils.system import is_running
 
     config = load_config()
@@ -654,10 +655,11 @@ def status():
     ]))
 
     ui.section("Daemon")
-    active = is_running("grimore.pid")
+    pid_file = str(daemon_lock_path())
+    active = is_running(pid_file)
     console.print(ui.kv_table([
         ("Estado", ui.daemon_badge(active)),
-        ("PID file", Text("grimore.pid", style="grimore.muted")),
+        ("PID file", Text(pid_file, style="grimore.muted")),
     ]))
 
     # ── Hints ───────────────────────────────────────────────────────────────

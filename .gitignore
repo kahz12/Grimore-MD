@@ -29,7 +29,6 @@ grimore.pid
 grimore.log
 backups/
 test_vault/
-v2_1_plan.txt
 
 # Tooling caches
 .pytest_cache/

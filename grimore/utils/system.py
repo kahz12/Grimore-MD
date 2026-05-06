@@ -29,13 +29,6 @@ except ImportError:
     msvcrt = None  # type: ignore[assignment]
     _HAS_MSVCRT = False
 
-# Legacy default kept for back-compat with callers that pass the literal
-# ``"grimore.pid"`` (e.g. older scripts). New callers should use
-# ``grimore.utils.paths.daemon_lock_path()`` so the file lives under the
-# user cache directory rather than the cwd.
-DEFAULT_PID_FILE = "grimore.pid"
-
-
 _HAS_PROCFS = os.path.isdir("/proc")
 
 
