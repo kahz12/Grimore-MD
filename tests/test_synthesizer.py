@@ -17,16 +17,16 @@ from pathlib import Path
 import frontmatter
 import pytest
 
-from grimoire.cognition.embedder import Embedder
-from grimoire.cognition.synthesizer import (
+from grimore.cognition.embedder import Embedder
+from grimore.cognition.synthesizer import (
     GENERATED_FLAG_KEY,
     SYNTHESIS_DIRNAME,
     Synthesizer,
     _slugify,
 )
-from grimoire.session import Session
-from grimoire.shell import GrimoireShell
-from grimoire.utils.config import (
+from grimore.session import Session
+from grimore.shell import GrimoreShell
+from grimore.utils.config import (
     CognitionConfig,
     Config,
     MaintenanceConfig,
@@ -91,7 +91,7 @@ def synth_config(tmp_path, vault):
     return Config(
         vault=VaultConfig(path=str(vault), ignored_dirs=[]),
         cognition=CognitionConfig(),
-        memory=MemoryConfig(db_path=str(tmp_path / "grimoire.db")),
+        memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=False, dry_run=True),
         maintenance=MaintenanceConfig(),
     )
@@ -274,7 +274,7 @@ class TestGeneratedExclusion:
 
         report = Synthesizer(session).distill(tag="solo", dry_run=True)
         assert report.notes_used == 0
-        assert "grimoire_generated" in (report.skipped_reason or "")
+        assert "grimore_generated" in (report.skipped_reason or "")
 
 
 # ── distill — happy path ────────────────────────────────────────────────
@@ -381,23 +381,23 @@ class TestSkipReasons:
 
 class TestShellWiring:
     def test_distill_command_registered(self, synth_config):
-        shell = GrimoireShell(Session(synth_config))
+        shell = GrimoreShell(Session(synth_config))
         assert "distill" in shell.commands
 
     def test_distill_help_documents_options(self, synth_config):
-        shell = GrimoireShell(Session(synth_config))
+        shell = GrimoreShell(Session(synth_config))
         text = shell._help_text["distill"]
         assert "--tag" in text and "--category" in text
 
     def test_distill_with_no_selector_prints_error(self, synth_config, capsys):
-        shell = GrimoireShell(Session(synth_config))
+        shell = GrimoreShell(Session(synth_config))
         shell.dispatch("distill")
         out = capsys.readouterr().out
         assert "--tag" in out and "--category" in out
         assert shell._running is True
 
     def test_distill_with_both_selectors_prints_error(self, synth_config, capsys):
-        shell = GrimoireShell(Session(synth_config))
+        shell = GrimoreShell(Session(synth_config))
         shell.dispatch("distill --tag python --category Tech")
         out = capsys.readouterr().out
         assert "pick one" in out.lower()

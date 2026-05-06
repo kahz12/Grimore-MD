@@ -1,0 +1,30 @@
+# Grimore Configuration for General Test
+
+[vault]
+path = "./test_vault"
+ignored_dirs = [".obsidian", ".trash", ".git", "Templates"]
+
+[cognition]
+model_llm_local = "qwen2.5:3b"
+model_embeddings_local = "nomic-embed-text"
+allow_remote = false
+# Hybrid retrieval — fuse BM25 (FTS5) with cosine similarity via RRF.
+hybrid_search = true
+rrf_k = 60
+# Minimum cosine similarity for `grimore connect` to propose a wikilink.
+connect_threshold = 0.7
+
+[memory]
+db_path = "grimore.db"
+
+[output]
+auto_commit = true
+dry_run = true
+
+[maintenance]
+# Periodic housekeeping run from the daemon: VACUUM, WAL checkpoint, tag purge.
+enabled = true
+interval_hours = 24
+vacuum = true
+purge_tags = true
+wal_checkpoint = true

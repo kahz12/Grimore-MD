@@ -1,6 +1,6 @@
 import pytest
 
-from grimoire.ingest.parser import MAX_NOTE_BYTES, MarkdownParser
+from grimore.ingest.parser import MAX_NOTE_BYTES, MarkdownParser
 
 
 class TestParseFile:

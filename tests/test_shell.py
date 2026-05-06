@@ -1,6 +1,6 @@
 """Tests for the interactive shell.
 
-We exercise ``GrimoireShell.dispatch`` directly — the prompt-toolkit
+We exercise ``GrimoreShell.dispatch`` directly — the prompt-toolkit
 loop in ``run`` is a thin driver around it and is not covered here
 (would require a tty harness).
 """
@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from grimoire.session import Session
-from grimoire.shell import GrimoireShell, _shell_history_path
-from grimoire.utils.config import (
+from grimore.session import Session
+from grimore.shell import GrimoreShell, _shell_history_path
+from grimore.utils.config import (
     CognitionConfig,
     Config,
     MaintenanceConfig,
@@ -33,7 +33,7 @@ def shell_config(tmp_path):
     return Config(
         vault=VaultConfig(path=str(vault_dir), ignored_dirs=[]),
         cognition=CognitionConfig(),
-        memory=MemoryConfig(db_path=str(tmp_path / "grimoire.db")),
+        memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=False, dry_run=True),
         maintenance=MaintenanceConfig(),
     )
@@ -71,10 +71,10 @@ def patched_services(monkeypatch):
             yield {"type": "token", "text": "streams."}
             yield {"type": "done", "sources": ["Note A"]}
 
-    monkeypatch.setattr("grimoire.session.Database", make_db)
-    monkeypatch.setattr("grimoire.session.LLMRouter", make_router)
-    monkeypatch.setattr("grimoire.session.Embedder", make_embedder)
-    monkeypatch.setattr("grimoire.session.Oracle", _FakeOracle)
+    monkeypatch.setattr("grimore.session.Database", make_db)
+    monkeypatch.setattr("grimore.session.LLMRouter", make_router)
+    monkeypatch.setattr("grimore.session.Embedder", make_embedder)
+    monkeypatch.setattr("grimore.session.Oracle", _FakeOracle)
     return counts
 
 
@@ -82,7 +82,7 @@ def patched_services(monkeypatch):
 
 
 def test_unknown_command_does_not_kill_loop(shell_config, patched_services, capsys):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("nope")
     out = capsys.readouterr().out
     assert "Unknown command" in out
@@ -91,26 +91,26 @@ def test_unknown_command_does_not_kill_loop(shell_config, patched_services, caps
 
 
 def test_blank_line_is_noop(shell_config, patched_services):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("")
     shell.dispatch("   ")
     assert shell._running is True
 
 
 def test_exit_stops_loop(shell_config, patched_services):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("exit")
     assert shell._running is False
 
 
 def test_quit_stops_loop(shell_config, patched_services):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("quit")
     assert shell._running is False
 
 
 def test_help_lists_commands(shell_config, patched_services, capsys):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("help")
     out = capsys.readouterr().out
     for cmd in ("ask", "status", "tags", "category", "exit"):
@@ -118,14 +118,14 @@ def test_help_lists_commands(shell_config, patched_services, capsys):
 
 
 def test_help_for_specific_command(shell_config, patched_services, capsys):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("help ask")
     out = capsys.readouterr().out
     assert "ask" in out and "Oracle" in out
 
 
 def test_parse_error_does_not_kill_loop(shell_config, patched_services, capsys):
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     # Unclosed quote — shlex raises ValueError.
     shell.dispatch('ask "broken')
     out = capsys.readouterr().out
@@ -136,7 +136,7 @@ def test_parse_error_does_not_kill_loop(shell_config, patched_services, capsys):
 def test_argparse_error_does_not_kill_loop(shell_config, patched_services):
     """`tags --bogus` would normally call sys.exit. The non-exiting parser
     converts that to a caught exception so the shell keeps going."""
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("tags --bogus")
     assert shell._running is True
 
@@ -148,7 +148,7 @@ def test_embedder_built_once_across_two_asks(shell_config, patched_services):
     """The whole reason for the shell: two `ask`s must not pay the
     cold-start cost twice. Embedder must be instantiated exactly once."""
     session = Session(shell_config)
-    shell = GrimoireShell(session)
+    shell = GrimoreShell(session)
 
     shell.dispatch("ask Question one")
     shell.dispatch("ask Question two")
@@ -162,7 +162,7 @@ def test_embedder_built_once_across_two_asks(shell_config, patched_services):
 
 def test_refresh_drops_cached_services(shell_config, patched_services):
     session = Session(shell_config)
-    shell = GrimoireShell(session)
+    shell = GrimoreShell(session)
     shell.dispatch("ask Question one")  # builds services
     shell.dispatch("refresh")
     shell.dispatch("ask Question two")  # rebuilds services
@@ -172,7 +172,7 @@ def test_refresh_drops_cached_services(shell_config, patched_services):
 
 def test_ask_streams_by_default(shell_config, patched_services, capsys):
     """The streamed text must appear in the output exactly once."""
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("ask Tell me about X")
     out = capsys.readouterr().out
     assert "Oracle streams." in out
@@ -180,7 +180,7 @@ def test_ask_streams_by_default(shell_config, patched_services, capsys):
 
 def test_ask_no_stream_uses_oracle_ask(shell_config, patched_services, capsys):
     """`--no-stream` must use the JSON-strict path (Oracle.ask)."""
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
     shell.dispatch("ask --no-stream Tell me about X")
     out = capsys.readouterr().out
     assert "Oracle says hi." in out
@@ -239,7 +239,7 @@ def test_keyboardinterrupt_inside_handler_returns_to_loop(
     shell_config, patched_services, capsys
 ):
     """Ctrl+C while a command is running must cancel the command, not the loop."""
-    shell = GrimoireShell(Session(shell_config))
+    shell = GrimoreShell(Session(shell_config))
 
     def boom(_argv):
         raise KeyboardInterrupt

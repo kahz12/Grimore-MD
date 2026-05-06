@@ -14,15 +14,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from grimoire.cognition.chronicler import (
+from grimore.cognition.chronicler import (
     Chronicler,
     StaleNote,
     resolve_window_days,
 )
-from grimoire.memory.db import Database
-from grimoire.session import Session
-from grimoire.shell import GrimoireShell
-from grimoire.utils.config import (
+from grimore.memory.db import Database
+from grimore.session import Session
+from grimore.shell import GrimoreShell
+from grimore.utils.config import (
     ChroniclerConfig,
     CognitionConfig,
     Config,
@@ -43,7 +43,7 @@ def chronicler_config(tmp_path):
     return Config(
         vault=VaultConfig(path=str(vault_dir), ignored_dirs=[]),
         cognition=CognitionConfig(),
-        memory=MemoryConfig(db_path=str(tmp_path / "grimoire.db")),
+        memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=False, dry_run=True),
         maintenance=MaintenanceConfig(),
     )
@@ -302,23 +302,23 @@ class TestCheckDecay:
 
 class TestShellWiring:
     def test_chronicler_command_registered(self, chronicler_config):
-        shell = GrimoireShell(Session(chronicler_config))
+        shell = GrimoreShell(Session(chronicler_config))
         assert "chronicler" in shell.commands
 
     def test_chronicler_help_text_documents_subcommands(self, chronicler_config):
-        shell = GrimoireShell(Session(chronicler_config))
+        shell = GrimoreShell(Session(chronicler_config))
         text = shell._help_text["chronicler"]
         assert "list" in text and "check" in text and "verify" in text
 
     def test_chronicler_no_args_prints_error(self, chronicler_config, capsys):
-        shell = GrimoireShell(Session(chronicler_config))
+        shell = GrimoreShell(Session(chronicler_config))
         shell.dispatch("chronicler")
         out = capsys.readouterr().out
         assert "missing subcommand" in out
         assert shell._running is True
 
     def test_chronicler_list_against_empty_vault(self, chronicler_config, capsys):
-        shell = GrimoireShell(Session(chronicler_config))
+        shell = GrimoreShell(Session(chronicler_config))
         shell.dispatch("chronicler list")
         out = capsys.readouterr().out
         # No notes → success panel says vault is current.

@@ -21,12 +21,12 @@ wheels/
 .installed.cfg
 *.egg
 
-# Project Grimoire Specifics
-grimoire.db
-grimoire.db-wal
-grimoire.db-shm
-grimoire.pid
-grimoire.log
+# Project Grimore Specifics
+grimore.db
+grimore.db-wal
+grimore.db-shm
+grimore.pid
+grimore.log
 backups/
 test_vault/
 v2_1_plan.txt

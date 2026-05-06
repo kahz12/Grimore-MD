@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from grimoire.cognition.claims import ClaimExtractor, ExtractedClaim
+from grimore.cognition.claims import ClaimExtractor, ExtractedClaim
 
 
 class _QueuedRouter:

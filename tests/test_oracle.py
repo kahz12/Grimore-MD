@@ -1,7 +1,7 @@
 """B-07 regression: Oracle.ask caps the LLM context at _ORACLE_CONTEXT_MAX_CHARS."""
 from unittest.mock import MagicMock
 
-from grimoire.cognition.oracle import Oracle, _ORACLE_CONTEXT_MAX_CHARS
+from grimore.cognition.oracle import Oracle, _ORACLE_CONTEXT_MAX_CHARS
 
 
 def _make_oracle():

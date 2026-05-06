@@ -3,13 +3,13 @@ import os
 
 import pytest
 
-from grimoire.memory.db import Database
-from grimoire.memory.maintenance import MaintenanceRunner, MaintenanceReport
-from grimoire.utils.config import MaintenanceConfig
+from grimore.memory.db import Database
+from grimore.memory.maintenance import MaintenanceRunner, MaintenanceReport
+from grimore.utils.config import MaintenanceConfig
 
 
 def _make_db(tmp_path) -> Database:
-    return Database(str(tmp_path / "grimoire.db"))
+    return Database(str(tmp_path / "grimore.db"))
 
 
 def _add_note(db: Database, path: str) -> int:
@@ -29,7 +29,7 @@ class TestWalCheckpoint:
         # Write enough to push some frames into the WAL.
         for i in range(20):
             _add_note(db, f"n{i}.md")
-        wal = tmp_path / "grimoire.db-wal"
+        wal = tmp_path / "grimore.db-wal"
         # Checkpoint with TRUNCATE should leave the -wal file at size 0 (or absent).
         db.wal_checkpoint("TRUNCATE")
         assert not wal.exists() or wal.stat().st_size == 0

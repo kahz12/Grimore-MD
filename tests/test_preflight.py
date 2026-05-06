@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from grimoire.utils.config import (
+from grimore.utils.config import (
     CognitionConfig,
     Config,
     MaintenanceConfig,
@@ -14,7 +14,7 @@ from grimoire.utils.config import (
     OutputConfig,
     VaultConfig,
 )
-from grimoire.utils.preflight import (
+from grimore.utils.preflight import (
     CheckResult,
     PreflightChecker,
     PreflightReport,
@@ -34,7 +34,7 @@ def _make_config(tmp_path, *, auto_commit: bool = False) -> Config:
             model_llm_local="qwen2.5:3b",
             model_embeddings_local="nomic-embed-text",
         ),
-        memory=MemoryConfig(db_path=str(tmp_path / "grimoire.db")),
+        memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=auto_commit, dry_run=True),
         maintenance=MaintenanceConfig(),
     )

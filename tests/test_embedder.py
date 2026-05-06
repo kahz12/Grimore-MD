@@ -1,6 +1,6 @@
 import math
 
-from grimoire.cognition.embedder import Embedder
+from grimore.cognition.embedder import Embedder
 
 
 class TestNormalize:

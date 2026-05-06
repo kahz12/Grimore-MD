@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from grimoire.utils.security import SecurityGuard
+from grimore.utils.security import SecurityGuard
 
 
 class TestScanForSensitiveData:
@@ -104,7 +104,7 @@ class TestValidateLLMHostCache:
         SecurityGuard._host_cache.clear()
 
     def test_loopback_results_are_cached(self, monkeypatch):
-        import grimoire.utils.security as sec
+        import grimore.utils.security as sec
         calls = {"n": 0}
         real = sec.socket.getaddrinfo
 
@@ -118,7 +118,7 @@ class TestValidateLLMHostCache:
         assert calls["n"] == 1
 
     def test_cache_expires_after_ttl(self, monkeypatch):
-        import grimoire.utils.security as sec
+        import grimore.utils.security as sec
         calls = {"n": 0}
         real = sec.socket.getaddrinfo
 
@@ -136,7 +136,7 @@ class TestValidateLLMHostCache:
         assert calls["n"] == 2
 
     def test_allow_remote_bypasses_cache(self, monkeypatch):
-        import grimoire.utils.security as sec
+        import grimore.utils.security as sec
         calls = {"n": 0}
         real = sec.socket.getaddrinfo
 

@@ -1,4 +1,4 @@
-from grimoire.cognition.llm_router import _extract_json_object
+from grimore.cognition.llm_router import _extract_json_object
 
 
 class TestExtractJsonObject:

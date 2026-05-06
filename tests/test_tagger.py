@@ -1,10 +1,10 @@
-from grimoire.cognition.tagger import (
+from grimore.cognition.tagger import (
     _render_category_menu,
     _sanitize_category,
     _sanitize_summary,
     _sanitize_tag,
 )
-from grimoire.memory.taxonomy import CategoryTree, Taxonomy
+from grimore.memory.taxonomy import CategoryTree, Taxonomy
 
 
 class TestSanitizeTag:

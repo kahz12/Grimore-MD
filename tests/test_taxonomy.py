@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from grimoire.memory.taxonomy import (
+from grimore.memory.taxonomy import (
     CategoryTree,
     DEFAULT_ROOTS,
     Taxonomy,

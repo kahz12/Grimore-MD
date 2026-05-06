@@ -3,8 +3,8 @@ import struct
 
 import pytest
 
-from grimoire.cognition.connector import Connector
-from grimoire.memory.db import Database
+from grimore.cognition.connector import Connector
+from grimore.memory.db import Database
 
 
 def _vec(values):
@@ -45,7 +45,7 @@ def _seed(db: Database, rows):
 
 @pytest.fixture
 def db(tmp_path):
-    return Database(str(tmp_path / "grimoire.db"))
+    return Database(str(tmp_path / "grimore.db"))
 
 
 class TestFTSMigration:

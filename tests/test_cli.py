@@ -2,8 +2,8 @@
 import pytest
 from typer.testing import CliRunner
 
-from grimoire.cli import app
-from grimoire.utils.config import (
+from grimore.cli import app
+from grimore.utils.config import (
     CognitionConfig,
     Config,
     MaintenanceConfig,
@@ -48,7 +48,7 @@ def _make_export_config(tmp_path):
     return Config(
         vault=VaultConfig(path=str(vault_dir), ignored_dirs=[]),
         cognition=CognitionConfig(),
-        memory=MemoryConfig(db_path=str(tmp_path / "grimoire.db")),
+        memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=False, dry_run=True),
         maintenance=MaintenanceConfig(),
     )
@@ -69,15 +69,15 @@ class _FakeOracle:
 def _patch_ask_dependencies(monkeypatch, config):
     """Mock everything `ask` builds so only the export path is exercised.
 
-    Services are now instantiated lazily by ``grimoire.session.Session``,
-    so the patches target that module instead of ``grimoire.cli``.
+    Services are now instantiated lazily by ``grimore.session.Session``,
+    so the patches target that module instead of ``grimore.cli``.
     """
-    monkeypatch.setattr("grimoire.cli.load_config", lambda: config)
-    monkeypatch.setattr("grimoire.cli._preflight_or_exit", lambda *a, **k: None)
-    monkeypatch.setattr("grimoire.session.Database", lambda *a, **k: object())
-    monkeypatch.setattr("grimoire.session.LLMRouter", lambda *a, **k: object())
-    monkeypatch.setattr("grimoire.session.Embedder", lambda *a, **k: object())
-    monkeypatch.setattr("grimoire.session.Oracle", _FakeOracle)
+    monkeypatch.setattr("grimore.cli.load_config", lambda: config)
+    monkeypatch.setattr("grimore.cli._preflight_or_exit", lambda *a, **k: None)
+    monkeypatch.setattr("grimore.session.Database", lambda *a, **k: object())
+    monkeypatch.setattr("grimore.session.LLMRouter", lambda *a, **k: object())
+    monkeypatch.setattr("grimore.session.Embedder", lambda *a, **k: object())
+    monkeypatch.setattr("grimore.session.Oracle", _FakeOracle)
 
 
 def test_ask_export_writes_full_document(runner, tmp_path, monkeypatch):

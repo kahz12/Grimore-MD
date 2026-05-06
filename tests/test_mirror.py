@@ -12,11 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from grimoire.cognition.embedder import Embedder
-from grimoire.cognition.mirror import Mirror
-from grimoire.session import Session
-from grimoire.shell import GrimoireShell
-from grimoire.utils.config import (
+from grimore.cognition.embedder import Embedder
+from grimore.cognition.mirror import Mirror
+from grimore.session import Session
+from grimore.shell import GrimoreShell
+from grimore.utils.config import (
     CognitionConfig,
     Config,
     MaintenanceConfig,
@@ -83,7 +83,7 @@ def mirror_config(tmp_path, vault):
     return Config(
         vault=VaultConfig(path=str(vault), ignored_dirs=[]),
         cognition=CognitionConfig(),
-        memory=MemoryConfig(db_path=str(tmp_path / "grimoire.db")),
+        memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=False, dry_run=True),
         maintenance=MaintenanceConfig(),
     )
@@ -383,11 +383,11 @@ class TestDismissalPersistence:
 
 class TestShellWiring:
     def test_mirror_command_registered(self, mirror_config):
-        shell = GrimoireShell(Session(mirror_config))
+        shell = GrimoreShell(Session(mirror_config))
         assert "mirror" in shell.commands
 
     def test_mirror_help_documents_subcommands(self, mirror_config):
-        shell = GrimoireShell(Session(mirror_config))
+        shell = GrimoreShell(Session(mirror_config))
         text = shell._help_text["mirror"]
         for keyword in ("scan", "show", "dismiss", "resolve"):
             assert keyword in text
@@ -397,13 +397,13 @@ class TestShellWiring:
         session = Session(mirror_config)
         session._router = _RoutedRouter()
         session._embedder = _MapEmbedder({})
-        shell = GrimoireShell(session)
+        shell = GrimoreShell(session)
         shell.dispatch("mirror")
         out = capsys.readouterr().out.lower()
         assert "scan" in out or "consistent" in out
 
     def test_show_with_non_integer_id(self, mirror_config, capsys):
-        shell = GrimoireShell(Session(mirror_config))
+        shell = GrimoreShell(Session(mirror_config))
         shell.dispatch("mirror show oops")
         out = capsys.readouterr().out
         assert "must be an integer" in out

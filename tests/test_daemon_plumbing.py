@@ -1,14 +1,14 @@
 """
 Tests for the v2.1 cross-platform daemon plumbing:
 
-  * grimoire.utils.paths   — platformdirs-backed cache paths
-  * grimoire.utils.system  — cross-platform PID lock + procfs fallback
-  * grimoire.utils.event_log — atomic one-line event writer
-  * grimoire.daemon        — signal handlers + clean-shutdown event
-  * grimoire.utils.config  — DaemonConfig surface
+  * grimore.utils.paths   — platformdirs-backed cache paths
+  * grimore.utils.system  — cross-platform PID lock + procfs fallback
+  * grimore.utils.event_log — atomic one-line event writer
+  * grimore.daemon        — signal handlers + clean-shutdown event
+  * grimore.utils.config  — DaemonConfig surface
 
 These exercise the I/O surfaces (lock files, event logs, config parsing)
-without spinning up the full GrimoireDaemon — that one needs Ollama, a
+without spinning up the full GrimoreDaemon — that one needs Ollama, a
 real vault and watchdog plumbing, all of which are integration territory.
 """
 from __future__ import annotations
@@ -22,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-from grimoire.utils import event_log as event_log_mod
-from grimoire.utils import paths as paths_mod
-from grimoire.utils import system as sysmod
-from grimoire.utils.config import Config, DaemonConfig, load_config
-from grimoire.utils.event_log import DaemonEventLog
+from grimore.utils import event_log as event_log_mod
+from grimore.utils import paths as paths_mod
+from grimore.utils import system as sysmod
+from grimore.utils.config import Config, DaemonConfig, load_config
+from grimore.utils.event_log import DaemonEventLog
 
 
 # ── paths ─────────────────────────────────────────────────────────────────
@@ -35,8 +35,8 @@ from grimoire.utils.event_log import DaemonEventLog
 @pytest.fixture
 def cache_redirect(tmp_path, monkeypatch):
     """Pin ``platformdirs.user_cache_dir`` to a tmp dir so tests don't
-    touch the real ~/.cache/grimoire (or AppData on Windows)."""
-    fake_cache = tmp_path / "cache" / "grimoire"
+    touch the real ~/.cache/grimore (or AppData on Windows)."""
+    fake_cache = tmp_path / "cache" / "grimore"
     monkeypatch.setattr(
         paths_mod, "user_cache_dir", lambda app=None: str(fake_cache)
     )
@@ -111,17 +111,17 @@ class TestPidLock:
 # ── procfs fallback ───────────────────────────────────────────────────────
 
 
-class TestIsGrimoireProcessFallback:
+class TestIsGrimoreProcessFallback:
     def test_no_procfs_accepts_on_liveness(self, monkeypatch):
         """On Windows/macOS argv is unreadable; verifier defers to liveness."""
         monkeypatch.setattr(sysmod, "_HAS_PROCFS", False)
         monkeypatch.setattr(sysmod, "_read_cmdline_argv", lambda pid: [])
-        assert sysmod._is_grimoire_process(pid=12345) is True
+        assert sysmod._is_grimore_process(pid=12345) is True
 
     def test_procfs_present_but_argv_empty_rejects(self, monkeypatch):
         monkeypatch.setattr(sysmod, "_HAS_PROCFS", True)
         monkeypatch.setattr(sysmod, "_read_cmdline_argv", lambda pid: [])
-        assert sysmod._is_grimoire_process(pid=12345) is False
+        assert sysmod._is_grimore_process(pid=12345) is False
 
 
 # ── event log ─────────────────────────────────────────────────────────────
@@ -195,7 +195,7 @@ class TestDaemonConfig:
         assert cfg.log_events is True
 
     def test_load_config_parses_daemon_section(self, tmp_path, monkeypatch):
-        toml = tmp_path / "grimoire.toml"
+        toml = tmp_path / "grimore.toml"
         toml.write_text(
             "[daemon]\n"
             "enabled = true\n"
@@ -206,7 +206,7 @@ class TestDaemonConfig:
         assert cfg.daemon.log_events is False
 
     def test_load_config_unknown_key_warns_not_crashes(self, tmp_path):
-        toml = tmp_path / "grimoire.toml"
+        toml = tmp_path / "grimore.toml"
         toml.write_text("[daemon]\nbogus = 1\n")
         # Should not raise even with an unknown key.
         cfg = load_config(str(toml))
@@ -238,12 +238,12 @@ class _StubDB:
 
 
 def _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect):
-    """Construct a GrimoireDaemon without invoking heavy services.
+    """Construct a GrimoreDaemon without invoking heavy services.
 
     We patch out everything the constructor reaches for; the resulting
     instance is enough to exercise start/stop signal handling.
     """
-    from grimoire import daemon as daemon_mod
+    from grimore import daemon as daemon_mod
 
     monkeypatch.setattr(daemon_mod, "Database", lambda *a, **kw: _StubDB())
     monkeypatch.setattr(daemon_mod, "MarkdownParser", lambda *a, **kw: object())
@@ -269,7 +269,7 @@ def _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect):
     cfg.maintenance.enabled = False
     cfg.daemon = DaemonConfig(enabled=True, log_events=True)
 
-    instance = daemon_mod.GrimoireDaemon(cfg, pid_file=str(tmp_path / "daemon.lock"))
+    instance = daemon_mod.GrimoreDaemon(cfg, pid_file=str(tmp_path / "daemon.lock"))
     # Swap the observer for a no-op so start() doesn't try to watch anything.
     monkeypatch.setattr(daemon_mod, "VaultObserver",
                         lambda *a, **kw: _StubObserver())
@@ -278,12 +278,12 @@ def _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect):
 
 class TestDaemonSignalHandling:
     def test_default_pid_file_uses_platformdirs(self, tmp_path, monkeypatch, cache_redirect):
-        from grimoire import daemon as daemon_mod
+        from grimore import daemon as daemon_mod
         # Re-patch Database etc. so __init__ doesn't blow up.
         instance, _ = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)
         # Sanity: the instance we built used an explicit pid_file. Now make
         # sure the no-arg form picks up the platformdirs default.
-        instance2 = daemon_mod.GrimoireDaemon(instance.config)
+        instance2 = daemon_mod.GrimoreDaemon(instance.config)
         assert instance2.pid_file == str(paths_mod.daemon_lock_path())
 
     def test_event_log_routes_to_platformdirs(self, tmp_path, monkeypatch, cache_redirect):
@@ -292,10 +292,10 @@ class TestDaemonSignalHandling:
         assert instance.event_log.enabled is True
 
     def test_event_log_disabled_via_config(self, tmp_path, monkeypatch, cache_redirect):
-        from grimoire import daemon as daemon_mod
+        from grimore import daemon as daemon_mod
         instance, cfg = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)
         cfg.daemon = DaemonConfig(enabled=True, log_events=False)
-        instance2 = daemon_mod.GrimoireDaemon(cfg, pid_file=str(tmp_path / "x.lock"))
+        instance2 = daemon_mod.GrimoreDaemon(cfg, pid_file=str(tmp_path / "x.lock"))
         assert instance2.event_log.enabled is False
 
     @pytest.mark.skipif(
@@ -325,7 +325,7 @@ class TestDaemonSignalHandling:
         assert instance._pid_lock_fd is None
 
     def test_stop_releases_lock_and_flushes_db(self, tmp_path, monkeypatch, cache_redirect):
-        from grimoire import daemon as daemon_mod
+        from grimore import daemon as daemon_mod
         instance, _ = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)
         # Wire the stub observer manually since stop() expects either None or
         # something with .stop(). Simulate post-start state.

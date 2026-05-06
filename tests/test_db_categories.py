@@ -1,8 +1,8 @@
-from grimoire.memory.db import Database
+from grimore.memory.db import Database
 
 
 def _make_db(tmp_path):
-    return Database(str(tmp_path / "grimoire.db"))
+    return Database(str(tmp_path / "grimore.db"))
 
 
 def _add_note(db: Database, path: str, title: str) -> int:
