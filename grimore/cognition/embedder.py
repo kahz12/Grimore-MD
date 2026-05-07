@@ -75,7 +75,9 @@ class Embedder:
         try:
             url = f"{self.ollama_host}/api/embeddings"
             payload = {"model": self.model, "prompt": text}
-            response = self.session.post(url, json=payload, timeout=30)
+            response = self.session.post(
+                url, json=payload, timeout=self.config.cognition.embed_timeout_s
+            )
             response.raise_for_status()
             raw = response.json().get("embedding")
             if not raw:

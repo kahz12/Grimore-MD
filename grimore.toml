@@ -5,14 +5,19 @@ path = "./test_vault"
 ignored_dirs = [".obsidian", ".trash", ".git", "Templates"]
 
 [cognition]
-model_llm_local = "qwen2.5:3b"
-model_embeddings_local = "nomic-embed-text"
+model_llm_local = "qwen3.5:0.8b"
+model_embeddings_local = "embeddinggemma:latest"
 allow_remote = false
 # Hybrid retrieval — fuse BM25 (FTS5) with cosine similarity via RRF.
 hybrid_search = true
 rrf_k = 60
 # Minimum cosine similarity for `grimore connect` to propose a wikilink.
 connect_threshold = 0.7
+# HTTP timeouts (seconds) for Ollama. Bump request_timeout_s when pointing
+# model_llm_local at a larger model (e.g. 180 for 14B-class on CPU).
+# request_timeout_s = 60   # /api/generate, JSON path
+# stream_timeout_s  = 120  # /api/generate, streaming path
+# embed_timeout_s   = 30   # /api/embeddings
 
 [memory]
 db_path = "grimore.db"

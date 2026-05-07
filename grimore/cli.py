@@ -606,18 +606,17 @@ def prune(
     ))
 
 
-@app.command(rich_help_panel="System")
-def status():
-    """
-    🧭 Full dashboard: vault, cognition, daemon.
-    
-    Displays a high-level overview of the system state, including
-    indexing progress, model configurations, and daemon status.
+def _render_status_dashboard(config) -> None:
+    """Render the status dashboard against a given config.
+
+    Split from the Typer entrypoint so callers with a live in-memory
+    config (e.g. the interactive shell after a ``models chat`` swap)
+    can pass it through rather than going back to disk via
+    ``load_config()``.
     """
     from grimore.utils.paths import daemon_lock_path
     from grimore.utils.system import is_running
 
-    config = load_config()
     db = Database(config.memory.db_path)
 
     # Gather metrics from database
@@ -672,6 +671,17 @@ def status():
     elif config.output.dry_run:
         console.print()
         ui.tip("You are in dry-run mode. Set [cyan]dry_run = false[/] in [cyan]grimore.toml[/] to write.")
+
+
+@app.command(rich_help_panel="System")
+def status():
+    """
+    🧭 Full dashboard: vault, cognition, daemon.
+
+    Displays a high-level overview of the system state, including
+    indexing progress, model configurations, and daemon status.
+    """
+    _render_status_dashboard(load_config())
 
 
 category_app = typer.Typer(

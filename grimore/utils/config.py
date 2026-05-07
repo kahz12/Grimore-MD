@@ -4,6 +4,7 @@ This module defines the project's configuration schema using dataclasses
 and handles loading settings from 'grimore.toml' and environment variables.
 """
 import os
+import re
 from pathlib import Path
 import tomllib
 from dotenv import load_dotenv
@@ -66,6 +67,12 @@ class CognitionConfig:
     # Below this the candidate is dropped; exposed so vaults that lean more
     # on RAG recall can relax it and vice versa.
     connect_threshold: float = 0.7
+    # Per-call HTTP timeouts (seconds) for Ollama. Defaults suit qwen2.5:3b on
+    # modest hardware; bigger models (e.g. ministral-3:14b) routinely need
+    # request_timeout_s ≥ 180 on the first warm-up call.
+    request_timeout_s: int = 60   # /api/generate, JSON path
+    stream_timeout_s: int = 120   # /api/generate, streaming path
+    embed_timeout_s: int = 30     # /api/embeddings
 
 @dataclass
 class MemoryConfig:
@@ -186,3 +193,60 @@ def load_config(config_path: str = "grimore.toml") -> Config:
         chronicler=ChroniclerConfig(**_filter_known(ChroniclerConfig, data.get("chronicler", {}), "chronicler")),
         daemon=DaemonConfig(**_filter_known(DaemonConfig, data.get("daemon", {}), "daemon")),
     )
+
+
+def _set_cognition_string(text: str, key: str, value: str) -> str:
+    """Replace ``key = "..."`` inside the ``[cognition]`` section, or append it.
+
+    Comment-preserving in-place edit. We deliberately avoid serializing
+    the whole TOML — there's no stdlib writer, and the alternatives
+    either drop comments (tomli-w) or add a dependency (tomlkit).
+
+    Handles double- and single-quoted basic strings; unquoted/literal
+    multi-line strings fall through to "append" (logged as a warning by
+    the caller if the resulting file is malformed).
+    """
+    cog_match = re.search(r"^\[cognition\]\s*$", text, flags=re.MULTILINE)
+    if not cog_match:
+        sep = "" if text.endswith("\n") else "\n"
+        return f'{text}{sep}\n[cognition]\n{key} = "{value}"\n'
+
+    start = cog_match.end()
+    next_section = re.search(r"^\[", text[start:], flags=re.MULTILINE)
+    end = start + next_section.start() if next_section else len(text)
+    section_body = text[start:end]
+
+    pattern = re.compile(
+        rf'^(?P<lead>\s*{re.escape(key)}\s*=\s*)(?:"[^"]*"|\'[^\']*\')(?P<trail>.*)$',
+        flags=re.MULTILINE,
+    )
+    if pattern.search(section_body):
+        new_body = pattern.sub(rf'\g<lead>"{value}"\g<trail>', section_body)
+    else:
+        trailing = "" if section_body.endswith("\n") else "\n"
+        new_body = f'{section_body}{trailing}{key} = "{value}"\n'
+
+    return text[:start] + new_body + text[end:]
+
+
+def update_cognition_models(
+    chat_model: str | None = None,
+    embedding_model: str | None = None,
+    config_path: str = "grimore.toml",
+) -> bool:
+    """Persist a model swap into ``[cognition]`` of ``grimore.toml``.
+
+    Returns True if the file was rewritten. Returns False if no toml
+    exists at ``config_path`` (in which case defaults will continue to
+    apply on next start — caller decides whether to warn).
+    """
+    path = Path(config_path)
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if chat_model is not None:
+        text = _set_cognition_string(text, "model_llm_local", chat_model)
+    if embedding_model is not None:
+        text = _set_cognition_string(text, "model_embeddings_local", embedding_model)
+    path.write_text(text, encoding="utf-8")
+    return True

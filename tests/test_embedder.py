@@ -1,6 +1,8 @@
 import math
+from unittest.mock import MagicMock
 
 from grimore.cognition.embedder import Embedder
+from grimore.utils.config import CognitionConfig, Config
 
 
 class TestNormalize:
@@ -62,3 +64,25 @@ class TestSimilarity:
         dot = Embedder.dot_product(a, b)
         cos = Embedder.cosine_similarity(a, b)
         assert math.isclose(dot, cos, abs_tol=1e-9)
+
+
+class TestEmbedTimeoutWiring:
+    """Embedder must read its HTTP timeout from CognitionConfig."""
+
+    def _embedder_with_config(self, cognition: CognitionConfig) -> Embedder:
+        cfg = Config()
+        cfg.cognition = cognition
+        emb = Embedder(cfg)
+        emb.session = MagicMock()
+        return emb
+
+    def test_embed_uses_embed_timeout_from_config(self):
+        emb = self._embedder_with_config(CognitionConfig(embed_timeout_s=45))
+        resp = MagicMock()
+        resp.json.return_value = {"embedding": [1.0, 0.0, 0.0]}
+        emb.session.post.return_value = resp
+
+        emb.embed("some text")
+
+        kwargs = emb.session.post.call_args.kwargs
+        assert kwargs["timeout"] == 45

@@ -157,7 +157,9 @@ class LLMRouter:
             if json_format:
                 payload["format"] = "json"
 
-            response = self.session.post(url, json=payload, timeout=60)
+            response = self.session.post(
+                url, json=payload, timeout=self.config.cognition.request_timeout_s
+            )
             response.raise_for_status()
             result = response.json()
             raw_response = result.get("response", "")
@@ -181,6 +183,28 @@ class LLMRouter:
             logger.error("llm_call_failed", model=model, error=str(e))
             self._record_failure()
             return None
+
+    def list_installed_models(self) -> list[dict]:
+        """Return the models installed in the local Ollama (`/api/tags`).
+
+        Each entry is ``{"name": str, "size": int}`` in the order Ollama
+        reports them. Empty list on any failure (logged) so callers can
+        handle "Ollama down" and "vault has no models" the same way.
+        """
+        try:
+            url = f"{self.ollama_host}/api/tags"
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            models = data.get("models", []) or []
+            return [
+                {"name": m.get("name", ""), "size": int(m.get("size", 0) or 0)}
+                for m in models
+                if m.get("name")
+            ]
+        except Exception as e:
+            logger.error("ollama_list_failed", error=str(e))
+            return []
 
     def complete_streaming(
         self,
@@ -213,7 +237,12 @@ class LLMRouter:
         }
 
         try:
-            with self.session.post(url, json=payload, timeout=120, stream=True) as resp:
+            with self.session.post(
+                url,
+                json=payload,
+                timeout=self.config.cognition.stream_timeout_s,
+                stream=True,
+            ) as resp:
                 resp.raise_for_status()
                 got_anything = False
                 for line in resp.iter_lines(decode_unicode=True):

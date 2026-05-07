@@ -1,4 +1,9 @@
-from grimore.cognition.llm_router import _extract_json_object
+from unittest.mock import MagicMock
+
+import pytest
+
+from grimore.cognition.llm_router import LLMRouter, _extract_json_object
+from grimore.utils.config import CognitionConfig, Config
 
 
 class TestExtractJsonObject:
@@ -41,3 +46,76 @@ class TestExtractJsonObject:
     def test_prefers_direct_parse_when_clean(self):
         text = '{"outer": {"inner": 1}}'
         assert _extract_json_object(text) == {"outer": {"inner": 1}}
+
+
+def _router_with_config(cognition: CognitionConfig) -> LLMRouter:
+    cfg = Config()
+    cfg.cognition = cognition
+    router = LLMRouter(cfg)
+    router.session = MagicMock()
+    return router
+
+
+class TestRequestTimeoutWiring:
+    """Per-call timeouts must come from CognitionConfig, not be hard-coded."""
+
+    def test_complete_uses_request_timeout_from_config(self):
+        router = _router_with_config(CognitionConfig(request_timeout_s=181))
+        resp = MagicMock()
+        resp.json.return_value = {"response": '{"answer": "ok"}'}
+        router.session.post.return_value = resp
+
+        router.complete("hi", system_prompt="sys")
+
+        kwargs = router.session.post.call_args.kwargs
+        assert kwargs["timeout"] == 181
+
+    def test_complete_streaming_uses_stream_timeout_from_config(self):
+        router = _router_with_config(CognitionConfig(stream_timeout_s=240))
+        # context manager protocol over a streaming response
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        resp.iter_lines.return_value = iter([])
+        router.session.post.return_value = resp
+
+        list(router.complete_streaming("hi", system_prompt="sys"))
+
+        kwargs = router.session.post.call_args.kwargs
+        assert kwargs["timeout"] == 240
+
+    def test_defaults_match_pre_config_behavior(self):
+        cfg = CognitionConfig()
+        assert cfg.request_timeout_s == 60
+        assert cfg.stream_timeout_s == 120
+        assert cfg.embed_timeout_s == 30
+
+
+class TestListInstalledModels:
+    def test_returns_models_in_response_order(self):
+        router = _router_with_config(CognitionConfig())
+        resp = MagicMock()
+        resp.json.return_value = {
+            "models": [
+                {"name": "qwen2.5:3b", "size": 2_000_000_000},
+                {"name": "nomic-embed-text", "size": 274_000_000},
+            ]
+        }
+        router.session.get.return_value = resp
+
+        out = router.list_installed_models()
+
+        assert [m["name"] for m in out] == ["qwen2.5:3b", "nomic-embed-text"]
+        assert out[0]["size"] == 2_000_000_000
+
+    def test_empty_list_on_http_failure(self):
+        router = _router_with_config(CognitionConfig())
+        router.session.get.side_effect = RuntimeError("boom")
+        assert router.list_installed_models() == []
+
+    def test_skips_entries_without_name(self):
+        router = _router_with_config(CognitionConfig())
+        resp = MagicMock()
+        resp.json.return_value = {"models": [{"size": 1}, {"name": "ok"}]}
+        router.session.get.return_value = resp
+        assert [m["name"] for m in router.list_installed_models()] == ["ok"]

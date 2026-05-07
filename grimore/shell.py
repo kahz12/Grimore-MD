@@ -40,6 +40,17 @@ console = ui.console
 logger = get_logger(__name__)
 
 
+def _format_bytes(n: int) -> str:
+    """Compact human-readable byte size (e.g. ``"4.7 GB"``)."""
+    if n <= 0:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
 class _ShellArgError(Exception):
     """Raised when argparse would call sys.exit on a parse error.
 
@@ -93,6 +104,7 @@ class GrimoreShell:
             "mirror": self._cmd_mirror,
             "distill": self._cmd_distill,
             "refresh": self._cmd_refresh,
+            "models": self._cmd_models,
             "help": self._cmd_help,
             "exit": self._cmd_exit,
             "quit": self._cmd_exit,
@@ -233,8 +245,8 @@ class GrimoreShell:
         )
 
     def _cmd_status(self, argv: Sequence[str]) -> None:
-        from grimore.cli import status
-        status()
+        from grimore.cli import _render_status_dashboard
+        _render_status_dashboard(self.session.config)
 
     def _cmd_tags(self, argv: Sequence[str]) -> None:
         parser = _NonExitingArgParser(prog="tags", add_help=True)
@@ -387,6 +399,115 @@ class GrimoreShell:
                 (sub, "grimore.primary"),
             ))
 
+    def _cmd_models(self, argv: Sequence[str]) -> None:
+        """List Ollama models and switch chat/embedding for this session.
+
+        Subcommands:
+          models                       — list + show current selection
+          models chat  <name|index>    — set the LLM model
+          models embed <name|index>    — set the embedding model
+          models chat                  — list with a hint to pass a name
+          models embed                 — same, embedding side
+        """
+        if not argv:
+            self._models_show()
+            return
+        sub, *rest = argv
+        if sub not in ("chat", "embed"):
+            console.print(Text.assemble(
+                ("Unknown models subcommand: ", "grimore.danger"),
+                (sub, "grimore.primary"),
+            ))
+            ui.tip("Use [cyan]models[/], [cyan]models chat <name>[/] or [cyan]models embed <name>[/].")
+            return
+
+        models = self.session.router.list_installed_models()
+        if not models:
+            console.print(Text("No models reported by Ollama (or it's unreachable).",
+                               style="grimore.danger"))
+            return
+
+        if not rest:
+            self._models_print_table(models, hint=sub)
+            return
+
+        chosen = self._models_resolve(rest[0], models)
+        if chosen is None:
+            console.print(Text(f"models: no such model {rest[0]!r}",
+                               style="grimore.danger"))
+            ui.tip("Run [cyan]models[/] to see what's installed.")
+            return
+
+        from grimore.utils.config import update_cognition_models
+
+        if sub == "chat":
+            self.session.set_chat_model(chosen)
+            persisted = update_cognition_models(chat_model=chosen)
+            label = "Chat model set to "
+        else:
+            self.session.set_embedding_model(chosen)
+            persisted = update_cognition_models(embedding_model=chosen)
+            label = "Embedding model set to "
+
+        suffix = (
+            " — saved to grimore.toml."
+            if persisted
+            else " — no grimore.toml found, this session only."
+        )
+        console.print(Text.assemble(
+            (label, "grimore.success"),
+            (chosen, "grimore.primary"),
+            (suffix, "grimore.muted"),
+        ))
+
+    def _models_show(self) -> None:
+        cog = self.session.config.cognition
+        console.print(ui.kv_table([
+            ("Chat model", cog.model_llm_local),
+            ("Embedding model", cog.model_embeddings_local),
+        ]))
+        models = self.session.router.list_installed_models()
+        if not models:
+            console.print(Text("No models reported by Ollama (or it's unreachable).",
+                               style="grimore.danger"))
+            return
+        self._models_print_table(models, hint=None)
+
+    def _models_print_table(self, models: list[dict], hint: str | None) -> None:
+        ui.section("Installed Ollama models")
+        cog = self.session.config.cognition
+        for i, m in enumerate(models, start=1):
+            name = m["name"]
+            badges = []
+            if name == cog.model_llm_local:
+                badges.append("chat")
+            if name == cog.model_embeddings_local:
+                badges.append("embed")
+            badge = f"  ← {' & '.join(badges)}" if badges else ""
+            console.print(Text.assemble(
+                (f"  {i:>2}. ", "grimore.muted"),
+                (name, "grimore.primary"),
+                (f"  ({_format_bytes(m['size'])})", "grimore.muted"),
+                (badge, "grimore.accent"),
+            ))
+        if hint == "chat":
+            ui.tip("Pick one: [cyan]models chat <name>[/] or [cyan]models chat <index>[/].")
+        elif hint == "embed":
+            ui.tip("Pick one: [cyan]models embed <name>[/] or [cyan]models embed <index>[/].")
+
+    @staticmethod
+    def _models_resolve(token: str, models: list[dict]) -> str | None:
+        """Resolve a user token (name or 1-based index) to a model name."""
+        if token.isdigit():
+            idx = int(token)
+            if 1 <= idx <= len(models):
+                return models[idx - 1]["name"]
+            return None
+        for m in models:
+            if m["name"] == token:
+                return token
+        return None
+
     def _cmd_distill(self, argv: Sequence[str]) -> None:
         parser = _NonExitingArgParser(prog="distill", add_help=True)
         parser.add_argument("-t", "--tag", default=None)
@@ -444,6 +565,11 @@ class GrimoreShell:
             "  Synthesize matching notes into a single _synthesis/ note."
         ),
         "refresh": "refresh\n  Drop cached services so the next call rebuilds them.",
+        "models": (
+            "models | models chat <name|index> | models embed <name|index>\n"
+            "  List Ollama models and switch the chat/embedding pick.\n"
+            "  Updates the live session AND rewrites [cognition] in grimore.toml."
+        ),
         "help": "help [command]\n  Show this list, or details for one command.",
         "exit": "exit | quit\n  Leave the shell.",
         "quit": "exit | quit\n  Leave the shell.",

@@ -248,4 +248,175 @@ def test_keyboardinterrupt_inside_handler_returns_to_loop(
     shell.dispatch("status")
     out = capsys.readouterr().out
     assert "Interrupted" in out
+
+
+# ── models command ──────────────────────────────────────────────────────
+
+
+def _stub_models(shell, models):
+    """Pin `router.list_installed_models()` to a fixed list for the test."""
+    shell.session.router.list_installed_models = lambda: list(models)
+
+
+def test_models_no_args_shows_current_and_list(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    _stub_models(shell, [
+        {"name": "qwen2.5:3b", "size": 2_000_000_000},
+        {"name": "nomic-embed-text", "size": 274_000_000},
+    ])
+    shell.dispatch("models")
+    out = capsys.readouterr().out
+    assert "qwen2.5:3b" in out and "nomic-embed-text" in out
+    assert "Installed Ollama models" in out
+
+
+def test_models_chat_by_name_updates_config(
+    shell_config, patched_services, tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)  # isolate from real grimore.toml
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    _stub_models(shell, [
+        {"name": "qwen2.5:3b", "size": 1},
+        {"name": "ministral-3:14b", "size": 2},
+    ])
+    shell.dispatch("models chat ministral-3:14b")
+    assert session.config.cognition.model_llm_local == "ministral-3:14b"
+
+
+def test_models_chat_by_index_updates_config(
+    shell_config, patched_services, tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    _stub_models(shell, [
+        {"name": "qwen2.5:3b", "size": 1},
+        {"name": "ministral-3:14b", "size": 2},
+    ])
+    shell.dispatch("models chat 2")
+    assert session.config.cognition.model_llm_local == "ministral-3:14b"
+
+
+def test_models_embed_resets_embedder_and_oracle(
+    shell_config, patched_services, tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    # Build embedder + oracle once via an ask.
+    shell.dispatch("ask Question one")
+    assert patched_services["embedder"] == 1
+    assert patched_services["oracle"] == 1
+
+    _stub_models(shell, [
+        {"name": "nomic-embed-text", "size": 1},
+        {"name": "mxbai-embed-large", "size": 2},
+    ])
+    shell.dispatch("models embed mxbai-embed-large")
+    assert session.config.cognition.model_embeddings_local == "mxbai-embed-large"
+
+    # Next ask must rebuild embedder + oracle (router is unaffected).
+    shell.dispatch("ask Question two")
+    assert patched_services["embedder"] == 2
+    assert patched_services["oracle"] == 2
+    assert patched_services["router"] == 1
+
+
+def test_models_unknown_name_does_not_update(
+    shell_config, patched_services, tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    session = Session(shell_config)
+    original = session.config.cognition.model_llm_local
+    shell = GrimoreShell(session)
+    _stub_models(shell, [{"name": "qwen2.5:3b", "size": 1}])
+    shell.dispatch("models chat does-not-exist")
+    out = capsys.readouterr().out
+    assert "no such model" in out
+    assert session.config.cognition.model_llm_local == original
+
+
+def test_models_chat_persists_to_toml(
+    shell_config, patched_services, tmp_path, monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "grimore.toml").write_text(
+        "[cognition]\n"
+        'model_llm_local = "qwen2.5:3b"\n'
+        'model_embeddings_local = "nomic-embed-text"\n',
+        encoding="utf-8",
+    )
+    shell = GrimoreShell(Session(shell_config))
+    _stub_models(shell, [
+        {"name": "qwen2.5:3b", "size": 1},
+        {"name": "ministral-3:14b", "size": 2},
+    ])
+    shell.dispatch("models chat ministral-3:14b")
+
+    text = (tmp_path / "grimore.toml").read_text(encoding="utf-8")
+    assert 'model_llm_local = "ministral-3:14b"' in text
+    # Embedding model untouched.
+    assert 'model_embeddings_local = "nomic-embed-text"' in text
+
+
+def test_status_reflects_session_model_swap(
+    shell_config, patched_services, tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.chdir(tmp_path)
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    _stub_models(shell, [
+        {"name": "qwen2.5:3b", "size": 1},
+        {"name": "ministral-3:14b", "size": 2},
+    ])
+    shell.dispatch("models chat ministral-3:14b")
+    capsys.readouterr()  # drop the swap confirmation
+
+    # Patch out the DB stats call — the patched session.db is already a
+    # MagicMock, but `_render_status_dashboard` makes its own Database().
+    monkeypatch.setattr(
+        "grimore.cli.Database",
+        lambda *a, **kw: MagicMock(
+            get_dashboard_stats=lambda: {
+                "total_notes": 0, "tagged_notes": 0, "total_embeddings": 0,
+                "cached_embeddings": 0, "categorised_notes": 0,
+            },
+            get_tag_count=lambda: 0,
+            get_category_frequency=lambda: [],
+        ),
+    )
+
+    shell.dispatch("status")
+    out = capsys.readouterr().out
+    assert "ministral-3:14b" in out
+
+
+def test_models_unknown_subcommand_does_not_kill_loop(
+    shell_config, patched_services, capsys,
+):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("models bogus")
+    out = capsys.readouterr().out
+    assert "Unknown models subcommand" in out
+    assert shell._running is True
+
+
+def test_models_chat_without_name_prints_hint(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    _stub_models(shell, [{"name": "qwen2.5:3b", "size": 1}])
+    shell.dispatch("models chat")
+    out = capsys.readouterr().out
+    assert "Installed Ollama models" in out
+    assert "models chat" in out  # the hint mentions the command
+
+
+def test_models_when_ollama_unreachable_reports_error(
+    shell_config, patched_services, capsys,
+):
+    shell = GrimoreShell(Session(shell_config))
+    _stub_models(shell, [])
+    shell.dispatch("models chat 1")
+    out = capsys.readouterr().out
+    assert "Ollama" in out
     assert shell._running is True

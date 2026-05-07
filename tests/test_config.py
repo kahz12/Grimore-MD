@@ -3,7 +3,11 @@ import os
 
 import pytest
 
-from grimore.utils.config import _load_project_env
+from grimore.utils.config import (
+    _load_project_env,
+    _set_cognition_string,
+    update_cognition_models,
+)
 
 
 @pytest.fixture
@@ -57,3 +61,92 @@ def test_existing_env_var_is_not_overridden(tmp_path, monkeypatch, isolated_env)
     _load_project_env()
     # override=False: shell wins.
     assert os.environ["GRIMORE_TEST_KEEP"] == "from_shell"
+
+
+# ── _set_cognition_string + update_cognition_models ────────────────────────
+
+
+class TestSetCognitionString:
+    """Regex-based, comment-preserving update of [cognition] keys."""
+
+    def test_replaces_double_quoted_value(self):
+        text = '[cognition]\nmodel_llm_local = "old"\n'
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert 'model_llm_local = "new"' in out
+
+    def test_replaces_single_quoted_value(self):
+        text = "[cognition]\nmodel_llm_local = 'old'\n"
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert 'model_llm_local = "new"' in out
+
+    def test_preserves_inline_comment(self):
+        text = '[cognition]\nmodel_llm_local = "old"  # a comment\n'
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert 'model_llm_local = "new"  # a comment' in out
+
+    def test_preserves_other_keys_in_section(self):
+        text = (
+            '[cognition]\n'
+            'model_llm_local = "old"\n'
+            'allow_remote = false\n'
+            'rrf_k = 60\n'
+        )
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert "allow_remote = false" in out
+        assert "rrf_k = 60" in out
+
+    def test_does_not_touch_other_sections(self):
+        text = (
+            '[vault]\nmodel_llm_local = "do not touch"\n'
+            '[cognition]\nmodel_llm_local = "old"\n'
+            '[memory]\ndb_path = "x.db"\n'
+        )
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert '[vault]\nmodel_llm_local = "do not touch"' in out
+        assert 'db_path = "x.db"' in out
+        # Only the cognition occurrence flips.
+        assert out.count('model_llm_local = "new"') == 1
+
+    def test_appends_when_key_absent_from_cognition(self):
+        text = '[cognition]\nallow_remote = false\n[memory]\ndb_path = "x.db"\n'
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert 'model_llm_local = "new"' in out
+        # Must land inside [cognition], i.e. before [memory].
+        assert out.index('model_llm_local = "new"') < out.index("[memory]")
+
+    def test_appends_section_when_no_cognition_block(self):
+        text = '[vault]\npath = "./v"\n'
+        out = _set_cognition_string(text, "model_llm_local", "new")
+        assert "[cognition]" in out
+        assert 'model_llm_local = "new"' in out
+
+
+class TestUpdateCognitionModels:
+    def test_returns_false_when_no_toml(self, tmp_path):
+        path = tmp_path / "missing.toml"
+        assert update_cognition_models(chat_model="x", config_path=str(path)) is False
+        assert not path.exists()
+
+    def test_rewrites_chat_only(self, tmp_path):
+        path = tmp_path / "grimore.toml"
+        path.write_text(
+            '[cognition]\nmodel_llm_local = "a"\nmodel_embeddings_local = "b"\n',
+            encoding="utf-8",
+        )
+        assert update_cognition_models(chat_model="z", config_path=str(path)) is True
+        text = path.read_text(encoding="utf-8")
+        assert 'model_llm_local = "z"' in text
+        assert 'model_embeddings_local = "b"' in text
+
+    def test_rewrites_both_when_supplied(self, tmp_path):
+        path = tmp_path / "grimore.toml"
+        path.write_text(
+            '[cognition]\nmodel_llm_local = "a"\nmodel_embeddings_local = "b"\n',
+            encoding="utf-8",
+        )
+        update_cognition_models(
+            chat_model="zc", embedding_model="ze", config_path=str(path),
+        )
+        text = path.read_text(encoding="utf-8")
+        assert 'model_llm_local = "zc"' in text
+        assert 'model_embeddings_local = "ze"' in text

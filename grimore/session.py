@@ -70,6 +70,28 @@ class Session:
         self._embedder = None
         self._oracle = None
 
+    def set_chat_model(self, name: str) -> None:
+        """Override the LLM model for this session only.
+
+        ``LLMRouter.complete`` reads the model name from config on every
+        call, so no service rebuild is needed — but the Oracle cached the
+        router reference at build time, which still picks up the new
+        config (same router instance), so we leave both alone.
+        """
+        self.config.cognition.model_llm_local = name
+
+    def set_embedding_model(self, name: str) -> None:
+        """Override the embedding model for this session only.
+
+        Unlike the LLM, ``Embedder`` snapshots ``self.model`` at
+        construction (because it goes into the cache key), so we drop
+        the cached embedder *and* the oracle (which holds a reference to
+        the old embedder). Next access rebuilds both with the new model.
+        """
+        self.config.cognition.model_embeddings_local = name
+        self._embedder = None
+        self._oracle = None
+
     def close(self) -> None:
         """Idempotent teardown. Database has no explicit close (per-call
         sqlite3 connections), so this just drops references and lets GC
