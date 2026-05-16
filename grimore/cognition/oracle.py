@@ -41,93 +41,26 @@ class Oracle:
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def ask(self, question: str, top_k: int = 5) -> dict:
+    def ask(self, question: str, top_k: int = 5, extra_sources=None) -> dict:
         """
         Main RAG entry point:
         1. Generates an embedding for the user's question.
         2. Retrieves the most relevant chunks from the database.
         3. Constructs a system prompt containing the retrieved context.
         4. Calls the LLM to generate a cited answer.
+
+        ``extra_sources`` carries user-explicit attachments (``@note``
+        mentions or ``/pin`` pins) that get priority on the context
+        budget. Same wrap_untrusted defence applies.
         """
         logger.info("oracle_query", question=question)
-        
-        # Step 1: Vectorize the question (BM25 alone is still useful if the
-        # embedder is down, so we don't abort on a failed embed anymore).
-        query_vector = self.embedder.embed(question)
-
-        # Step 2: Retrieve relevant fragments (hybrid when possible).
-        use_hybrid = (
-            getattr(self.config.cognition, "hybrid_search", True)
-            and self.db.fts_available
+        full_context, sources = self._build_context(
+            question, top_k, extra_sources=extra_sources
         )
-        if use_hybrid:
-            similar = self.connector.find_hybrid(
-                query_text=question,
-                query_vector=query_vector,
-                top_k=top_k,
-                rrf_k=getattr(self.config.cognition, "rrf_k", 60),
-            )
-        elif query_vector:
-            similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
-        else:
-            return {"answer": "I could not understand the question's essence.", "sources": []}
-
-        if not similar:
+        if full_context is None:
             return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
 
-        # Step 3: Format candidate parts (highest-ranked first).
-        candidate_parts: list[tuple[str, str]] = []
-        for item in similar:
-            title = self.db.get_note_title(item['note_id'])
-            if not title:
-                logger.warning("orphan_embedding", note_id=item['note_id'])
-                continue
-
-            # Sanitize and wrap content to prevent prompt injection from notes
-            safe_text = SecurityGuard.wrap_untrusted(
-                SecurityGuard.sanitize_prompt(item['text']),
-                label="source",
-            )
-            candidate_parts.append(
-                (title, f"--- Source: [[{title}]] ---\n{safe_text}")
-            )
-
-        # Apply the hard char cap. Whole sources only — truncating mid-block
-        # would tear the <source>…</source> wrapper that wrap_untrusted set
-        # up specifically to defend against prompt-injection. If a top-ranked
-        # source overflows on its own, skip it and try the next one rather
-        # than starving the entire context.
-        accepted_parts: list[str] = []
-        sources: list[str] = []
-        used = 0
-        dropped = 0
-        for title, part in candidate_parts:
-            extra = len(part) + (len(_CONTEXT_SEPARATOR) if accepted_parts else 0)
-            if used + extra > _ORACLE_CONTEXT_MAX_CHARS:
-                dropped += 1
-                continue
-            accepted_parts.append(part)
-            sources.append(title)
-            used += extra
-
-        if dropped:
-            logger.info(
-                "oracle_context_truncated",
-                kept=len(accepted_parts),
-                dropped=dropped,
-                cap=_ORACLE_CONTEXT_MAX_CHARS,
-                used_chars=used,
-            )
-
-        if not accepted_parts:
-            return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
-
-        full_context = _CONTEXT_SEPARATOR.join(accepted_parts)
-        
-        # Step 4: LLM Generation
-        # Inject retrieved context into the system prompt template
         system_prompt = self.system_prompt_template.replace("{context}", full_context)
-        
         response = self.router.complete(
             prompt=f"Question: {question}",
             system_prompt=system_prompt,
@@ -135,20 +68,26 @@ class Oracle:
 
         if not response or not isinstance(response, dict):
             logger.warning("oracle_no_response")
-            return {"answer": "The Oracle is silent.", "sources": list(set(sources))}
+            return {"answer": "The Oracle is silent.", "sources": sources}
 
         return {
             "answer": response.get("answer", "The Oracle is silent."),
-            "sources": list(set(sources))
+            "sources": sources,
         }
 
-    def _build_context(self, question: str, top_k: int):
+    def _build_context(self, question: str, top_k: int, extra_sources=None):
         """Run retrieval + context-cap and return (full_context, sources).
 
         Returns ``(None, [])`` when retrieval finds nothing usable, so the
         caller can short-circuit without a second branch. Pulled out of
         ``ask()`` so ``ask_stream()`` can reuse the exact same retrieval
         logic — keeping JSON and streaming paths in lockstep.
+
+        ``extra_sources`` is a list of ``(title, raw_body)`` pairs from
+        user-explicit attachments (``@note``, ``/pin``). They are prepended
+        to the candidate list with the same wrap_untrusted defence applied
+        so they get priority on the char budget without bypassing the
+        prompt-injection guard.
         """
         query_vector = self.embedder.embed(question)
         use_hybrid = (
@@ -165,12 +104,23 @@ class Oracle:
         elif query_vector:
             similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
         else:
-            return None, []
+            similar = []
 
-        if not similar:
+        if not similar and not extra_sources:
             return None, []
 
         candidate_parts: list[tuple[str, str]] = []
+
+        # User-explicit attachments first — they're the highest signal.
+        for title, raw_body in (extra_sources or []):
+            safe_text = SecurityGuard.wrap_untrusted(
+                SecurityGuard.sanitize_prompt(raw_body),
+                label="source",
+            )
+            candidate_parts.append(
+                (title, f"--- Source: [[{title}]] (pinned) ---\n{safe_text}")
+            )
+
         for item in similar:
             title = self.db.get_note_title(item['note_id'])
             if not title:
@@ -211,7 +161,7 @@ class Oracle:
 
         return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources))
 
-    def ask_stream(self, question: str, top_k: int = 5) -> Iterator[dict]:
+    def ask_stream(self, question: str, top_k: int = 5, extra_sources=None) -> Iterator[dict]:
         """Streaming variant of :meth:`ask`.
 
         Yields events::
@@ -229,7 +179,7 @@ class Oracle:
         for callers like ``--export`` that depend on a structured payload.
         """
         logger.info("oracle_query_stream", question=question)
-        full_context, sources = self._build_context(question, top_k)
+        full_context, sources = self._build_context(question, top_k, extra_sources=extra_sources)
         if full_context is None:
             yield {"type": "done", "sources": []}
             return

@@ -15,7 +15,7 @@ import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import yaml
 

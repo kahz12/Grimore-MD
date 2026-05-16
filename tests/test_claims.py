@@ -7,9 +7,7 @@ and paraphrased inputs.
 """
 from __future__ import annotations
 
-import pytest
-
-from grimore.cognition.claims import ClaimExtractor, ExtractedClaim
+from grimore.cognition.claims import ClaimExtractor
 
 
 class _QueuedRouter:

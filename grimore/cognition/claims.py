@@ -11,7 +11,7 @@ LLM rephrased too aggressively to map back.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Optional
 
 import frontmatter
 

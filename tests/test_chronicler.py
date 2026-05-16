@@ -16,7 +16,6 @@ import pytest
 
 from grimore.cognition.chronicler import (
     Chronicler,
-    StaleNote,
     resolve_window_days,
 )
 from grimore.memory.db import Database

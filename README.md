@@ -33,7 +33,7 @@ pip install -e .
 grimore preflight                                       # validate config + Ollama
 grimore scan --vault-path /path/to/vault --no-dry-run   # first full pass
 grimore daemon start                                    # keep the index live
-grimore ask "What threads through my notes on nihilism?"
+grimore shell                                           # conversational mode
 ```
 
 ## Architecture
@@ -56,16 +56,51 @@ graph TD
 - **Cognition** — local LLM tags, summarises and files each note into one hierarchical category. A 5-failure circuit breaker opens a 120 s cooldown rather than thrashing Ollama.
 - **Memory** — SQLite in WAL mode with FTS5 alongside per-chunk vectors keyed by `sha256(model ‖ chunk)`, so swapping embedders invalidates cleanly.
 - **Retrieval** — BM25 and cosine fused via Reciprocal Rank Fusion. Degrades to either side alone if the other is unavailable.
-- **Synthesis** — `connect` maintains an idempotent `## Suggested Connections` block of wikilinks; `ask` runs RAG over the hybrid index and cites back to your own notes.
+- **Synthesis** — `connect` maintains an idempotent `## Suggested Connections` block of wikilinks; `ask` runs RAG over the hybrid index and cites back to your own notes. `distill` fuses notes that share a tag or category into a single reference note under `_synthesis/`; `chronicler` flags notes past their freshness window; `mirror` (the Black Mirror) cross-checks claims across notes and surfaces contradictions.
+
+## Shell — conversational mode
+
+`grimore shell` opens an interactive REPL that treats every line as a question to the Oracle, with `/`-prefixed meta-commands and `@note` references for pinning vault context.
+
+```text
+❯ what threads through my notes on nihilism?
+…streams the Oracle's answer in place…
+
+❯ @camus-revolt how does this connect to absurdism?
+…attaches the note "camus-revolt" as priority context for this question…
+
+❯ /pin @nietzsche-gay-science      # rides on every future question
+❯ /scan --no-dry-run
+About to write frontmatter to every changed note. Continue? [y/N] _
+
+❯ /again                           # re-run the previous question
+❯ /why                             # re-print the last answer's sources
+❯ /history 20                      # last 20 questions in this session
+❯ /save                            # export the transcript as a vault note
+❯ /models chat ministral-3:14b
+```
+
+- **Slash commands** mirror every CLI verb (`/scan`, `/connect`, `/prune`, `/status`, `/models`, `/category`, `/chronicler`, `/mirror`, `/distill`) plus shell-only helpers (`/again`, `/why`, `/pin`, `/unpin`, `/save`, `/history`). A mistype → "did you mean …?" suggestion via difflib.
+- **`@`-mentions** autocomplete vault note titles via fuzzy match (rapidfuzz) and attach the full body as priority context for the next ask. Every resolution is re-validated through `SecurityGuard.resolve_within_vault`, so `@../escape` never leaves the vault.
+- **Destructive commands prompt y/N** before running (`/scan --no-dry-run`, `/connect --no-dry-run`, `/prune --no-dry-run`, `/category rm`); pass `--yes` to bypass for scripting.
+- **Bottom toolbar** shows live vault · chat model · embed model · dry-run badge · pin count, updating immediately after `/models chat foo`.
+- **Multi-line composer**: plain `Enter` submits; `Esc-Enter` or `Alt-Enter` inserts a newline; trailing `\` continues the line.
+- **Vi-mode** editing is available via `[shell] vi_mode = true` in `grimore.toml`.
+
+The shell holds a warm `Session` so consecutive `ask`s skip Embedder + LLMRouter cold-start. `/refresh` drops cached services when the vault has changed from another process.
 
 ## Commands
 
 | Command | Purpose |
 | :--- | :--- |
+| `grimore shell` | Conversational REPL (slash commands + `@` mentions). |
 | `grimore scan` | Walk the vault, tag changed notes, refresh embeddings. |
 | `grimore connect` | Discover semantic links and inject wikilinks. |
-| `grimore ask <q>` | Query the Oracle with citations. |
+| `grimore ask <q>` | One-shot Oracle query with citations. |
 | `grimore tags` | Frequency table of tags currently in use. |
+| `grimore distill` | Synthesize notes sharing a tag or category into `_synthesis/`. |
+| `grimore chronicler <sub>` | `list` · `check` · `verify` — track stale notes. |
+| `grimore mirror <sub>` | `scan` · `show` · `dismiss` · `resolve` — surface contradictions. |
 | `grimore category <sub>` | `list` · `add` · `rm` · `notes`. |
 | `grimore daemon <sub>` | `run` · `start` · `stop` · `status`. |
 | `grimore maintenance run` | VACUUM, WAL checkpoint, tag purge. |
@@ -73,17 +108,21 @@ graph TD
 | `grimore preflight` | Validate config, Ollama and vault access. |
 | `grimore status` | Dashboard of vault, cognition and daemon. |
 
-`grimore <cmd> --help` for flags.
+`grimore <cmd> --help` for flags. Inside the shell, `/help` lists every slash command and `/help <cmd>` shows its usage.
 
 ## Configuration
 
 Edit `grimore.toml` at the project root. The shipped defaults are safe — `dry_run = true` blocks writes until you opt in, and `allow_remote = false` pins inference to loopback Ollama. Notable knobs:
 
 - `cognition.model_llm_local` / `model_embeddings_local` — Ollama model names.
+- `cognition.request_timeout_s` / `stream_timeout_s` / `embed_timeout_s` — per-call HTTP timeouts; bump these for 14 B-class models on CPU.
 - `cognition.hybrid_search` + `rrf_k` — toggle BM25/cosine fusion and tune the rank-weight curve (default 60).
 - `cognition.connect_threshold` — minimum cosine score for `connect` to suggest a wikilink (default 0.7).
 - `maintenance.interval_hours` — daemon housekeeping cadence (default 24).
 - `vault.ignored_dirs` — directories skipped by both scan and watch.
+- `vault.display_name` — optional human label shown in the shell's bottom toolbar (falls back to the directory name).
+- `shell.vi_mode` — enable vi-style modal editing in the shell (default `false`).
+- `shell.fuzzy_threshold` — minimum rapidfuzz score (0–100) for `@`-mention completions (default 55).
 
 ## Taxonomy
 
@@ -119,7 +158,7 @@ Tags are normalised (`"Classical Occultism"` → `classical-occultism`) and rewr
 
 ## Stack
 
-Python 3.11+ · Ollama · SQLite (WAL + FTS5) · Typer + Rich · watchdog · structlog · GitPython · platformdirs
+Python 3.11+ · Ollama · SQLite (WAL + FTS5) · Typer + Rich · prompt-toolkit · rapidfuzz · watchdog · structlog · GitPython · platformdirs
 
 ## License
 

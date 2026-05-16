@@ -1,10 +1,7 @@
 """Tests for the startup preflight validator."""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from unittest.mock import MagicMock
-
-import pytest
 
 from grimore.utils.config import (
     CognitionConfig,

@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock
 
-import pytest
-
 from grimore.cognition.llm_router import LLMRouter, _extract_json_object
 from grimore.utils.config import CognitionConfig, Config
 

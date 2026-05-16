@@ -81,12 +81,24 @@ def patched_services(monkeypatch):
 # ── core dispatch behaviour ──────────────────────────────────────────────
 
 
-def test_unknown_command_does_not_kill_loop(shell_config, patched_services, capsys):
+def test_unknown_slash_does_not_kill_loop(shell_config, patched_services, capsys):
     shell = GrimoreShell(Session(shell_config))
-    shell.dispatch("nope")
+    shell.dispatch("/scna")
     out = capsys.readouterr().out
-    assert "Unknown command" in out
+    assert "Unknown slash command" in out
+    # difflib should propose /scan as the closest match.
+    assert "/scan" in out
     # Loop is still alive — running flag untouched.
+    assert shell._running is True
+
+
+def test_freeform_text_routes_to_ask(shell_config, patched_services, capsys):
+    """A non-slash, non-command line is treated as a question to the Oracle."""
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("what does my vault say about jung?")
+    out = capsys.readouterr().out
+    # Streaming Oracle output is rendered (the fake Oracle yields tokens).
+    assert "Oracle streams." in out
     assert shell._running is True
 
 
@@ -420,3 +432,213 @@ def test_models_when_ollama_unreachable_reports_error(
     out = capsys.readouterr().out
     assert "Ollama" in out
     assert shell._running is True
+
+
+# ── redesign: slash dispatch + @-mentions + new commands ───────────────
+
+
+def test_slash_routes_to_same_handler_as_word(shell_config, patched_services, capsys):
+    """/help and `help` must produce the same output."""
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/help")
+    slash_out = capsys.readouterr().out
+    shell.dispatch("help")
+    word_out = capsys.readouterr().out
+    # Both list at least one command line.
+    assert "/status" in slash_out and "/status" in word_out
+
+
+def test_slash_did_you_mean(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/scna")
+    out = capsys.readouterr().out
+    assert "Unknown slash command" in out and "/scan" in out
+
+
+def test_slash_empty_is_handled(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/")
+    out = capsys.readouterr().out
+    assert "Empty slash command" in out
+    assert shell._running is True
+
+
+def test_freeform_question_logged_in_session(shell_config, patched_services):
+    """Asking a question must populate last_question/last_answer/question_log."""
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("what is jung?")
+    assert session.last_question == "what is jung?"
+    assert session.last_answer is not None
+    assert session.last_answer["answer"] == "Oracle streams."
+    assert session.question_log == ["what is jung?"]
+
+
+def test_again_repeats_last_question(shell_config, patched_services, capsys):
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("first question")
+    capsys.readouterr()
+    shell.dispatch("/again")
+    # log now has the same question twice.
+    assert session.question_log == ["first question", "first question"]
+
+
+def test_again_with_no_history_is_noop(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/again")
+    out = capsys.readouterr().out
+    assert "Nothing to repeat" in out
+
+
+def test_history_lists_recent_questions(shell_config, patched_services, capsys):
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("q one")
+    shell.dispatch("q two")
+    capsys.readouterr()
+    shell.dispatch("/history 5")
+    out = capsys.readouterr().out
+    assert "q one" in out and "q two" in out
+
+
+def test_why_prints_sources_of_last_answer(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("anything")
+    capsys.readouterr()
+    shell.dispatch("/why")
+    out = capsys.readouterr().out
+    assert "Note A" in out  # _FakeOracle reports a single source
+
+
+def test_mention_extraction_attaches_note(tmp_path, shell_config, patched_services):
+    note = tmp_path / "vault" / "jung-shadow.md"
+    note.write_text("Body about jung shadow.", encoding="utf-8")
+
+    session = Session(shell_config)
+    captured = {}
+    real_ask = session.oracle.ask_stream  # _FakeOracle stream
+
+    def spy_stream(question, top_k=5, extra_sources=None):
+        captured["extras"] = extra_sources
+        yield from real_ask(question, top_k=top_k)
+
+    session.oracle.ask_stream = spy_stream
+
+    shell = GrimoreShell(session)
+    shell.dispatch("what does @jung-shadow say?")
+    assert captured["extras"] is not None
+    titles = [t for t, _ in captured["extras"]]
+    assert "jung-shadow" in titles
+
+
+def test_pin_persists_across_asks(tmp_path, shell_config, patched_services):
+    note = tmp_path / "vault" / "pinned-note.md"
+    note.write_text("Pinned body.", encoding="utf-8")
+
+    session = Session(shell_config)
+    captured = []
+    real_ask = session.oracle.ask_stream
+
+    def spy_stream(question, top_k=5, extra_sources=None):
+        captured.append([t for t, _ in (extra_sources or [])])
+        yield from real_ask(question, top_k=top_k)
+
+    session.oracle.ask_stream = spy_stream
+    shell = GrimoreShell(session)
+    shell.dispatch("/pin @pinned-note")
+    shell.dispatch("first ask")
+    shell.dispatch("second ask")
+    assert captured == [["pinned-note"], ["pinned-note"]]
+
+
+def test_unpin_clears_all(shell_config, patched_services):
+    from grimore.session import NoteAttachment
+
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    # Bypass the resolver by appending an attachment directly — the test
+    # is about /unpin clearing state, not about how it got there.
+    session.pinned_notes.append(NoteAttachment(
+        title="x", path=Path("/tmp/x.md"), content="x",
+    ))
+    shell.dispatch("/unpin")
+    assert session.pinned_notes == []
+
+
+def test_save_writes_transcript_inside_vault(shell_config, patched_services, tmp_path):
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("first")
+    shell.dispatch("/save my-transcript.md")
+    target = Path(shell_config.vault.path) / "my-transcript.md"
+    assert target.exists()
+    text = target.read_text(encoding="utf-8")
+    assert "Q1. first" in text
+
+
+def test_save_rejects_path_outside_vault(shell_config, patched_services, tmp_path, capsys):
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("anything")
+    capsys.readouterr()
+    # Path traversal attempt.
+    shell.dispatch("/save ../escape.md")
+    out = capsys.readouterr().out
+    assert "outside the vault" in out
+
+
+def test_approval_prompt_blocks_on_no(shell_config, patched_services, monkeypatch, capsys):
+    """`/scan --no-dry-run` without --yes prompts; answering N bails out."""
+    monkeypatch.setattr("builtins.input", lambda *_a, **_kw: "n")
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+
+    called = {"scan": False}
+
+    def fake_scan(vault_path=None, dry_run=None, json_logs=False):
+        called["scan"] = True
+
+    monkeypatch.setattr("grimore.cli.scan", fake_scan)
+    shell.dispatch("/scan --no-dry-run")
+    assert called["scan"] is False
+
+
+def test_approval_prompt_yes_flag_bypasses(shell_config, patched_services, monkeypatch):
+    """`--yes` must skip the input() call and run the action."""
+    def explode(*_a, **_kw):
+        raise AssertionError("input() should not be called when --yes is set")
+    monkeypatch.setattr("builtins.input", explode)
+
+    called = {"scan": False}
+    def fake_scan(vault_path=None, dry_run=None, json_logs=False):
+        called["scan"] = True
+    monkeypatch.setattr("grimore.cli.scan", fake_scan)
+
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/scan --no-dry-run --yes")
+    assert called["scan"] is True
+
+
+def test_at_mention_outside_vault_is_rejected(tmp_path, shell_config, patched_services):
+    """A `@../escape` token must NOT resolve to a path outside the vault."""
+    # Make a file outside the vault.
+    escape = tmp_path / "escape.md"
+    escape.write_text("nope", encoding="utf-8")
+
+    session = Session(shell_config)
+    captured = {"extras": None}
+    real_ask = session.oracle.ask_stream
+
+    def spy_stream(question, top_k=5, extra_sources=None):
+        captured["extras"] = extra_sources
+        yield from real_ask(question, top_k=top_k)
+
+    session.oracle.ask_stream = spy_stream
+
+    shell = GrimoreShell(session)
+    shell.dispatch("look at @../escape")
+    # Whether `_do_ask` got called or not, no attachment for the escape
+    # file may have been forwarded.
+    titles = [t for t, _ in (captured["extras"] or [])]
+    assert "escape" not in titles

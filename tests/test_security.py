@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from grimore.utils.security import SecurityGuard

@@ -3,7 +3,6 @@ Configuration Management.
 This module defines the project's configuration schema using dataclasses
 and handles loading settings from 'grimore.toml' and environment variables.
 """
-import os
 import re
 from pathlib import Path
 import tomllib
@@ -37,6 +36,10 @@ class VaultConfig:
     """Settings related to the Markdown vault location and filtering."""
     path: str = "./vault"
     ignored_dirs: list[str] = field(default_factory=lambda: [".obsidian", ".trash", ".git", "Templates"])
+    # Optional human label shown in the shell's bottom toolbar in place of the
+    # directory basename. Lets a user call ``./test_vault`` "Library" without
+    # renaming the directory. Falls back to ``Path(path).name`` when unset.
+    display_name: str | None = None
 
 
 def is_ignored_path(file_path, ignored_dirs: list[str]) -> bool:
@@ -124,6 +127,22 @@ class ChroniclerConfig:
     })
 
 @dataclass
+class ShellConfig:
+    """
+    Interactive shell preferences.
+
+    ``vi_mode`` toggles prompt_toolkit's vi editing mode (insert + normal
+    modal navigation). Default is off so first-time users get the familiar
+    Emacs-style line editor.
+
+    ``fuzzy_threshold`` (0–100) is the minimum rapidfuzz score for an
+    ``@`` completion to appear in the popup. Lower = more lenient.
+    """
+    vi_mode: bool = False
+    fuzzy_threshold: int = 55
+
+
+@dataclass
 class DaemonConfig:
     """
     Ambient watcher mode (Section 4 of v2.1 plan).
@@ -153,6 +172,7 @@ class Config:
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
     chronicler: ChroniclerConfig = field(default_factory=ChroniclerConfig)
     daemon: DaemonConfig = field(default_factory=DaemonConfig)
+    shell: ShellConfig = field(default_factory=ShellConfig)
 
 def _filter_known(cls, data: dict, section: str) -> dict:
     """
@@ -192,6 +212,7 @@ def load_config(config_path: str = "grimore.toml") -> Config:
         maintenance=MaintenanceConfig(**_filter_known(MaintenanceConfig, data.get("maintenance", {}), "maintenance")),
         chronicler=ChroniclerConfig(**_filter_known(ChroniclerConfig, data.get("chronicler", {}), "chronicler")),
         daemon=DaemonConfig(**_filter_known(DaemonConfig, data.get("daemon", {}), "daemon")),
+        shell=ShellConfig(**_filter_known(ShellConfig, data.get("shell", {}), "shell")),
     )
 
 

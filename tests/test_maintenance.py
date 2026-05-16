@@ -1,6 +1,4 @@
 """Tests for periodic DB maintenance: VACUUM, WAL checkpoint, tag purge."""
-import os
-
 import pytest
 
 from grimore.memory.db import Database

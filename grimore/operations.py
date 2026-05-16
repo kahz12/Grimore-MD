@@ -65,7 +65,8 @@ def _do_ask(
     top_k: int = 5,
     export: Optional[Path] = None,
     stream: bool = False,
-) -> None:
+    extra_sources: Optional[list[tuple[str, str]]] = None,
+) -> dict:
     """Body of ``grimore ask``.
 
     When ``stream=True`` the answer is rendered token-by-token to the
@@ -73,6 +74,13 @@ def _do_ask(
     behaviour as today's CLI), the full JSON answer is fetched and
     rendered in one shot. ``--export`` always uses the non-streaming
     path because it depends on the full answer to write the file.
+
+    ``extra_sources`` carries ``(title, body)`` pairs for user-explicit
+    attachments (``@note`` mentions, ``/pin`` pins) that should ride
+    alongside the question into the RAG context.
+
+    Returns the result dict ``{"answer": str, "sources": list[str]}``
+    so the shell can log it as ``session.last_answer``.
     """
     config = session.config
 
@@ -82,13 +90,48 @@ def _do_ask(
         title="Question",
     ))
 
+    # Only forward ``extra_sources`` when present, so older mocks /
+    # alternate Oracle implementations that don't take the kwarg keep
+    # working unchanged.
+    extra_kw = {"extra_sources": extra_sources} if extra_sources else {}
+
     if stream and export is None:
         # Render tokens as they arrive; collect the answer for the
         # final summary line below.
         ui.section("Oracle")
         answer_chunks: list[str] = []
         sources: list[str] = []
-        for event in session.oracle.ask_stream(question, top_k=top_k):
+        stream_iter = session.oracle.ask_stream(
+            question, top_k=top_k, **extra_kw
+        )
+
+        # Reasoning models (qwen3.5, deepseek-r1, …) often spend tens of
+        # seconds in a "thinking" phase where Ollama streams chunks with
+        # an empty ``response`` field. The router drops those, so the
+        # shell would look frozen between submission and the first real
+        # token. A spinner stays up until that first token arrives.
+        first_event = None
+        with console.status(
+            "[grimore.mystic]Waiting on the Oracle…[/]",
+            spinner="dots12",
+        ):
+            for event in stream_iter:
+                first_event = event
+                if event["type"] in ("token", "done"):
+                    break
+
+        if first_event is not None:
+            if first_event["type"] == "token":
+                console.print(
+                    first_event["text"], end="", soft_wrap=True, markup=False
+                )
+                answer_chunks.append(first_event["text"])
+            elif first_event["type"] == "done":
+                sources = first_event["sources"]
+
+        # Drain the rest of the stream without the spinner — tokens now
+        # flow at their natural cadence.
+        for event in stream_iter:
             if event["type"] == "token":
                 console.print(event["text"], end="", soft_wrap=True, markup=False)
                 answer_chunks.append(event["text"])
@@ -107,7 +150,7 @@ def _do_ask(
             "[grimore.mystic]The Oracle listens to the whispers...[/]",
             spinner="dots12",
         ):
-            result = session.oracle.ask(question, top_k=top_k)
+            result = session.oracle.ask(question, top_k=top_k, **extra_kw)
         console.print()
         console.print(ui.oracle_panel(result["answer"]))
 
@@ -164,6 +207,8 @@ def _do_ask(
             f"Answer saved to [bold cyan]{export_path}[/].",
             title="Exported",
         ))
+
+    return result
 
 
 # ── Chronicler ───────────────────────────────────────────────────────────
@@ -282,7 +327,6 @@ def _do_mirror_list(session: Session) -> None:
 
     rows = Mirror(session).list_open()
     if not rows:
-        total_seen = session.db.count_open_contradictions()  # 0 here
         if session.db.count_claims() == 0:
             console.print(ui.info_panel(
                 "No claims indexed yet. Run [cyan]grimore mirror scan[/] first.",

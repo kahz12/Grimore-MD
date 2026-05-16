@@ -5,15 +5,14 @@ changes and automatically triggers cognitive processing (tagging, embedding).
 """
 import os as _os  # used only for getpid; aliased to avoid mass-renaming locals
 import signal
-import sys
 import threading
 import time
 from pathlib import Path
 
 _os_getpid = _os.getpid
-from grimore.utils.config import Config, load_config
+from grimore.utils.config import Config
 from grimore.utils.event_log import DaemonEventLog
-from grimore.utils.logger import setup_logger, get_logger
+from grimore.utils.logger import get_logger
 from grimore.utils.paths import daemon_lock_path, daemon_log_path
 from grimore.ingest.observer import VaultObserver
 from grimore.ingest.parser import MarkdownParser

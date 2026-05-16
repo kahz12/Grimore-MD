@@ -9,6 +9,7 @@ cost on the embedder + router.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,17 @@ from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.oracle import Oracle
 from grimore.memory.db import Database
 from grimore.utils.config import Config, load_config
+
+
+@dataclass
+class NoteAttachment:
+    """A vault note pinned (via ``/pin``) or one-shot-attached (via ``@``)
+    to the next ask. ``title`` is what the shell renders; ``path`` is the
+    resolved, vault-scoped file path; ``content`` is the read-and-capped
+    body. All three are filled by the @-resolver, never by user input."""
+    title: str
+    path: Path
+    content: str
 
 
 class Session:
@@ -34,6 +46,15 @@ class Session:
         self._router: Optional[LLMRouter] = None
         self._embedder: Optional[Embedder] = None
         self._oracle: Optional[Oracle] = None
+        # Conversational state used by the redesigned shell. None of this
+        # touches disk — it's per-session only.
+        self.question_log: list[str] = []
+        self.last_question: Optional[str] = None
+        self.last_answer: Optional[dict] = None  # {"answer": str, "sources": list[str]}
+        self.pinned_notes: list[NoteAttachment] = []
+        # One-shot attachments parsed out of ``@…`` mentions in the next ask.
+        # Cleared after every dispatched question.
+        self.staged_attachments: list[NoteAttachment] = []
 
     @property
     def db(self) -> Database:

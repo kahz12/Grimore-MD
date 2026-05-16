@@ -13,7 +13,6 @@ from rich.text import Text
 from grimore.cognition.connector import Connector
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.llm_router import LLMRouter
-from grimore.cognition.oracle import Oracle
 from grimore.cognition.tagger import Tagger
 from grimore.ingest.parser import MarkdownParser
 from grimore.memory.db import Database
@@ -36,7 +35,6 @@ from grimore.output.git_guard import GitGuard
 from grimore.output.link_injector import LinkInjector
 from grimore.session import Session
 from grimore.utils import ui
-from grimore.utils.atomic import atomic_write
 from grimore.utils.config import is_ignored_path, load_config
 from grimore.utils.logger import get_logger, setup_logger
 from grimore.utils.preflight import PreflightChecker, PreflightReport

@@ -18,11 +18,9 @@ import signal
 import sys
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
-from grimore.utils import event_log as event_log_mod
 from grimore.utils import paths as paths_mod
 from grimore.utils import system as sysmod
 from grimore.utils.config import Config, DaemonConfig, load_config
@@ -325,7 +323,6 @@ class TestDaemonSignalHandling:
         assert instance._pid_lock_fd is None
 
     def test_stop_releases_lock_and_flushes_db(self, tmp_path, monkeypatch, cache_redirect):
-        from grimore import daemon as daemon_mod
         instance, _ = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)
         # Wire the stub observer manually since stop() expects either None or
         # something with .stop(). Simulate post-start state.

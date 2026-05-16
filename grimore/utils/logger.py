@@ -4,7 +4,6 @@ Uses the structlog library to provide both human-readable console output
 and machine-readable JSON logs.
 """
 import logging
-import sys
 import structlog
 
 def setup_logger(json_format: bool = False):

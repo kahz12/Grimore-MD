@@ -11,5 +11,6 @@ pydantic
 requests
 prompt-toolkit
 platformdirs
+rapidfuzz
 pytest
 pytest-mock
