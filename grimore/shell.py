@@ -59,10 +59,12 @@ def _format_bytes(n: int) -> str:
     """Compact human-readable byte size (e.g. ``"4.7 GB"``)."""
     if n <= 0:
         return "?"
+    size: float = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024 or unit == "TB":
-            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
-        n /= 1024
+        if size < 1024 or unit == "TB":
+            return f"{int(size)} B" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"  # unreachable, satisfies type checkers
 
 
 class _ShellArgError(Exception):
@@ -871,6 +873,8 @@ class GrimoreShell:
         parser.add_argument("-c", "--category", default=None)
         parser.add_argument("-p", "--passages", type=int, default=3)
         parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--yes", action="store_true",
+                            help="Skip the approval prompt for write mode.")
         args = parser.parse_args(argv)
         if not args.tag and not args.category:
             console.print(Text(
@@ -883,6 +887,11 @@ class GrimoreShell:
                 "distill: pick one selector — not both --tag and --category",
                 style="grimore.danger",
             ))
+            return
+        if not args.dry_run and not self._confirm(
+            "distill will write a synthesis note under _synthesis/ in the vault.",
+            yes=args.yes,
+        ):
             return
         _do_distill(
             self.session,
@@ -996,6 +1005,8 @@ class GrimoreShell:
         parser = _NonExitingArgParser(prog="save", add_help=True)
         parser.add_argument("path", nargs="?", default=None,
                             help="Output path relative to the vault root.")
+        parser.add_argument("-f", "--force", action="store_true",
+                            help="Overwrite the target file if it already exists.")
         args = parser.parse_args(argv)
         if not self.session.question_log:
             console.print(Text("Nothing to save — no questions asked yet.",
@@ -1010,6 +1021,13 @@ class GrimoreShell:
         except ValueError:
             console.print(Text(f"save: {rel!r} resolves outside the vault.",
                                style="grimore.danger"))
+            return
+        if target.exists() and not args.force:
+            console.print(Text.assemble(
+                ("save: ", "grimore.danger"),
+                (str(target.relative_to(vault_root)), "grimore.primary"),
+                (" already exists — pass --force to overwrite.", "grimore.danger"),
+            ))
             return
         target.parent.mkdir(parents=True, exist_ok=True)
         body = self._render_transcript_markdown()
@@ -1061,7 +1079,13 @@ class GrimoreShell:
             console.print(Text("No questions yet in this session.",
                                style="grimore.muted"))
             return
-        items = self.session.question_log[-max(1, args.n):]
+        if args.n <= 0:
+            console.print(Text(
+                f"history: N must be positive (got {args.n}).",
+                style="grimore.danger",
+            ))
+            return
+        items = self.session.question_log[-args.n:]
         ui.section(f"Last {len(items)} question(s)")
         # The first item's number is offset from the end of the full log.
         start = len(self.session.question_log) - len(items) + 1
@@ -1222,20 +1246,23 @@ class GrimoreShell:
             "  Remove DB rows for vanished notes."
         ),
         "category": (
-            "/category list | add <path> | rm <path> [-f] [--yes] | notes <path> [--flat]\n"
+            "/category list | /category add <path> | /category rm <path> [-f] [--yes]\n"
+            "  | /category notes <path> [--flat]\n"
             "  Manage the hierarchical category tree."
         ),
         "chronicler": (
-            "/chronicler list [--decay] | check <path> | verify <path>\n"
+            "/chronicler list [--decay] | /chronicler check <path> | /chronicler verify <path>\n"
             "  Track which notes have likely gone stale."
         ),
         "mirror": (
-            "/mirror | mirror scan [-k N] [--full] | show <id> | dismiss <id> | resolve <id>\n"
+            "/mirror | /mirror scan [-k N] [--full] | /mirror show <id>\n"
+            "  | /mirror dismiss <id> | /mirror resolve <id>\n"
             "  The Black Mirror — surface contradictions across notes."
         ),
         "distill": (
-            "/distill --tag <name> | --category <path> [-p N] [--dry-run]\n"
-            "  Synthesize matching notes into a single _synthesis/ note."
+            "/distill --tag <name> | --category <path> [-p N] [--dry-run] [--yes]\n"
+            "  Synthesize matching notes into a single _synthesis/ note.\n"
+            "  Prompts before writing unless --dry-run or --yes is passed."
         ),
         "refresh": "/refresh\n  Drop cached services and the @-mention index.",
         "models": (
@@ -1252,9 +1279,10 @@ class GrimoreShell:
         ),
         "unpin": "/unpin [@note]\n  Drop one pin (or all when called bare).",
         "save": (
-            "/save [path]\n"
+            "/save [path] [-f|--force]\n"
             "  Export the session transcript as a markdown note in the vault.\n"
-            "  Default path: _transcripts/<timestamp>.md"
+            "  Default path: _transcripts/<timestamp>.md\n"
+            "  Refuses to overwrite an existing file unless --force is passed."
         ),
         "history": "/history [N]\n  Show the last N questions (default 10).",
         "help": "/help [command]\n  Show this list, or details for one command.",

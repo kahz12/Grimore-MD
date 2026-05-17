@@ -577,6 +577,52 @@ def test_save_writes_transcript_inside_vault(shell_config, patched_services, tmp
     assert "Q1. first" in text
 
 
+def test_save_refuses_overwrite_without_force(shell_config, patched_services, tmp_path, capsys):
+    """`/save` must not silently clobber an existing transcript file."""
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("first")
+    shell.dispatch("/save notes.md")
+    capsys.readouterr()
+    shell.dispatch("/save notes.md")
+    out = capsys.readouterr().out
+    assert "already exists" in out
+    assert "--force" in out
+    # And with --force, the same target gets rewritten.
+    shell.dispatch("/save notes.md --force")
+    target = Path(shell_config.vault.path) / "notes.md"
+    assert target.exists()
+
+
+def test_history_rejects_non_positive_n(shell_config, patched_services, capsys):
+    """`/history 0` should error cleanly instead of slicing weirdly."""
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("just-one")
+    capsys.readouterr()
+    shell.dispatch("/history 0")
+    out = capsys.readouterr().out
+    assert "must be positive" in out
+
+
+def test_distill_prompts_before_writing(shell_config, patched_services, monkeypatch, capsys):
+    """`/distill` without --dry-run must prompt and bail on N."""
+    monkeypatch.setattr("builtins.input", lambda *_a, **_kw: "n")
+    called = {"distill": False}
+
+    def fake_distill(*a, **kw):
+        called["distill"] = True
+
+    monkeypatch.setattr("grimore.shell._do_distill", fake_distill)
+    session = Session(shell_config)
+    shell = GrimoreShell(session)
+    shell.dispatch("/distill --tag philosophy")
+    assert called["distill"] is False
+    # --yes bypasses the prompt.
+    shell.dispatch("/distill --tag philosophy --yes")
+    assert called["distill"] is True
+
+
 def test_save_rejects_path_outside_vault(shell_config, patched_services, tmp_path, capsys):
     session = Session(shell_config)
     shell = GrimoreShell(session)
