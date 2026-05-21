@@ -304,8 +304,16 @@ class GrimoreDaemon:
                 dry_run=self.config.output.dry_run,
             )
 
-            # 7. Embeddings: Vectorize for semantic index
-            embedded = self.embedder.embed_chunks(clean_content)
+            # 7. Embeddings: Vectorize for semantic index. Section-aware
+            # when the adapter handed us page / heading anchors (PDF /
+            # EPUB / DOCX / HTML); body-only chunking otherwise.
+            embedded_secs = (
+                self.embedder.embed_sections(note.sections) if note.sections else None
+            )
+            embedded = (
+                None if embedded_secs is not None
+                else self.embedder.embed_chunks(clean_content)
+            )
 
             # 8. Update Database records
             sidecar_target_str = (
@@ -323,8 +331,22 @@ class GrimoreDaemon:
                 self.db.upsert_tags(note_id, cognition_data["tags"])
                 self.db.set_note_category(note_id, cognition_data.get("category") or None)
 
-            if embedded and note_id is not None:
-                # Store new chunks and their vectors
+            if embedded_secs and note_id is not None:
+                # Section-aware rows persist the page / heading anchors
+                # for precise citation rendering downstream.
+                self.db.delete_note_embeddings(note_id)
+                for idx, (chunk_text, vector, page, heading) in enumerate(embedded_secs):
+                    self.db.store_embedding(
+                        note_id,
+                        idx,
+                        chunk_text[:500],
+                        self.embedder.serialize_vector(vector),
+                        page=page,
+                        heading=heading,
+                    )
+                logger.info("file_embedded", path=rel, chunks=len(embedded_secs))
+            elif embedded and note_id is not None:
+                # MD / TXT body-only path: no anchors to record.
                 self.db.delete_note_embeddings(note_id)
                 for idx, (chunk_text, vector) in enumerate(embedded):
                     self.db.store_embedding(
@@ -339,11 +361,15 @@ class GrimoreDaemon:
                 self.processed_count += 1
             self.last_batch_time = time.monotonic()
             logger.info("file_processed_complete", path=rel)
+            chunk_count = (
+                len(embedded_secs) if embedded_secs
+                else (len(embedded) if embedded else 0)
+            )
             self.event_log.write(
                 "processed",
                 path=rel,
                 tags=len(cognition_data.get("tags") or []),
-                chunks=len(embedded) if embedded else 0,
+                chunks=chunk_count,
             )
 
         except Exception as e:

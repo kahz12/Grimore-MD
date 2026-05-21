@@ -1,15 +1,42 @@
 """
-Semantically-aware Markdown Chunker.
-This module splits large Markdown files into smaller, manageable pieces (chunks)
-while respecting the logical structure of the document (paragraphs).
+Semantically-aware document chunker.
+
+Originally Markdown-only. As of v2.1 this module also exposes a
+section-aware path: :func:`chunk_sections` takes a list of
+:class:`ExtractedSection` (the format-neutral output of every adapter)
+and emits :class:`Chunk` instances that carry the parent section's
+page / heading anchors, so the embedding layer can persist them and
+the Oracle can render precise citations like ``[[Title#p.42]]``.
+
+The text-only :func:`chunk_markdown` keeps its signature and behaviour
+so the existing Markdown call path is untouched.
 """
+from __future__ import annotations
+
 import re
+from dataclasses import dataclass
+from typing import Iterable, Optional
+
+from grimore.ingest.adapters.base import ExtractedSection
 
 # Regex to split text by blank lines (paragraphs)
 _PARA_SPLIT = re.compile(r"\n\s*\n")
 
 DEFAULT_MAX_CHARS = 1500
 DEFAULT_OVERLAP = 150
+
+
+@dataclass(frozen=True)
+class Chunk:
+    """A piece of body text with the source anchors that produced it.
+
+    ``page`` is set for paginated formats (PDF); ``heading`` for
+    structured formats (DOCX, HTML, EPUB). Both are ``None`` for
+    Markdown / TXT so the v2.0 storage shape stays exactly what it was.
+    """
+    text: str
+    page: Optional[int] = None
+    heading: Optional[str] = None
 
 
 def chunk_markdown(
@@ -58,6 +85,31 @@ def chunk_markdown(
         buffer_len += sep + len(para)
 
     flush()
+    return chunks
+
+
+def chunk_sections(
+    sections: Iterable[ExtractedSection],
+    max_chars: int = DEFAULT_MAX_CHARS,
+    overlap: int = DEFAULT_OVERLAP,
+) -> list[Chunk]:
+    """Split each section's text via :func:`chunk_markdown`, stamping
+    every produced piece with the parent section's anchors.
+
+    A section that exceeds ``max_chars`` is broken with the existing
+    sliding-window strategy — each resulting chunk inherits the section's
+    page / heading, so a PDF page that overflows the budget still cites
+    back to the same page number.
+
+    Sections with empty / whitespace-only text are silently dropped.
+    """
+    chunks: list[Chunk] = []
+    for section in sections:
+        pieces = chunk_markdown(section.text, max_chars, overlap)
+        for piece in pieces:
+            chunks.append(Chunk(
+                text=piece, page=section.page, heading=section.heading,
+            ))
     return chunks
 
 

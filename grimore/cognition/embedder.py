@@ -6,9 +6,10 @@ It includes support for caching, unit-normalization, and serialization of vector
 import hashlib
 import os
 import struct
-from typing import List, Optional, Protocol
+from typing import Iterable, List, Optional, Protocol
 
-from grimore.cognition.chunker import chunk_markdown
+from grimore.cognition.chunker import Chunk, chunk_markdown, chunk_sections
+from grimore.ingest.adapters.base import ExtractedSection
 from grimore.utils.http import build_session
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
@@ -101,6 +102,11 @@ class Embedder:
         """
         Split ``text`` into markdown-aware chunks and embed each.
         Returns a list of (chunk_text, vector) pairs; failed chunks are skipped.
+
+        Anchor-free path. Multi-format callers should use
+        :py:meth:`embed_sections` so page / heading anchors land in the
+        embedding rows; this method is preserved for tests and the
+        Markdown call sites that have nothing useful to anchor on.
         """
         chunks = self.chunk(text)
         results: list[tuple[str, list[float]]] = []
@@ -108,6 +114,31 @@ class Embedder:
             vec = self.embed(chunk)
             if vec is not None:
                 results.append((chunk, vec))
+        return results
+
+    def embed_sections(
+        self,
+        sections: Iterable[ExtractedSection],
+    ) -> list[tuple[str, list[float], Optional[int], Optional[str]]]:
+        """
+        Section-aware embedding path used by the multi-format pipeline.
+
+        Each input section is split via :func:`chunk_sections` so the
+        anchors propagate to every produced chunk. Returns a list of
+        ``(chunk_text, vector, page, heading)`` tuples — failed embed
+        calls are skipped (same policy as :py:meth:`embed_chunks`).
+
+        Caller invariant: pass ``note.sections`` straight through. When
+        ``sections`` is empty (Markdown / TXT), this returns an empty
+        list and the caller falls back to :py:meth:`embed_chunks` on
+        the raw body.
+        """
+        results: list[tuple[str, list[float], Optional[int], Optional[str]]] = []
+        for chunk in chunk_sections(sections):
+            vec = self.embed(chunk.text)
+            if vec is None:
+                continue
+            results.append((chunk.text, vec, chunk.page, chunk.heading))
         return results
 
     @staticmethod

@@ -43,10 +43,12 @@ class VaultConfig:
     # Document formats Grimore will pick up from the vault, by lowercase
     # extension (no leading dot). Adapters auto-register on import; the
     # default tracks the formats whose adapters ship in the current
-    # version. Phase 2 adds plain text, HTML and DOCX; PDF and EPUB join
-    # in Phase 3. Users may narrow this list to restrict ingestion.
+    # version. As of Phase 3 every adapter is wired: MD, TXT, HTML/HTM,
+    # DOCX, PDF, EPUB. Users may narrow this list to restrict ingestion.
     formats: list[str] = field(
-        default_factory=lambda: ["md", "txt", "html", "htm", "docx"],
+        default_factory=lambda: [
+            "md", "txt", "html", "htm", "docx", "pdf", "epub",
+        ],
     )
     # Hidden root, relative to the vault, where Grimore mirrors a sidecar
     # ``.md`` for every non-Markdown document. Original binaries are never

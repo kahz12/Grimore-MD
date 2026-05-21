@@ -343,6 +343,29 @@ class Database:
             ).fetchone()
         return (row[0], row[1]) if row else None
 
+    def get_chunk_anchors(
+        self, note_id: int, text_content: str,
+    ) -> tuple[Optional[int], Optional[str]]:
+        """Return ``(page, heading)`` for the chunk in ``note_id`` whose
+        stored text matches ``text_content`` exactly.
+
+        Used by the Oracle to render anchor-aware citations
+        (``[[Title#p.42]]``). The match is exact rather than fuzzy
+        because the connector and the embeddings table share the same
+        500-char truncation, so a literal compare is safe. Returns
+        ``(None, None)`` when no row matches or both anchors are unset
+        (Markdown / TXT path, where there is nothing to anchor on).
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT page, heading FROM embeddings "
+                "WHERE note_id = ? AND text_content = ? LIMIT 1",
+                (note_id, text_content),
+            ).fetchone()
+        if not row:
+            return (None, None)
+        return (row[0], row[1])
+
     def get_note_writeback_target(
         self, note_id: int,
     ) -> Optional[tuple[str, str, Optional[str]]]:

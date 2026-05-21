@@ -25,6 +25,11 @@ dependencies = [
     # runtime add. DOCX is parsed via stdlib zipfile + xml.etree, so
     # python-docx is not required.
     "beautifulsoup4>=4.12.0",
+    # Multi-format ingest (Phase 3): PDF + EPUB adapters.
+    # pypdf is pure-Python (no native compile); EPUB is parsed via stdlib
+    # zipfile + xml.etree with bs4 reused for the chapter XHTML, so the
+    # only new wheel is pypdf itself.
+    "pypdf>=4.0.0",
 ]
 
 [project.optional-dependencies]

@@ -290,6 +290,20 @@ class PreflightChecker:
         # Pure-stdlib adapter (zipfile + xml.etree). No third-party deps.
         return None
 
+    @staticmethod
+    def _probe_pdf() -> Optional[str]:
+        try:
+            import pypdf  # noqa: F401
+        except ImportError as e:
+            return str(e)
+        return None
+
+    @staticmethod
+    def _probe_epub() -> Optional[str]:
+        # Pure-stdlib adapter (zipfile + xml.etree); only needs bs4 which
+        # the HTML probe already covers. Defer to that check via _probe_html.
+        return PreflightChecker._probe_html()
+
     @classmethod
     def _adapter_probes(cls) -> dict[str, tuple]:
         # Lazily populated so the dict literal at class-scope doesn't
@@ -301,6 +315,8 @@ class PreflightChecker:
                 "html": (cls._probe_html, "pip install beautifulsoup4"),
                 "htm":  (cls._probe_html, "pip install beautifulsoup4"),
                 "docx": (cls._probe_docx, ""),
+                "pdf":  (cls._probe_pdf,  "pip install pypdf"),
+                "epub": (cls._probe_epub, "pip install beautifulsoup4"),
             }
         return cls._ADAPTER_PROBES
 

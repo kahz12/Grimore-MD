@@ -29,7 +29,7 @@ grimore.pid
 grimore.log
 backups/
 test_vault/
-MULTIFORMAT_BLUEPRINT.md
+docs/MULTIFORMAT_BLUEPRINT.md
 
 # Tooling caches
 .pytest_cache/

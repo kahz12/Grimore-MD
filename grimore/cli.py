@@ -288,18 +288,36 @@ def scan(
                     db.upsert_tags(note_id, cognition_data["tags"])
                     db.set_note_category(note_id, cognition_data.get("category") or None)
 
-                # Step 6: Vectorize content for semantic search
-                embedded = embedder.embed_chunks(clean_content)
-                if embedded and note_id is not None:
-                    db.delete_note_embeddings(note_id)
-                    for idx, (chunk_text, vector) in enumerate(embedded):
-                        db.store_embedding(
-                            note_id,
-                            idx,
-                            chunk_text[:500],
-                            embedder.serialize_vector(vector),
-                        )
-                    stats["chunks"] += len(embedded)
+                # Step 6: Vectorize content for semantic search.
+                # Section-aware path when the adapter provided structural
+                # anchors (PDF pages, EPUB / DOCX / HTML headings); falls
+                # back to body-only chunking for MD / TXT.
+                if note.sections:
+                    embedded_secs = embedder.embed_sections(note.sections)
+                    if embedded_secs and note_id is not None:
+                        db.delete_note_embeddings(note_id)
+                        for idx, (chunk_text, vector, page, heading) in enumerate(embedded_secs):
+                            db.store_embedding(
+                                note_id,
+                                idx,
+                                chunk_text[:500],
+                                embedder.serialize_vector(vector),
+                                page=page,
+                                heading=heading,
+                            )
+                        stats["chunks"] += len(embedded_secs)
+                else:
+                    embedded = embedder.embed_chunks(clean_content)
+                    if embedded and note_id is not None:
+                        db.delete_note_embeddings(note_id)
+                        for idx, (chunk_text, vector) in enumerate(embedded):
+                            db.store_embedding(
+                                note_id,
+                                idx,
+                                chunk_text[:500],
+                                embedder.serialize_vector(vector),
+                            )
+                        stats["chunks"] += len(embedded)
 
                 stats["processed"] += 1
             except Exception as e:

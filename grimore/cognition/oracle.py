@@ -23,6 +23,23 @@ logger = get_logger(__name__)
 _ORACLE_CONTEXT_MAX_CHARS = 16_000
 _CONTEXT_SEPARATOR = "\n\n"
 
+
+def _format_source_label(title: str, page, heading) -> str:
+    """Render a wikilink-style source label with the best available anchor.
+
+    Page wins over heading (more precise) when both are present.
+    Returns just ``title`` when neither anchor is available so MD / TXT
+    citations stay exactly what they were in v2.0.
+    """
+    if page:
+        return f"{title}#p.{page}"
+    if heading:
+        # Strip newlines / pipes that would break the wikilink syntax.
+        clean = " ".join(str(heading).split())[:80]
+        if clean:
+            return f"{title}#{clean}"
+    return title
+
 class Oracle:
     """
     Implements the RAG pipeline to provide context-aware answers to user queries.
@@ -126,12 +143,14 @@ class Oracle:
             if not title:
                 logger.warning("orphan_embedding", note_id=item['note_id'])
                 continue
+            page, heading = self.db.get_chunk_anchors(item['note_id'], item['text'])
+            label = _format_source_label(title, page, heading)
             safe_text = SecurityGuard.wrap_untrusted(
                 SecurityGuard.sanitize_prompt(item['text']),
                 label="source",
             )
             candidate_parts.append(
-                (title, f"--- Source: [[{title}]] ---\n{safe_text}")
+                (label, f"--- Source: [[{label}]] ---\n{safe_text}")
             )
 
         accepted_parts: list[str] = []
