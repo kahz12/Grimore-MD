@@ -54,6 +54,35 @@ def daemon_log_path() -> Path:
     return cache_dir() / DAEMON_LOG_FILENAME
 
 
+def sidecar_path_for(
+    source: Path | str,
+    vault_root: Path | str,
+    sidecar_dir: str = ".grimore/sidecars",
+) -> Path:
+    """Mirror ``source`` (a document inside the vault) to its sidecar ``.md``.
+
+    A PDF at ``<vault>/Books/Foo.pdf`` maps to
+    ``<vault>/<sidecar_dir>/Books/Foo.pdf.md``. The original extension is
+    preserved in the sidecar filename so two documents that differ only in
+    extension (``Foo.pdf`` vs ``Foo.epub``) don't collide on a single
+    ``Foo.md`` sidecar.
+
+    Raises ``ValueError`` when ``source`` is not inside ``vault_root`` —
+    callers should already have run that check via ``SecurityGuard``, but
+    re-validating here keeps the helper safe to drop into new call sites.
+    """
+    src = Path(source).resolve()
+    root = Path(vault_root).resolve()
+    try:
+        rel = src.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"source {source!r} is not inside vault_root {vault_root!r}"
+        ) from exc
+    sidecar_root = root / sidecar_dir
+    return sidecar_root / rel.parent / f"{rel.name}.md"
+
+
 def shell_history_path(vault_root: Path | str) -> Path:
     """Per-vault prompt-toolkit history file.
 

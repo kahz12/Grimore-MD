@@ -19,7 +19,21 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
     "platformdirs>=4.0.0",
     "rapidfuzz>=3.0.0",
+    # Multi-format ingest (Phase 2): TXT, HTML, DOCX adapters.
+    # beautifulsoup4 falls back to stdlib html.parser when lxml is absent
+    # (Termux can't always dlopen lxml's .so), so it's the only Phase 2
+    # runtime add. DOCX is parsed via stdlib zipfile + xml.etree, so
+    # python-docx is not required.
+    "beautifulsoup4>=4.12.0",
 ]
+
+[project.optional-dependencies]
+# Faster HTML/XML parsing. bs4 will auto-prefer lxml when available;
+# Grimore degrades cleanly to the stdlib html.parser when it isn't.
+html-fast = ["lxml>=5.1.0"]
+# Richer DOCX extraction (style names, core properties). The built-in
+# stdlib path covers the 90% case without any native deps.
+docx-rich = ["python-docx>=1.1.0"]
 
 [project.scripts]
 grimore = "grimore.cli:app"

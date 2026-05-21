@@ -120,6 +120,7 @@ class PreflightChecker:
         tags = self._check_ollama_reachable(report)
         self._check_models_pulled(report, tags)
         self._check_vault_accessible(report)
+        self._check_adapters(report)
 
         want_git = check_git if check_git is not None else self.config.output.auto_commit
         if want_git:
@@ -256,6 +257,128 @@ class PreflightChecker:
             ok=True,
             message=f"Vault accessible at {path}.",
         ))
+
+    # Per-format adapter health. Keyed by the extension the user puts in
+    # ``[vault].formats``; value is (probe_callable, install_hint). The
+    # probe imports the underlying library and returns None on success
+    # or a short reason string on failure.
+    _ADAPTER_PROBES: dict[str, tuple] = {}
+
+    @staticmethod
+    def _probe_md() -> Optional[str]:
+        try:
+            import frontmatter  # noqa: F401
+        except ImportError as e:
+            return str(e)
+        return None
+
+    @staticmethod
+    def _probe_txt() -> Optional[str]:
+        # Stdlib-only. Always available.
+        return None
+
+    @staticmethod
+    def _probe_html() -> Optional[str]:
+        try:
+            from bs4 import BeautifulSoup  # noqa: F401
+        except ImportError as e:
+            return str(e)
+        return None
+
+    @staticmethod
+    def _probe_docx() -> Optional[str]:
+        # Pure-stdlib adapter (zipfile + xml.etree). No third-party deps.
+        return None
+
+    @classmethod
+    def _adapter_probes(cls) -> dict[str, tuple]:
+        # Lazily populated so the dict literal at class-scope doesn't
+        # have to reference unbound classmethods.
+        if not cls._ADAPTER_PROBES:
+            cls._ADAPTER_PROBES = {
+                "md":   (cls._probe_md,   "pip install python-frontmatter"),
+                "txt":  (cls._probe_txt,  ""),
+                "html": (cls._probe_html, "pip install beautifulsoup4"),
+                "htm":  (cls._probe_html, "pip install beautifulsoup4"),
+                "docx": (cls._probe_docx, ""),
+            }
+        return cls._ADAPTER_PROBES
+
+    def _check_adapters(self, report: PreflightReport) -> None:
+        """One ✓/✗ per enabled format in ``[vault].formats``.
+
+        Built-ins with no third-party dep (txt, docx) are always ✓.
+        Formats whose adapter isn't shipped yet (pdf/epub/rtf/odt in
+        Phase 2) surface a warning so the user knows the extension is
+        configured but the loader will skip it.
+        """
+        formats = list(self.config.vault.formats) or ["md"]
+        probes = self._adapter_probes()
+
+        # Import adapters package to populate the registry before we
+        # query supported_extensions. Cheap and idempotent.
+        try:
+            from grimore.ingest.adapters import supported_extensions
+            registered = supported_extensions()
+        except Exception as exc:  # pragma: no cover - import path is exercised
+            report.add(CheckResult(
+                name="adapters_registry",
+                ok=False,
+                severity="error",
+                message=f"Could not import the adapter registry: {exc!r}.",
+                fix="Reinstall Grimore (`pip install -e .`) and re-run preflight.",
+            ))
+            return
+
+        for ext in formats:
+            key = ext.lower().lstrip(".")
+            if not key:
+                continue
+            check_name = f"adapter:{key}"
+
+            if key not in registered:
+                report.add(CheckResult(
+                    name=check_name,
+                    ok=False,
+                    severity="warning",
+                    message=(
+                        f"No adapter registered for .{key} files. Documents "
+                        "with this extension will be skipped during scan."
+                    ),
+                    fix=(
+                        f"Remove '{key}' from `[vault].formats` in grimore.toml, "
+                        "or wait for a later phase that ships this adapter."
+                    ),
+                ))
+                continue
+
+            probe, install_hint = probes.get(key, (None, ""))
+            if probe is None:
+                # Adapter is registered but we have no health probe — assume
+                # OK rather than warn (defensive default for future adapters).
+                report.add(CheckResult(
+                    name=check_name,
+                    ok=True,
+                    message=f"Adapter for .{key} ready.",
+                ))
+                continue
+
+            failure = probe()
+            if failure is None:
+                report.add(CheckResult(
+                    name=check_name,
+                    ok=True,
+                    message=f"Adapter for .{key} ready.",
+                ))
+            else:
+                fix = install_hint or "Reinstall the missing dependency."
+                report.add(CheckResult(
+                    name=check_name,
+                    ok=False,
+                    severity="error",
+                    message=f"Adapter for .{key} unavailable: {failure}",
+                    fix=fix,
+                ))
 
     def _check_git_ready(self, report: PreflightReport) -> None:
         """When auto_commit is on, confirm the vault is a git repo."""

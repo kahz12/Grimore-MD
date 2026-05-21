@@ -1,7 +1,10 @@
 """
 File system monitoring for Project Grimore.
-Uses the watchdog library to track changes in the Markdown vault and implements
-a debounce mechanism to avoid processing files while they are still being edited.
+Uses the watchdog library to track changes in the document vault and
+implements a debounce mechanism to avoid processing files while they are
+still being edited. Extension filtering is driven by ``config.vault.formats``
+so the watcher picks up every format the user has enabled (Markdown by
+default; PDFs, ePubs, DOCX, … as later phases ship their adapters).
 """
 import time
 from pathlib import Path
@@ -9,25 +12,48 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from queue import Queue, Empty
 from threading import Thread
+from typing import Iterable, Optional
 from grimore.utils.config import is_ignored_path
 from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _normalise_extensions(exts: Optional[Iterable[str]]) -> frozenset[str]:
+    """Lowercase, strip leading dots, drop empties. ``None`` → MD-only."""
+    if not exts:
+        return frozenset({"md"})
+    out: set[str] = set()
+    for ext in exts:
+        if not ext:
+            continue
+        out.add(ext.lower().lstrip("."))
+    return frozenset(out) or frozenset({"md"})
+
+
 class VaultEventHandler(FileSystemEventHandler):
     """
     Handles low-level file system events (modified, created, moved).
-    Filters events by file extension (.md) and ignored directories.
+    Filters events by file extension (against ``supported_extensions``)
+    and ignored directories.
     """
-    def __init__(self, queue: Queue, ignored_dirs: list[str]):
+    def __init__(
+        self,
+        queue: Queue,
+        ignored_dirs: list[str],
+        supported_extensions: Optional[Iterable[str]] = None,
+    ):
         self.queue = queue
         self.ignored_dirs = ignored_dirs
+        self.supported_extensions = _normalise_extensions(supported_extensions)
 
     def _enqueue(self, raw_path: str, event_type: str):
         """Filters and pushes valid file events into the processing queue."""
-        if not raw_path.endswith(".md"):
-            return
         path = Path(raw_path)
+        # suffix includes the leading dot — strip it for the membership test.
+        ext = path.suffix.lower().lstrip(".")
+        if ext not in self.supported_extensions:
+            return
         if is_ignored_path(path, self.ignored_dirs):
             return
         self.queue.put((path, time.time()))
@@ -54,10 +80,18 @@ class VaultObserver:
     High-level observer that manages the watchdog process and implements
     a debounce timer (default 45s) to ensure file writes are complete.
     """
-    def __init__(self, vault_path: str, callback, ignored_dirs: list[str], debounce_seconds: int = 45):
+    def __init__(
+        self,
+        vault_path: str,
+        callback,
+        ignored_dirs: list[str],
+        debounce_seconds: int = 45,
+        supported_extensions: Optional[Iterable[str]] = None,
+    ):
         self.vault_path = vault_path
         self.callback = callback  # Function to call when a file is ready to process
         self.ignored_dirs = ignored_dirs
+        self.supported_extensions = _normalise_extensions(supported_extensions)
         self.debounce_seconds = debounce_seconds
         self.queue = Queue()
         self.pending_changes = {}  # Maps Path -> last_event_timestamp
@@ -66,7 +100,9 @@ class VaultObserver:
     def start(self):
         """Starts the watchdog observer and the background processing thread."""
         self.observer = Observer()
-        self.handler = VaultEventHandler(self.queue, self.ignored_dirs)
+        self.handler = VaultEventHandler(
+            self.queue, self.ignored_dirs, self.supported_extensions,
+        )
         self.observer.schedule(self.handler, self.vault_path, recursive=True)
         self.observer.start()
         

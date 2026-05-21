@@ -254,6 +254,12 @@ class TestAggregate:
         report = PreflightChecker(config, session=session).run()
         d = report.as_dict()
         assert d["ok"] is True
-        assert {c["name"] for c in d["checks"]} == {
-            "ollama_reachable", "models_pulled", "vault_accessible"
-        }
+        names = {c["name"] for c in d["checks"]}
+        # Core checks must always appear.
+        assert {"ollama_reachable", "models_pulled", "vault_accessible"} <= names
+        # Per-format adapter checks (one per entry in vault.formats). The
+        # default config covers MD + TXT + HTML/HTM + DOCX as of Phase 2.
+        for ext in ("md", "txt", "html", "htm", "docx"):
+            assert f"adapter:{ext}" in names, (
+                f"expected adapter:{ext} in preflight report, got {sorted(names)}"
+            )

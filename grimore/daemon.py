@@ -12,6 +12,7 @@ from pathlib import Path
 _os_getpid = _os.getpid
 from grimore.utils.config import Config
 from grimore.utils.event_log import DaemonEventLog
+from grimore.utils.hashing import sha256_file
 from grimore.utils.logger import get_logger
 from grimore.utils.paths import daemon_lock_path, daemon_log_path
 from grimore.ingest.observer import VaultObserver
@@ -140,7 +141,8 @@ class GrimoreDaemon:
         self.observer = VaultObserver(
             vault_path=self.config.vault.path,
             callback=self.process_file,
-            ignored_dirs=self.config.vault.ignored_dirs
+            ignored_dirs=self.config.vault.ignored_dirs,
+            supported_extensions=self.config.vault.formats,
         )
         self.observer.start()
 
@@ -225,6 +227,30 @@ class GrimoreDaemon:
                 self.event_log.write("skip", path=rel, reason="path_escape")
                 return
 
+            # 0a. Never re-ingest files inside our own sidecar tree —
+            # they are Grimore output, not user content.
+            sidecar_root = (self.vault_root / self.config.vault.sidecar_dir).resolve()
+            try:
+                Path(file_path).resolve().relative_to(sidecar_root)
+            except ValueError:
+                pass
+            else:
+                self.event_log.write("skip", path=rel, reason="sidecar")
+                return
+
+            # 0b. Cheap fast-skip on the raw file bytes (blueprint §6.4).
+            # Avoids re-extracting expensive formats (PDF, EPUB, DOCX)
+            # when nothing on disk has changed.
+            try:
+                file_hash = sha256_file(file_path)
+            except OSError as e:
+                logger.error("file_hash_failed", path=rel, error=str(e))
+                self.event_log.write("error", path=rel, error=str(e))
+                return
+            if self.db.get_file_hash(str(file_path)) == file_hash:
+                self.event_log.write("skip", path=rel, reason="unchanged_bytes")
+                return
+
             # 1. Parse file (defence-in-depth: parser re-validates vault scope)
             note = self.parser.parse_file(file_path, vault_root=self.vault_root)
 
@@ -244,8 +270,11 @@ class GrimoreDaemon:
                     logger.warning("remote_disabled_for_note", path=rel,
                                    reason="sensitive_data_detected")
 
-            # 3. Check hash idempotency to avoid redundant LLM calls
+            # 3. Check text-level idempotency. Bytes changed (else we'd
+            # have fast-skipped above) but the extracted text didn't —
+            # refresh the file_hash so the next event also fast-skips.
             if self.db.get_content_hash_by_path(str(file_path)) == note.content_hash:
+                self.db.update_file_hash(str(file_path), file_hash)
                 logger.info("file_unchanged", path=rel)
                 self.event_log.write("skip", path=rel, reason="unchanged")
                 return
@@ -258,20 +287,37 @@ class GrimoreDaemon:
             clean_content = self.security.sanitize_prompt(note.content)
             cognition_data = self.tagger.tag_note(clean_content)
             
-            # 6. Output: Update note frontmatter
+            # 6. Output: Update note frontmatter (inline for .md, sidecar
+            # for every other format).
             metadata_updates = {
                 "tags": cognition_data["tags"],
                 "summary": cognition_data["summary"],
                 "category": cognition_data.get("category", ""),
                 "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             }
-            self.writer.write_metadata(file_path, metadata_updates, dry_run=self.config.output.dry_run)
+            target = self.writer.write_metadata(
+                note,
+                metadata_updates,
+                vault_root=self.vault_root,
+                sidecar_dir=self.config.vault.sidecar_dir,
+                write_sidecars=self.config.vault.write_sidecars,
+                dry_run=self.config.output.dry_run,
+            )
 
             # 7. Embeddings: Vectorize for semantic index
             embedded = self.embedder.embed_chunks(clean_content)
 
             # 8. Update Database records
-            note_id = self.db.upsert_note(str(file_path), note.title, note.content_hash)
+            sidecar_target_str = (
+                str(target) if (note.format != "md" and target is not None) else None
+            )
+            note_id = self.db.upsert_note(
+                str(file_path), note.title, note.content_hash,
+                format=note.format,
+                file_hash=file_hash,
+                sidecar_path=sidecar_target_str,
+                size_bytes=note.size_bytes or None,
+            )
             self.db.update_last_tagged(str(file_path))
             if note_id is not None:
                 self.db.upsert_tags(note_id, cognition_data["tags"])

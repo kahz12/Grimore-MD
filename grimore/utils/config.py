@@ -33,13 +33,29 @@ _load_project_env()
 
 @dataclass
 class VaultConfig:
-    """Settings related to the Markdown vault location and filtering."""
+    """Settings related to the document vault location and filtering."""
     path: str = "./vault"
     ignored_dirs: list[str] = field(default_factory=lambda: [".obsidian", ".trash", ".git", "Templates"])
     # Optional human label shown in the shell's bottom toolbar in place of the
     # directory basename. Lets a user call ``./test_vault`` "Library" without
     # renaming the directory. Falls back to ``Path(path).name`` when unset.
     display_name: str | None = None
+    # Document formats Grimore will pick up from the vault, by lowercase
+    # extension (no leading dot). Adapters auto-register on import; the
+    # default tracks the formats whose adapters ship in the current
+    # version. Phase 2 adds plain text, HTML and DOCX; PDF and EPUB join
+    # in Phase 3. Users may narrow this list to restrict ingestion.
+    formats: list[str] = field(
+        default_factory=lambda: ["md", "txt", "html", "htm", "docx"],
+    )
+    # Hidden root, relative to the vault, where Grimore mirrors a sidecar
+    # ``.md`` for every non-Markdown document. Original binaries are never
+    # mutated; tags, summaries and suggested-link sections live here.
+    sidecar_dir: str = ".grimore/sidecars"
+    # When false, non-Markdown metadata stays DB-only and no sidecar files
+    # are written. Useful for users who don't want any on-disk footprint
+    # outside their original documents.
+    write_sidecars: bool = True
 
 
 def is_ignored_path(file_path, ignored_dirs: list[str]) -> bool:

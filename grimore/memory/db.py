@@ -100,6 +100,10 @@ class Database:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_notes_category ON notes(category)"
             )
+            self._migrate_multiformat_columns(conn)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_format ON notes(format)"
+            )
             self._fts_available = self._migrate_fts_index(conn)
             self._migrate_freshness_table(conn)
             self._migrate_mirror_tables(conn)
@@ -111,6 +115,36 @@ class Database:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
         if "category" not in cols:
             conn.execute("ALTER TABLE notes ADD COLUMN category TEXT")
+
+    @staticmethod
+    def _migrate_multiformat_columns(conn) -> None:
+        """Add the multi-format columns on ``notes`` and ``embeddings``.
+
+        Idempotent — every ALTER is gated on a ``PRAGMA table_info`` check
+        so re-running the migration on an already-upgraded DB is a no-op.
+        New rows default to Markdown semantics so v2.0 callers that
+        haven't been ported keep working unchanged.
+
+        See ``docs/MULTIFORMAT_BLUEPRINT.md`` §5 for the contract.
+        """
+        note_cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
+        if "format" not in note_cols:
+            # SQLite forbids non-constant DEFAULTs in ALTER TABLE, so the
+            # literal 'md' both backfills existing rows and stamps future
+            # inserts that omit the column.
+            conn.execute("ALTER TABLE notes ADD COLUMN format TEXT DEFAULT 'md'")
+        if "file_hash" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN file_hash TEXT")
+        if "sidecar_path" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN sidecar_path TEXT")
+        if "size_bytes" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN size_bytes INTEGER")
+
+        emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
+        if "page" not in emb_cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN page INTEGER")
+        if "heading" not in emb_cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN heading TEXT")
 
     @staticmethod
     def _migrate_freshness_table(conn) -> None:
@@ -309,6 +343,29 @@ class Database:
             ).fetchone()
         return (row[0], row[1]) if row else None
 
+    def get_note_writeback_target(
+        self, note_id: int,
+    ) -> Optional[tuple[str, str, Optional[str]]]:
+        """Returns ``(source_path, format, sidecar_path)`` for ``note_id``.
+
+        Used by the connector when deciding where to inject the suggested
+        connections section: Markdown notes get the original path, every
+        other format gets the sidecar path (or ``None`` if the user runs
+        with ``write_sidecars = false`` and never materialised one).
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT path, format, sidecar_path FROM notes WHERE id = ?",
+                (note_id,),
+            ).fetchone()
+        if not row:
+            return None
+        # `format` may be NULL on rows that pre-date the multiformat
+        # migration's default — treat that as Markdown, the historical
+        # behaviour.
+        fmt = row[1] or "md"
+        return (row[0], fmt, row[2])
+
     def get_note_title(self, note_id: int) -> Optional[str]:
         """Returns the title for the given note_id, or None if absent."""
         with self._get_connection() as conn:
@@ -340,19 +397,41 @@ class Database:
             "categorised_notes": int(categorised_notes),
         }
 
-    def upsert_note(self, path: str, title: str, content_hash: str) -> int:
-        """Inserts or updates a note record. Returns the internal note ID."""
+    def upsert_note(
+        self,
+        path: str,
+        title: str,
+        content_hash: str,
+        *,
+        format: str = "md",
+        file_hash: Optional[str] = None,
+        sidecar_path: Optional[str] = None,
+        size_bytes: Optional[int] = None,
+    ) -> int:
+        """Inserts or updates a note record. Returns the internal note ID.
+
+        The multi-format kwargs are keyword-only with safe defaults so v2.0
+        callers (``upsert_note(path, title, hash)``) keep working unchanged
+        — they implicitly tag their notes as Markdown, which is what they
+        always were.
+        """
         with self._get_connection() as conn:
             now = datetime.now().isoformat()
             cursor = conn.execute("""
-                INSERT INTO notes (path, title, content_hash, last_seen)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO notes (path, title, content_hash, last_seen,
+                                   format, file_hash, sidecar_path, size_bytes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
-                    title = excluded.title,
+                    title        = excluded.title,
                     content_hash = excluded.content_hash,
-                    last_seen = excluded.last_seen
+                    last_seen    = excluded.last_seen,
+                    format       = excluded.format,
+                    file_hash    = COALESCE(excluded.file_hash, notes.file_hash),
+                    sidecar_path = COALESCE(excluded.sidecar_path, notes.sidecar_path),
+                    size_bytes   = COALESCE(excluded.size_bytes, notes.size_bytes)
                 RETURNING id
-            """, (path, title, content_hash, now))
+            """, (path, title, content_hash, now,
+                  format, file_hash, sidecar_path, size_bytes))
             result = cursor.fetchone()
             conn.commit()
             return result[0] if result else None
@@ -362,6 +441,44 @@ class Database:
         with self._get_connection() as conn:
             now = datetime.now().isoformat()
             conn.execute("UPDATE notes SET last_tagged = ? WHERE path = ?", (now, path))
+            conn.commit()
+
+    # ── Multi-format helpers ───────────────────────────────────────────────
+
+    def get_file_hash(self, path: str) -> Optional[str]:
+        """Raw-bytes SHA-256 for ``path`` (None if unknown).
+
+        Cheap fast-skip key for ingest: if this matches what's on disk
+        right now, the file genuinely hasn't changed and we can skip
+        even the extraction step. See blueprint §6.4.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT file_hash FROM notes WHERE path = ?", (path,)
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def update_file_hash(self, path: str, file_hash: str) -> None:
+        """Refresh just the file_hash for an otherwise-unchanged note.
+
+        Used when a save bumps the mtime + bytes but the extracted text
+        is identical (e.g. a PDF re-exported with the same content).
+        Keeps the fast-skip honest on the next scan.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE notes SET file_hash = ? WHERE path = ?",
+                (file_hash, path),
+            )
+            conn.commit()
+
+    def set_sidecar_path(self, note_id: int, sidecar_path: Optional[str]) -> None:
+        """Record (or clear with ``None``) the sidecar ``.md`` for a note."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE notes SET sidecar_path = ? WHERE id = ?",
+                (sidecar_path, note_id),
+            )
             conn.commit()
 
     # ── Categories ─────────────────────────────────────────────────────────
@@ -427,13 +544,29 @@ class Database:
                 ).fetchall()
         return [(r[0], r[1], r[2]) for r in rows]
 
-    def store_embedding(self, note_id: int, chunk_index: int, text_content: str, vector_blob: bytes):
-        """Stores a vector embedding for a specific note chunk."""
+    def store_embedding(
+        self,
+        note_id: int,
+        chunk_index: int,
+        text_content: str,
+        vector_blob: bytes,
+        *,
+        page: Optional[int] = None,
+        heading: Optional[str] = None,
+    ):
+        """Stores a vector embedding for a specific note chunk.
+
+        ``page`` / ``heading`` are the multi-format anchors used by the
+        Oracle when rendering citations (``[[Title#p.42]]``). Both are
+        keyword-only with ``None`` defaults so the old four-arg call sites
+        keep working without modification.
+        """
         with self._get_connection() as conn:
             conn.execute("""
-                INSERT INTO embeddings (note_id, chunk_index, text_content, vector)
-                VALUES (?, ?, ?, ?)
-            """, (note_id, chunk_index, text_content, vector_blob))
+                INSERT INTO embeddings (note_id, chunk_index, text_content, vector,
+                                        page, heading)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (note_id, chunk_index, text_content, vector_blob, page, heading))
             conn.commit()
 
     def delete_note_embeddings(self, note_id: int):

@@ -14,8 +14,9 @@ from grimore.cognition.connector import Connector
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.tagger import Tagger
-from grimore.ingest.parser import MarkdownParser
+from grimore.ingest.parser import MarkdownParser, iter_vault_documents
 from grimore.memory.db import Database
+from grimore.utils.hashing import sha256_file
 from grimore.memory.maintenance import MaintenanceRunner
 from grimore.memory.taxonomy import load_taxonomy_from_vault, save_taxonomy_to_vault
 from grimore.operations import (
@@ -158,22 +159,21 @@ def scan(
     embedder = Embedder(config, cache=db)
     security = SecurityGuard(str(actual_vault_path))
 
-    # Identify files to process (filtering out ignored directories)
+    # Identify files to process (filtering out ignored dirs and the
+    # sidecar tree where Grimore stores its own non-MD metadata).
     vault_root = actual_vault_path.resolve()
-    files = []
-    for f in actual_vault_path.glob("**/*.md"):
-        if is_ignored_path(f, config.vault.ignored_dirs):
-            continue
-        try:
-            SecurityGuard.resolve_within_vault(f, vault_root)
-        except ValueError:
-            logger.warning("path_escape_skipped", path=str(f))
-            continue
-        files.append(f)
+    files = iter_vault_documents(
+        actual_vault_path,
+        config.vault.formats,
+        config.vault.ignored_dirs,
+        sidecar_dir=config.vault.sidecar_dir,
+    )
 
     if not files:
+        formats_label = ", ".join(config.vault.formats) or "md"
         console.print(ui.info_panel(
-            f"No [bold].md[/] notes found in [cyan]{actual_vault_path}[/].",
+            f"No documents matching [bold]{formats_label}[/] found in "
+            f"[cyan]{actual_vault_path}[/].",
             title="Empty vault",
         ))
         return
@@ -187,8 +187,24 @@ def scan(
             rel = file.relative_to(actual_vault_path)
             progress.update(task, description=f"[grimore.muted]{rel}[/]")
 
+            # Step 0: Cheap fast-skip on raw-bytes hash. PDFs and other
+            # binaries are expensive to extract; if the file's bytes
+            # haven't changed since last run, skip extraction entirely.
+            # Blueprint §6.4.
             try:
-                # Step 1: Parse Markdown and metadata
+                file_hash = sha256_file(file)
+            except OSError as e:
+                stats["errors"] += 1
+                logger.error("file_hash_failed", path=str(file), error=str(e))
+                progress.advance(task)
+                continue
+            if db.get_file_hash(str(file)) == file_hash:
+                stats["unchanged"] += 1
+                progress.advance(task)
+                continue
+
+            try:
+                # Step 1: Parse document into a format-neutral ParsedNote
                 note = parser.parse_file(file, vault_root=vault_root)
             except Exception as e:
                 stats["errors"] += 1
@@ -202,8 +218,10 @@ def scan(
                 progress.advance(task)
                 continue
 
-            # Idempotency check: Skip if content hasn't changed
+            # Idempotency check: the extracted *text* is unchanged. Keep
+            # the file_hash fresh so the next scan also fast-skips.
             if db.get_content_hash_by_path(str(file)) == note.content_hash:
+                db.update_file_hash(str(file), file_hash)
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
@@ -235,17 +253,36 @@ def scan(
                 if config.output.auto_commit and git_guard.is_repo_ready():
                     git_guard.commit_pre_change(str(file))
 
-                # Step 4: Write metadata back to note file
+                # Step 4: Write metadata back to the right target.
+                # For .md the writer mutates the source file in place;
+                # for everything else it materialises (or refreshes) a
+                # sidecar .md under <vault>/<sidecar_dir>/.
                 metadata_updates = {
                     "tags": cognition_data["tags"],
                     "summary": cognition_data["summary"],
                     "category": cognition_data.get("category", ""),
                     "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
-                writer.write_metadata(file, metadata_updates, dry_run=False)
+                target = writer.write_metadata(
+                    note,
+                    metadata_updates,
+                    vault_root=vault_root,
+                    sidecar_dir=config.vault.sidecar_dir,
+                    write_sidecars=config.vault.write_sidecars,
+                    dry_run=False,
+                )
 
                 # Step 5: Update persistence layer (DB)
-                note_id = db.upsert_note(str(file), note.title, note.content_hash)
+                sidecar_target_str: Optional[str] = None
+                if note.format != "md" and target is not None:
+                    sidecar_target_str = str(target)
+                note_id = db.upsert_note(
+                    str(file), note.title, note.content_hash,
+                    format=note.format,
+                    file_hash=file_hash,
+                    sidecar_path=sidecar_target_str,
+                    size_bytes=note.size_bytes or None,
+                )
                 db.update_last_tagged(str(file))
                 if note_id is not None:
                     db.upsert_tags(note_id, cognition_data["tags"])
@@ -357,6 +394,12 @@ def connect(
                 logger.warning("orphan_embedding", note_id=note_id)
                 continue
             path, title = location
+            # Format-aware writeback target: .md hits the source file,
+            # everything else lands in its sidecar. Falls back gracefully
+            # for legacy rows whose ``format`` column is NULL.
+            writeback = db.get_note_writeback_target(note_id)
+            note_format = writeback[1] if writeback else "md"
+            note_sidecar = Path(writeback[2]) if writeback and writeback[2] else None
 
             # Find similar notes using cosine similarity on embeddings.
             # dedupe_by_note guarantees we see distinct notes (not 12 chunks
@@ -390,8 +433,17 @@ def connect(
                 for line in bullet_lines:
                     progress.console.print(line)
                 
-                # Inject the discovered links back into the file
-                injector.inject_links(Path(path), connections_to_inject, dry_run=is_dry_run)
+                # Inject the discovered links into the right markdown
+                # target: source for .md, sidecar for everything else.
+                injector.inject_for(
+                    source_path=Path(path),
+                    format=note_format,
+                    connections=connections_to_inject,
+                    sidecar_path=note_sidecar,
+                    vault_root=Path(config.vault.path),
+                    sidecar_dir=config.vault.sidecar_dir,
+                    dry_run=is_dry_run,
+                )
 
     console.print()
     console.print(ui.success_panel(
@@ -558,10 +610,16 @@ def prune(
 
     db = Database(config.memory.db_path)
 
-    # Scan disk for existing files to identify orphans in DB
+    # Scan disk for existing files to identify orphans in DB.
+    # Honours config.vault.formats so non-Markdown docs aren't pruned
+    # just because we enumerate with the wrong extension.
     existing_paths = {
-        str(f) for f in actual_vault_path.glob("**/*.md")
-        if not is_ignored_path(f, config.vault.ignored_dirs)
+        str(f) for f in iter_vault_documents(
+            actual_vault_path,
+            config.vault.formats,
+            config.vault.ignored_dirs,
+            sidecar_dir=config.vault.sidecar_dir,
+        )
     }
 
     stale = db.find_stale_notes(existing_paths)
