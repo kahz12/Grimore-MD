@@ -38,7 +38,7 @@ from grimore.session import NoteAttachment, Session
 from grimore.utils import ui
 from grimore.utils.config import is_ignored_path
 from grimore.utils.logger import get_logger
-from grimore.utils.paths import shell_history_path
+from grimore.utils.paths import shell_history_path, sidecar_path_for
 from grimore.utils.security import SecurityGuard
 
 console = ui.console
@@ -1140,9 +1140,13 @@ class GrimoreShell:
         ``_MENTION_MAX_CHARS``.
         """
         vault_root = self.session.vault_root.resolve()
+        formats = self.session.config.vault.formats or ["md"]
 
-        # 1. Direct path attempt.
-        for candidate in (vault_root / token, vault_root / f"{token}.md"):
+        # 1. Direct path attempt — try the bare token, then token.<ext>
+        # for every configured format so @mentions work across the vault.
+        candidates = [vault_root / token]
+        candidates.extend(vault_root / f"{token}.{ext}" for ext in formats)
+        for candidate in candidates:
             try:
                 resolved = SecurityGuard.resolve_within_vault(candidate, vault_root)
             except ValueError:
@@ -1173,33 +1177,48 @@ class GrimoreShell:
         return self._load_attachment(index[idx][1], vault_root)
 
     def _ensure_vault_index(self) -> list[tuple[str, Path]]:
-        """Lazily build ``[(title, path), …]`` over .md files in the vault.
-        Cached on the instance until ``/refresh`` clears it."""
+        """Lazily build ``[(title, path), …]`` over every supported
+        document in the vault. Cached on the instance until
+        ``/refresh`` clears it."""
         if self._vault_index is not None:
             return self._vault_index
         vault_root = self.session.vault_root.resolve()
         ignored = self.session.config.vault.ignored_dirs
+        formats = self.session.config.vault.formats or ["md"]
         index: list[tuple[str, Path]] = []
         if not vault_root.exists():
             self._vault_index = []
             return self._vault_index
-        for md in vault_root.rglob("*.md"):
-            if is_ignored_path(md, ignored):
-                continue
-            try:
-                resolved = SecurityGuard.resolve_within_vault(md, vault_root)
-            except ValueError:
-                continue
-            index.append((md.stem, resolved))
+        for ext in formats:
+            for hit in vault_root.rglob(f"*.{ext}"):
+                if is_ignored_path(hit, ignored):
+                    continue
+                try:
+                    resolved = SecurityGuard.resolve_within_vault(hit, vault_root)
+                except ValueError:
+                    continue
+                index.append((hit.stem, resolved))
         self._vault_index = index
         return index
 
     def _load_attachment(self, path: Path, vault_root: Path) -> NoteAttachment:
         """Read up to ``_MENTION_MAX_CHARS`` from ``path`` and wrap as
-        a ``NoteAttachment``. Always re-validates the path is inside the
-        vault — belt-and-braces against a stale cached index."""
+        a ``NoteAttachment``. For non-Markdown sources we read the sidecar
+        ``.md`` extracted by the ingest pipeline so the model sees clean
+        text rather than the raw PDF / DOCX bytes. Always re-validates the
+        path is inside the vault — belt-and-braces against a stale cached
+        index."""
         resolved = SecurityGuard.resolve_within_vault(path, vault_root)
-        body = resolved.read_text(encoding="utf-8", errors="replace")
+        read_from = resolved
+        if resolved.suffix.lower() != ".md":
+            sidecar_dir = self.session.config.vault.sidecar_dir
+            try:
+                sidecar = sidecar_path_for(resolved, vault_root, sidecar_dir)
+            except ValueError:
+                sidecar = None
+            if sidecar is not None and sidecar.is_file():
+                read_from = sidecar
+        body = read_from.read_text(encoding="utf-8", errors="replace")
         if len(body) > _MENTION_MAX_CHARS:
             body = body[:_MENTION_MAX_CHARS]
         return NoteAttachment(title=resolved.stem, path=resolved, content=body)

@@ -36,16 +36,25 @@ class VaultEventHandler(FileSystemEventHandler):
     Handles low-level file system events (modified, created, moved).
     Filters events by file extension (against ``supported_extensions``)
     and ignored directories.
+
+    When ``sniff_magic`` is True, files whose extension misses the
+    configured set are content-sniffed before being dropped. If the
+    sniffer recognises the bytes as a format we ship an adapter for,
+    the event is still queued — keeping the daemon in step with the
+    ``grimore scan`` sweep, which also widens its pickup under the
+    same flag.
     """
     def __init__(
         self,
         queue: Queue,
         ignored_dirs: list[str],
         supported_extensions: Optional[Iterable[str]] = None,
+        sniff_magic: bool = False,
     ):
         self.queue = queue
         self.ignored_dirs = ignored_dirs
         self.supported_extensions = _normalise_extensions(supported_extensions)
+        self.sniff_magic = sniff_magic
 
     def _enqueue(self, raw_path: str, event_type: str):
         """Filters and pushes valid file events into the processing queue."""
@@ -53,11 +62,26 @@ class VaultEventHandler(FileSystemEventHandler):
         # suffix includes the leading dot — strip it for the membership test.
         ext = path.suffix.lower().lstrip(".")
         if ext not in self.supported_extensions:
-            return
+            # Extension miss. Either give up, or — when the user has
+            # opted into content sniffing — ask libmagic whether the
+            # bytes look like a format we can actually ingest.
+            if not (self.sniff_magic and self._sniff_matches(path)):
+                return
         if is_ignored_path(path, self.ignored_dirs):
             return
         self.queue.put((path, time.time()))
         logger.debug("file_event", type=event_type, path=str(path))
+
+    def _sniff_matches(self, path: Path) -> bool:
+        """True if libmagic claims ``path`` is one of the configured
+        formats. Imported lazily so the daemon never pays the libmagic
+        cost when sniffing is off."""
+        try:
+            from grimore.ingest.sniffer import sniff_extension
+        except Exception:  # pragma: no cover - import guard
+            return False
+        sniffed = sniff_extension(path)
+        return bool(sniffed and sniffed in self.supported_extensions)
 
     def on_modified(self, event):
         if event.is_directory:
@@ -87,11 +111,13 @@ class VaultObserver:
         ignored_dirs: list[str],
         debounce_seconds: int = 45,
         supported_extensions: Optional[Iterable[str]] = None,
+        sniff_magic: bool = False,
     ):
         self.vault_path = vault_path
         self.callback = callback  # Function to call when a file is ready to process
         self.ignored_dirs = ignored_dirs
         self.supported_extensions = _normalise_extensions(supported_extensions)
+        self.sniff_magic = sniff_magic
         self.debounce_seconds = debounce_seconds
         self.queue = Queue()
         self.pending_changes = {}  # Maps Path -> last_event_timestamp
@@ -102,6 +128,7 @@ class VaultObserver:
         self.observer = Observer()
         self.handler = VaultEventHandler(
             self.queue, self.ignored_dirs, self.supported_extensions,
+            sniff_magic=self.sniff_magic,
         )
         self.observer.schedule(self.handler, self.vault_path, recursive=True)
         self.observer.start()

@@ -1,6 +1,8 @@
 # Grimore — Guía de Usuario (Español)
 
-> Un motor de conocimiento local-first para bóvedas de Markdown.
+> Un motor de conocimiento local-first para bóvedas de documentos —
+> Markdown, PDF, EPUB, DOCX, ODT, RTF, HTML, TXT — todos procesados por
+> el mismo pipeline.
 > Todo se ejecuta contra una instancia de Ollama en loopback; sin claves de
 > API, sin telemetría, sin nube.
 
@@ -13,6 +15,9 @@
 3. [Instalación](#3-instalación)
 4. [Tu primera bóveda — recorrido de cinco minutos](#4-tu-primera-bóveda--recorrido-de-cinco-minutos)
 5. [El archivo `grimore.toml`](#5-el-archivo-grimoretoml)
+   - [Formatos soportados](#formatos-soportados)
+   - [Sidecars: dónde se guardan los metadatos no-MD](#sidecars-dónde-se-guardan-los-metadatos-no-md)
+   - [Motores opcionales: backends de PDF, OCR, sniffer de magic-bytes](#motores-opcionales-backends-de-pdf-ocr-sniffer-de-magic-bytes)
 6. [Comandos del día a día](#6-comandos-del-día-a-día)
    - [`scan`](#scan)
    - [`connect`](#connect)
@@ -48,8 +53,10 @@
 
 ## 1. Qué es Grimore (y qué no es)
 
-Grimore observa un directorio de archivos Markdown planos (tu **bóveda**) y
-lo convierte en una base de conocimiento consultable. Para cada nota:
+Grimore observa un directorio de documentos (tu **bóveda**) y
+lo convierte en una base de conocimiento consultable. Markdown es el
+ciudadano de primera clase, pero **PDF, EPUB, DOCX, ODT, RTF, HTML y
+TXT** se extraen con el mismo pipeline. Para cada documento:
 
 - extrae **etiquetas** y un **resumen** de un párrafo con un LLM local,
 - la archiva bajo una **categoría** dentro de un árbol jerárquico,
@@ -164,6 +171,19 @@ escritura es opt-in. Un ejemplo anotado completo:
 [vault]
 path = "./vault"
 ignored_dirs = [".obsidian", ".trash", ".git", "Templates"]
+# Formatos de documento que Grimore recogerá, por extensión en
+# minúsculas. El valor por defecto incluye todos los adaptadores
+# pre-Python sin dependencias del sistema operativo. Añade "doc" si
+# tienes antiword instalado.
+formats = ["md", "txt", "html", "htm", "docx", "pdf", "epub", "rtf", "odt"]
+# Carpeta oculta, relativa a la bóveda, donde Grimore guarda un sidecar
+# `.md` por cada documento que no sea Markdown. Los binarios originales
+# nunca se modifican; las etiquetas, resúmenes y bloques de enlaces
+# sugeridos viven aquí.
+sidecar_dir   = ".grimore/sidecars"
+# Si es false, los metadatos no-Markdown permanecen solo en la base de
+# datos (no se escriben sidecars en disco).
+write_sidecars = true
 # Etiqueta opcional mostrada en la barra inferior de la shell. Si no se
 # define, se usa el nombre del directorio.
 display_name = "Biblioteca"
@@ -178,6 +198,22 @@ connect_threshold      = 0.7    # umbral coseno para sugerir un wikilink
 request_timeout_s      = 60     # /api/generate, vía JSON
 stream_timeout_s       = 120    # /api/generate, vía streaming
 embed_timeout_s        = 30     # /api/embeddings
+
+[ingest]
+# Motor de PDF. "pypdf" es el predeterminado siempre disponible;
+# "pdfplumber" y "pymupdf" son extras opcionales que preflight reporta.
+# PyMuPDF es AGPL — verifica la compatibilidad de licencia antes de
+# usarlo.
+pdf_engine    = "pypdf"
+# OCR como respaldo para PDFs escaneados (páginas sin capa de texto).
+# Desactivado por defecto; requiere el extra `ocr` y el binario
+# `tesseract` en el PATH.
+ocr           = false
+ocr_timeout_s = 30
+# Sniffer de magic-bytes para archivos sin extensión o mal nombrados.
+# Desactivado por defecto; requiere el extra `sniff` (python-magic) y
+# libmagic del sistema.
+sniff_magic   = false
 
 [memory]
 db_path = "grimore.db"
@@ -216,6 +252,89 @@ fuzzy_threshold = 55     # 0–100, puntuación rapidfuzz mínima para autocompl
 Las claves desconocidas se registran como WARNING y se ignoran — copiar
 fragmentos de un README antiguo no romperá el CLI.
 
+### Formatos soportados
+
+| Extensión | Adaptador          | Notas                                                                       |
+|-----------|--------------------|-----------------------------------------------------------------------------|
+| `md`      | Markdown           | Primera clase. Frontmatter, wikilinks y escritura inline.                   |
+| `txt`     | Texto plano        | Solo stdlib. La primera línea no vacía se usa como título.                  |
+| `html`    | HTML / XHTML       | `<title>`, luego el primer `<h1>` / `<h2>`. Requiere `beautifulsoup4`.      |
+| `htm`     | HTML (alias)       | Mismo adaptador que `.html`.                                                |
+| `docx`    | DOCX (OOXML)       | Pure-stdlib: `zipfile` + `xml.etree`. Los encabezados generan secciones.    |
+| `pdf`     | PDF                | Secciones por página; el ancla de página llega a las citas como `#p.N`.     |
+| `epub`    | EPUB               | Capítulos en orden de spine → secciones; títulos desde metadatos OPF.       |
+| `rtf`     | RTF                | `striprtf`; una sola sección sin ancla.                                     |
+| `odt`     | OpenDocument Text  | Pure-stdlib zip+XML. Sigue el mismo flujo que DOCX para esquemas ODT.       |
+| `doc`     | `.doc` heredado    | **Opt-in.** Añade `"doc"` a `formats` e instala `antiword` en el PATH.      |
+
+Para formatos paginados, las citas obtienen un ancla automáticamente —
+una respuesta extraída de la página 137 de *Designing Data-Intensive
+Applications* se renderiza como
+`[[Designing Data-Intensive Applications#p.137]]`. Para formatos
+estructurados, el ancla cae al encabezado más cercano.
+
+### Sidecars: dónde se guardan los metadatos no-MD
+
+Grimore nunca modifica un PDF / EPUB / DOCX / ODT / RTF / HTML / TXT
+original. En su lugar, la capa de cognición escribe un **sidecar** `.md`
+bajo `<bóveda>/<sidecar_dir>/` (por defecto: `.grimore/sidecars/`) que
+refleja la ruta del documento:
+
+```
+vault/
+  Libros/Designing-Data-Intensive-Applications.pdf
+  .grimore/
+    sidecars/
+      Libros/Designing-Data-Intensive-Applications.pdf.md
+```
+
+El sidecar contiene el frontmatter (`tags`, `summary`, `category`,
+`last_tagged`) y — una vez ejecutado `grimore connect` — un bloque
+`## Suggested Connections`. La extensión `.pdf` original se conserva en
+el nombre del sidecar para que `Foo.pdf` y `Foo.epub` nunca colisionen
+en un único `Foo.md`. Configura `write_sidecars = false` para mantener
+todo solo en la base de datos.
+
+Las menciones `@` en la shell son conscientes de los sidecars: escribir
+`@mi-libro` resuelve al binario original, pero el adjunto que Grimore
+le da al modelo proviene del texto extraído del sidecar.
+
+### Motores opcionales: backends de PDF, OCR, sniffer de magic-bytes
+
+Estas opciones viven bajo `[ingest]` y permanecen apagadas hasta que
+las actives. Preflight (`grimore preflight`) solo sondea las que has
+habilitado, así que una instalación por defecto reporta una fila ✓
+limpia por formato.
+
+- **Motores de PDF alternativos.** `pdfplumber` maneja columnas y
+  tablas mejor que `pypdf`; `pymupdf` (AGPL — verifica compatibilidad
+  de licencia) tiene la mejor calidad de extracción. Instala el extra
+  correspondiente:
+
+  ```bash
+  pip install 'grimore[pdf-plumber]'
+  pip install 'grimore[pdf-mupdf]'   # AGPL-3.0
+  ```
+
+  Luego configura `pdf_engine` como `"pdfplumber"` o `"pymupdf"`. El
+  cambio se aplica en el siguiente scan sin reiniciar.
+
+- **OCR para PDFs escaneados.** Las páginas con una capa de texto vacía
+  pueden rasterizarse y procesarse con OCR vía `tesseract`. Se
+  necesitan dos dependencias: las wheels de Python
+  (`pip install 'grimore[ocr]'`) y el binario `tesseract` instalado en
+  el sistema. Luego activa `ocr = true`. Las secciones generadas por
+  OCR llevan el encabezado sintético `(ocr)` para que los revisores
+  puedan auditarlas.
+
+- **Sniffer de magic-bytes.** Cuando `sniff_magic = true`, los archivos
+  cuya extensión falta o no coincide con `formats` se inspeccionan por
+  su tipo de contenido real (vía `libmagic`) y se enrutan al adaptador
+  correcto si existe. Útil para bóvedas con descargas ad-hoc. Instala
+  el extra `sniff` y `libmagic` del sistema (Linux:
+  `apt install libmagic1`; Termux: `pkg install file`; Windows:
+  `pip install python-magic-bin`).
+
 ---
 
 ## 6. Comandos del día a día
@@ -229,16 +348,19 @@ continuación, un recorrido detallado.
 grimore scan [-p RUTA] [--dry-run|--no-dry-run] [--json]
 ```
 
-Recorre la bóveda, etiqueta notas nuevas o modificadas y refresca el
-índice de embeddings.
+Recorre la bóveda, etiqueta documentos nuevos o modificados en cada
+formato configurado y refresca el índice de embeddings.
 
 - `-p, --vault-path` — anula la ruta de la bóveda solo para esta ejecución.
 - `--dry-run` / `--no-dry-run` — sobrescribe la config sin tocarla.
 - `--json` — emite logs estructurados en JSON (útil en CI / monitoreo).
 
-**Idempotencia.** Las notas se hashean con SHA-256; una nota sin cambios
-nunca llama al LLM. Reescanear una bóveda totalmente indexada es
-prácticamente gratis.
+**Idempotencia.** Hashing en dos niveles: un SHA-256 barato sobre los
+bytes del archivo (`file_hash`) actúa como puerta del paso costoso de
+extracción; solo los documentos cuyos bytes han cambiado pagan la
+re-extracción. Dentro de eso, un `content_hash` sin cambios omite la
+llamada al LLM por completo. Reescanear una bóveda totalmente indexada
+es prácticamente gratis incluso para una biblioteca de PDFs de 500 MB.
 
 **Qué se escribe.** Con `--no-dry-run`:
 
@@ -283,8 +405,12 @@ Una consulta puntual de generación aumentada por recuperación (RAG).
 - `-e, --export RUTA` — renderiza la respuesta + fuentes como una nota
   Markdown en `RUTA` en lugar de transmitir a stdout.
 
-El Oráculo siempre cita las notas de las que extrajo contexto. Las citas
-aparecen al final de la respuesta como enlaces `[[título-de-nota]]`.
+El Oráculo siempre cita los documentos de los que extrajo contexto. Las
+citas aparecen al final de la respuesta como enlaces `[[título]]` — y
+para formatos paginados o estructurados obtienen un ancla:
+`[[Designing Data-Intensive Applications#p.137]]` para PDFs,
+`[[Informe Anual#Capítulo 3]]` para DOCX, EPUB y ODT. Las citas de
+Markdown y TXT permanecen sin ancla.
 
 ### `tags`
 
@@ -677,6 +803,11 @@ grimore_generated: true    # escrito por las salidas de `distill`; las protege d
 - `privacy: never_process` es el único campo verificado *antes* de
   cualquier llamada al LLM, así que realmente mantiene la nota fuera del
   cable.
+- Para **documentos no-Markdown** (PDF, EPUB, DOCX, …) los mismos
+  campos viven en el sidecar `.md` bajo `<bóveda>/<sidecar_dir>/` en
+  lugar del archivo fuente. El binario original nunca se modifica. Para
+  marcar `privacy: never_process` en un PDF, escribe el frontmatter en
+  su sidecar — Grimore preserva las ediciones manuales entre re-scans.
 
 ---
 

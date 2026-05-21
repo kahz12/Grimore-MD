@@ -44,7 +44,7 @@ from grimore.utils.security import SecurityGuard
 
 # Define the Typer application with metadata for the help screen
 app = typer.Typer(
-    help="🔮 [bold medium_purple3]Grimore v2.0[/] — Automated Knowledge Engine",
+    help="🔮 [bold medium_purple3]Grimore v2.1[/] — Automated Knowledge Engine",
     rich_markup_mode="rich",
     no_args_is_help=True,
     add_completion=False,
@@ -114,9 +114,10 @@ def scan(
     json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format"),
 ):
     """
-    📖 Scan the vault, tag new or changed notes and index their embeddings.
-    
-    This is the primary ingestion command. It identifies new or modified Markdown files,
+    📖 Scan the vault, tag new or changed documents and index their embeddings.
+
+    This is the primary ingestion command. It identifies new or modified files
+    in every configured format (Markdown, PDF, EPUB, DOCX, ODT, RTF, HTML, TXT),
     extracts metadata/content, generates tags and summaries via LLM, and creates
     vector embeddings for semantic search.
     """
@@ -167,6 +168,7 @@ def scan(
         config.vault.formats,
         config.vault.ignored_dirs,
         sidecar_dir=config.vault.sidecar_dir,
+        sniff_magic=config.ingest.sniff_magic,
     )
 
     if not files:
@@ -637,6 +639,7 @@ def prune(
             config.vault.formats,
             config.vault.ignored_dirs,
             sidecar_dir=config.vault.sidecar_dir,
+            sniff_magic=config.ingest.sniff_magic,
         )
     }
 
@@ -738,10 +741,11 @@ def _render_status_dashboard(config) -> None:
     # ── Hints ───────────────────────────────────────────────────────────────
     if total_notes == 0:
         console.print()
-        ui.tip("The vault is empty. Add [bold].md[/] notes and run [cyan]grimore scan[/].")
+        formats_label = ", ".join(config.vault.formats) or "md"
+        ui.tip(f"The vault is empty. Add documents ([bold]{formats_label}[/]) and run [cyan]grimore scan[/].")
     elif total_embeddings == 0:
         console.print()
-        ui.tip("There are notes but none indexed. Try [cyan]grimore scan --no-dry-run[/].")
+        ui.tip("There are documents but none indexed. Try [cyan]grimore scan --no-dry-run[/].")
     elif config.output.dry_run:
         console.print()
         ui.tip("You are in dry-run mode. Set [cyan]dry_run = false[/] in [cyan]grimore.toml[/] to write.")

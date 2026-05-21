@@ -53,6 +53,12 @@ pdf-mupdf = ["pymupdf>=1.24"]
 # OCR fallback for scanned PDFs. Requires the `tesseract` and `poppler`
 # binaries on PATH in addition to the Python wheels here.
 ocr = ["pytesseract>=0.3", "pdf2image>=1.17"]
+# Magic-byte content sniffing (Phase 5). Off by default; enable
+# `[ingest].sniff_magic` in grimore.toml to route misnamed or
+# extension-less files to the right adapter. Needs libmagic on the
+# system (Linux: `apt install libmagic1`; Termux: `pkg install file`;
+# Windows: install the `python-magic-bin` wheel instead).
+sniff = ["python-magic>=0.4"]
 
 [project.scripts]
 grimore = "grimore.cli:app"

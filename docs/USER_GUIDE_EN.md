@@ -1,6 +1,7 @@
 # Grimore — User Guide (English)
 
-> A local-first knowledge engine for Markdown vaults.
+> A local-first knowledge engine for document vaults — Markdown, PDF,
+> EPUB, DOCX, ODT, RTF, HTML, TXT — all handled by the same pipeline.
 > Everything runs against a loopback Ollama; no API keys, no telemetry, no cloud.
 
 ---
@@ -12,6 +13,9 @@
 3. [Installation](#3-installation)
 4. [Your first vault — the five-minute tour](#4-your-first-vault--the-five-minute-tour)
 5. [The `grimore.toml` file](#5-the-grimoretoml-file)
+   - [Supported formats](#supported-formats)
+   - [Sidecars: how non-MD metadata is stored](#sidecars-how-non-md-metadata-is-stored)
+   - [Opt-in engines: PDF backends, OCR, magic-byte sniffer](#opt-in-engines-pdf-backends-ocr-magic-byte-sniffer)
 6. [Day-to-day commands](#6-day-to-day-commands)
    - [`scan`](#scan)
    - [`connect`](#connect)
@@ -47,8 +51,10 @@
 
 ## 1. What Grimore is (and what it isn't)
 
-Grimore watches a directory of plain Markdown files (your **vault**) and turns it
-into a queryable knowledge base. For every note it:
+Grimore watches a directory of documents (your **vault**) and turns it
+into a queryable knowledge base. Markdown is the first-class citizen, but
+**PDF, EPUB, DOCX, ODT, RTF, HTML and TXT** are extracted by the same
+pipeline. For every document it:
 
 - extracts **tags** and a one-paragraph **summary** with a local LLM,
 - files it under one **category** in a hierarchical tree,
@@ -162,6 +168,17 @@ complete annotated example:
 [vault]
 path = "./vault"
 ignored_dirs = [".obsidian", ".trash", ".git", "Templates"]
+# Document formats Grimore will pick up, by lowercase extension. The
+# default tracks every adapter shipped with Grimore that uses pure-Python
+# or stdlib-only extraction. Add "doc" if you have antiword installed.
+formats = ["md", "txt", "html", "htm", "docx", "pdf", "epub", "rtf", "odt"]
+# Hidden root, relative to the vault, where Grimore mirrors a `.md`
+# sidecar for every non-Markdown document. The original binaries are
+# never mutated; tags, summaries and suggested-link blocks live here.
+sidecar_dir   = ".grimore/sidecars"
+# Set false to keep all non-Markdown metadata in the DB only (no
+# sidecars on disk).
+write_sidecars = true
 # Optional label shown in the shell's bottom toolbar. Defaults to the
 # directory name when unset.
 display_name = "Library"
@@ -176,6 +193,19 @@ connect_threshold     = 0.7     # cosine floor for a suggested wikilink
 request_timeout_s     = 60      # /api/generate, JSON path
 stream_timeout_s      = 120     # /api/generate, streaming path
 embed_timeout_s       = 30      # /api/embeddings
+
+[ingest]
+# PDF engine. "pypdf" is the always-available default; "pdfplumber" and
+# "pymupdf" are opt-in extras with their own install hints in preflight.
+# PyMuPDF is AGPL — verify licence compatibility before switching.
+pdf_engine    = "pypdf"
+# OCR fallback for scanned PDFs (image-only pages). Off by default;
+# requires the `ocr` extra and the `tesseract` binary on PATH.
+ocr           = false
+ocr_timeout_s = 30
+# Magic-byte sniffer for misnamed / extension-less files. Off by
+# default; requires the `sniff` extra (python-magic) and libmagic.
+sniff_magic   = false
 
 [memory]
 db_path = "grimore.db"
@@ -214,6 +244,83 @@ fuzzy_threshold = 55     # 0–100, rapidfuzz score floor for @-completions
 Unknown keys are logged at WARNING and ignored — copy-pasting old config
 snippets won't crash the CLI.
 
+### Supported formats
+
+| Extension | Adapter           | Notes                                                                    |
+|-----------|-------------------|--------------------------------------------------------------------------|
+| `md`      | Markdown          | First-class. Frontmatter, wikilinks and inline writeback.                |
+| `txt`     | Plain text        | Stdlib only. First non-blank line becomes the title fallback.            |
+| `html`    | HTML / XHTML      | `<title>`, then first `<h1>` / `<h2>`. Needs `beautifulsoup4`.           |
+| `htm`     | HTML (alias)      | Same adapter as `.html`.                                                 |
+| `docx`    | DOCX (OOXML)      | Pure-stdlib: `zipfile` + `xml.etree`. Headings → sections.               |
+| `pdf`     | PDF               | Per-page sections; page anchors flow through to citations as `#p.N`.     |
+| `epub`    | EPUB              | Spine-order chapters → sections; titles from OPF metadata then nav.      |
+| `rtf`     | RTF               | `striprtf`; one anchor-free section.                                     |
+| `odt`     | OpenDocument Text | Pure-stdlib zip+XML. Mirrors the DOCX flow for ODT outlines.             |
+| `doc`     | Legacy `.doc`     | **Opt-in.** Add `"doc"` to `formats` and install `antiword` on PATH.     |
+
+For paginated formats, citations gain an anchor automatically — an
+answer drawn from page 137 of *Designing Data-Intensive Applications*
+renders as `[[Designing Data-Intensive Applications#p.137]]`. For
+structured formats, the anchor falls back to the enclosing heading.
+
+### Sidecars: how non-MD metadata is stored
+
+Grimore never mutates a PDF / EPUB / DOCX / ODT / RTF / HTML / TXT
+source. Instead, the cognition layer writes a `.md` **sidecar** under
+`<vault>/<sidecar_dir>/` (default: `.grimore/sidecars/`) that mirrors
+the source path:
+
+```
+vault/
+  Books/Designing-Data-Intensive-Applications.pdf
+  .grimore/
+    sidecars/
+      Books/Designing-Data-Intensive-Applications.pdf.md
+```
+
+The sidecar carries frontmatter (`tags`, `summary`, `category`,
+`last_tagged`) and — once `grimore connect` has run — a `## Suggested
+Connections` block. The original `.pdf` extension is preserved in the
+sidecar name so `Foo.pdf` and `Foo.epub` never collide on a single
+`Foo.md`. Set `write_sidecars = false` to keep all of this DB-only.
+
+`@`-mentions in the shell are sidecar-aware: typing `@my-book` resolves
+to the binary source, but the attachment Grimore feeds the model comes
+from the sidecar's clean extracted text.
+
+### Opt-in engines: PDF backends, OCR, magic-byte sniffer
+
+These knobs live under `[ingest]` and stay off until you set them.
+Preflight (`grimore preflight`) only probes the ones you've enabled,
+so a default install reports a clean ✓ row per format.
+
+- **Alternative PDF engines.** `pdfplumber` handles columns and tables
+  better than `pypdf`; `pymupdf` (AGPL — verify licence compatibility)
+  has the best extraction quality. Install the matching extra:
+
+  ```bash
+  pip install 'grimore[pdf-plumber]'
+  pip install 'grimore[pdf-mupdf]'   # AGPL-3.0
+  ```
+
+  Then set `pdf_engine` to `"pdfplumber"` or `"pymupdf"`. The change
+  lands on the next scan without any restart.
+
+- **OCR for scanned PDFs.** Pages with an empty text layer can be
+  rasterised and OCR'd via `tesseract`. Two dependencies are needed:
+  the Python wheels (`pip install 'grimore[ocr]'`) and the `tesseract`
+  binary itself. Then set `ocr = true`. OCR sections are tagged with
+  the synthetic heading `(ocr)` so reviewers can audit them.
+
+- **Magic-byte sniffer.** When `sniff_magic = true`, files whose
+  extension is missing or doesn't match `formats` are inspected for
+  their actual content type (via `libmagic`) and routed to the right
+  adapter if one exists. Useful for vaults that hold ad-hoc downloads.
+  Install the `sniff` extra and a system `libmagic` (Linux:
+  `apt install libmagic1`; Termux: `pkg install file`; Windows:
+  `pip install python-magic-bin`).
+
 ---
 
 ## 6. Day-to-day commands
@@ -227,14 +334,18 @@ detailed walk-through.
 grimore scan [-p PATH] [--dry-run|--no-dry-run] [--json]
 ```
 
-Walks the vault, tags new or changed notes, and refreshes the embedding index.
+Walks the vault, tags new or changed documents in every configured
+format, and refreshes the embedding index.
 
 - `-p, --vault-path` — override the vault path for this run only.
 - `--dry-run` / `--no-dry-run` — flip without touching the config.
 - `--json` — emit JSON-formatted structured logs (handy in CI / monitoring).
 
-**Idempotency.** Notes are hashed with SHA-256; an unchanged note never
-calls the LLM. Re-scanning a fully indexed vault is effectively free.
+**Idempotency.** Two-tier hashing: a cheap SHA-256 of the file bytes
+(`file_hash`) gates the expensive extraction step; only documents
+whose bytes have changed pay for re-extraction. Within that, an
+unchanged content-hash skips the LLM call entirely. Re-scanning a
+fully indexed vault is effectively free even for a 500 MB PDF library.
 
 **What gets written.** When run with `--no-dry-run`:
 
@@ -277,8 +388,12 @@ A one-shot Retrieval-Augmented Generation query.
 - `-e, --export PATH` — render the answer + sources as a markdown note at
   `PATH` instead of streaming to stdout.
 
-The Oracle always cites the notes it pulled context from. Citations appear
-at the end of the answer as `[[note-title]]` links.
+The Oracle always cites the documents it pulled context from. Citations
+appear at the end of the answer as `[[title]]` links — and for
+paginated or structured formats they gain an anchor:
+`[[Designing Data-Intensive Applications#p.137]]` for PDFs,
+`[[Annual Report#Chapter 3]]` for DOCX, EPUB and ODT. Markdown and TXT
+citations stay anchor-free.
 
 ### `tags`
 
@@ -654,6 +769,11 @@ grimore_generated: true    # written by `distill` outputs; protects them from re
   compute staleness.
 - `privacy: never_process` is the only field that's checked *before* any
   LLM call, so it really does keep the note off the wire.
+- For **non-Markdown documents** (PDF, EPUB, DOCX, …) the same fields
+  live in the sidecar `.md` under `<vault>/<sidecar_dir>/` instead of
+  the source file. The original binary is never touched. To set
+  `privacy: never_process` for a PDF, drop the frontmatter into its
+  sidecar — Grimore preserves manual edits across re-scans.
 
 ---
 

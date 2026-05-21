@@ -515,6 +515,45 @@ class PreflightChecker:
                     message="OCR fallback ready (tesseract + pytesseract).",
                 ))
 
+        # Magic-byte sniffer — opt-in. Off by default, so absence of the
+        # ``python-magic`` extra is silent. When the user has enabled it
+        # we want a single actionable ✗/✓ so they know whether libmagic
+        # is wired up correctly.
+        if bool(getattr(ingest, "sniff_magic", False)):
+            try:
+                from grimore.ingest.sniffer import sniff_available
+            except Exception as exc:  # pragma: no cover - import path
+                report.add(CheckResult(
+                    name="sniff_magic",
+                    ok=False,
+                    severity="error",
+                    message=f"Could not load the sniffer module: {exc!r}.",
+                    fix="pip install 'grimore[sniff]'",
+                ))
+                return
+            if sniff_available():
+                report.add(CheckResult(
+                    name="sniff_magic",
+                    ok=True,
+                    message="Magic-byte sniffer ready (python-magic + libmagic).",
+                ))
+            else:
+                report.add(CheckResult(
+                    name="sniff_magic",
+                    ok=False,
+                    severity="error",
+                    message=(
+                        "sniff_magic is enabled but python-magic / libmagic "
+                        "is not available."
+                    ),
+                    fix=(
+                        "pip install 'grimore[sniff]'\n"
+                        "and ensure libmagic is installed (Linux: "
+                        "`apt install libmagic1`; Termux: `pkg install file`; "
+                        "Windows: `pip install python-magic-bin`)."
+                    ),
+                ))
+
     @staticmethod
     def _probe_module(module: str) -> Optional[str]:
         """Import probe shared by the optional-engine checks."""

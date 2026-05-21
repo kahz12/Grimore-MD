@@ -129,6 +129,15 @@ class IngestConfig:
     # Hard cap on how long a single OCR call may run per page. Saves the
     # daemon from a wedged tesseract on a degenerate scan.
     ocr_timeout_s: int = 30
+    # Magic-byte sniffer (Phase 5). Off by default to keep installs lean
+    # and avoid noisy logs on vaults without misnamed files. When True,
+    # files whose extension is not in ``vault.formats`` are inspected
+    # for their content type via libmagic (``python-magic`` extra) and
+    # routed to the matching adapter if one exists. Files with no
+    # detected mime, or whose mime maps to an unsupported format, are
+    # still skipped — sniffing never widens the format set beyond what
+    # the registry can already handle.
+    sniff_magic: bool = False
 
 
 @dataclass

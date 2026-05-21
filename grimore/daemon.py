@@ -143,6 +143,7 @@ class GrimoreDaemon:
             callback=self.process_file,
             ignored_dirs=self.config.vault.ignored_dirs,
             supported_extensions=self.config.vault.formats,
+            sniff_magic=self.config.ingest.sniff_magic,
         )
         self.observer.start()
 

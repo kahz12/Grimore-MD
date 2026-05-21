@@ -14,7 +14,7 @@ Markdown-specific in it any more; it's the dispatcher.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
@@ -38,11 +38,26 @@ logger = get_logger(__name__)
 MAX_NOTE_BYTES = _MAX_MD_BYTES
 
 
+def _sniff_enabled(config) -> bool:
+    """Whether the parser should consult the magic-byte sniffer for files
+    whose extension misses the registry. The flag lives under
+    ``[ingest].sniff_magic`` and is off by default — sniffing requires
+    the optional ``sniff`` extra and we don't want to silently widen
+    ingestion behaviour for users who haven't opted in.
+    """
+    if config is None:
+        return False
+    ingest = getattr(config, "ingest", None)
+    return bool(getattr(ingest, "sniff_magic", False))
+
+
 def iter_vault_documents(
     vault_path: Path,
     formats: Iterable[str],
     ignored_dirs: list[str],
     sidecar_dir: Optional[str] = None,
+    *,
+    sniff_magic: bool = False,
 ) -> list[Path]:
     """Sorted list of every document the dispatcher can pick up.
 
@@ -50,6 +65,11 @@ def iter_vault_documents(
     understand brace alternation (``*.{md,pdf}``). Skips ignored dirs and,
     when ``sidecar_dir`` is set, skips any path under it so we never
     re-ingest the .md files Grimore itself generated.
+
+    When ``sniff_magic`` is True, a second pass picks up files whose
+    extension is unknown but whose content libmagic recognises (e.g. a
+    PDF saved without an extension, or named ``.bak``). Files that
+    sniff to nothing recognisable stay skipped.
 
     The result is sorted so progress UI feels stable across reruns.
     """
@@ -61,12 +81,12 @@ def iter_vault_documents(
         except OSError:
             sidecar_root = None
 
+    known_exts = {ext.lower().lstrip(".") for ext in formats if ext}
     seen: set[Path] = set()
-    for ext in formats:
-        key = ext.lower().lstrip(".")
-        if not key:
+    for ext in known_exts:
+        if not ext:
             continue
-        for candidate in vault_path.rglob(f"*.{key}"):
+        for candidate in vault_path.rglob(f"*.{ext}"):
             if is_ignored_path(candidate, ignored_dirs):
                 continue
             try:
@@ -83,6 +103,35 @@ def iter_vault_documents(
                     # Inside the sidecar tree — never re-ingest our own output.
                     continue
             seen.add(candidate)
+
+    if sniff_magic:
+        from grimore.ingest.sniffer import sniff_extension
+        for candidate in vault_path.rglob("*"):
+            if not candidate.is_file():
+                continue
+            if candidate in seen:
+                continue
+            ext_key = candidate.suffix.lower().lstrip(".")
+            if ext_key in known_exts:
+                # Already handled by the extension pass; no need to sniff.
+                continue
+            if is_ignored_path(candidate, ignored_dirs):
+                continue
+            try:
+                resolved = SecurityGuard.resolve_within_vault(candidate, vault_root)
+            except ValueError:
+                continue
+            if sidecar_root is not None:
+                try:
+                    resolved.relative_to(sidecar_root)
+                except ValueError:
+                    pass
+                else:
+                    continue
+            sniffed = sniff_extension(candidate)
+            if sniffed and sniffed in known_exts:
+                seen.add(candidate)
+
     return sorted(seen)
 
 
@@ -170,11 +219,28 @@ class MarkdownParser:
             # Defence-in-depth even if the caller already filtered.
             SecurityGuard.resolve_within_vault(path, vault_root)
 
-        adapter = for_path(path) or self._fallback_adapter
+        adapter = for_path(path)
+        sniffed_ext: Optional[str] = None
+        if adapter is None and _sniff_enabled(config):
+            from grimore.ingest.sniffer import adapter_for_sniffed
+            sniffed_ext, adapter = adapter_for_sniffed(path)
+            if adapter is not None:
+                logger.info(
+                    "sniffer_matched",
+                    path=str(path),
+                    extension=sniffed_ext,
+                )
+        if adapter is None:
+            adapter = self._fallback_adapter
         resolved_root = Path(vault_root) if vault_root is not None else None
         if config is not None:
             options = AdapterOptions.from_config(config, vault_root=resolved_root)
         else:
             options = AdapterOptions(vault_root=resolved_root)
         doc = adapter.extract(path, options=options)
+        if sniffed_ext is not None and doc.format != sniffed_ext:
+            # The adapter trusts its own ``format`` (often derived from
+            # the extension on disk). For sniffed files we surface the
+            # true content type so downstream chunking + DB rows match.
+            doc = replace(doc, format=sniffed_ext)
         return ParsedNote.from_extracted(doc)
