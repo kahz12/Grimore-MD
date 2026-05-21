@@ -43,11 +43,17 @@ class VaultConfig:
     # Document formats Grimore will pick up from the vault, by lowercase
     # extension (no leading dot). Adapters auto-register on import; the
     # default tracks the formats whose adapters ship in the current
-    # version. As of Phase 3 every adapter is wired: MD, TXT, HTML/HTM,
-    # DOCX, PDF, EPUB. Users may narrow this list to restrict ingestion.
+    # version with pure-Python, no-OS-dep support. As of Phase 4 that's
+    # MD, TXT, HTML/HTM, DOCX, PDF, EPUB, RTF, ODT.
+    #
+    # Note: ``doc`` is deliberately absent from the default — it requires
+    # the ``antiword`` binary on PATH. Users who have antiword should add
+    # ``"doc"`` to this list explicitly. Keeping it opt-in avoids a noisy
+    # preflight warning for the 99% of users who don't have antiword
+    # installed (and don't have legacy .doc files in their vault).
     formats: list[str] = field(
         default_factory=lambda: [
-            "md", "txt", "html", "htm", "docx", "pdf", "epub",
+            "md", "txt", "html", "htm", "docx", "pdf", "epub", "rtf", "odt",
         ],
     )
     # Hidden root, relative to the vault, where Grimore mirrors a sidecar
@@ -58,6 +64,10 @@ class VaultConfig:
     # are written. Useful for users who don't want any on-disk footprint
     # outside their original documents.
     write_sidecars: bool = True
+
+# NB: the matching ``formats`` default and Config wiring live below; this
+# comment marker is here so it's clear ``IngestConfig`` slots in next to
+# the per-format defaults rather than next to the runtime LLM settings.
 
 
 def is_ignored_path(file_path, ignored_dirs: list[str]) -> bool:
@@ -94,6 +104,36 @@ class CognitionConfig:
     request_timeout_s: int = 60   # /api/generate, JSON path
     stream_timeout_s: int = 120   # /api/generate, streaming path
     embed_timeout_s: int = 30     # /api/embeddings
+
+@dataclass
+class IngestConfig:
+    """Ingest pipeline knobs (Phase 4).
+
+    Defaults match the pure-Python, no-OS-dep baseline so a fresh install
+    on Linux / Windows / Termux works without further setup. Heavier
+    engines (PyMuPDF, OCR) require explicit opt-in plus their respective
+    optional-dependencies extras.
+
+    ``pdf_engine`` picks which library does the heavy lifting in the
+    PDF adapter. The shipped options are:
+
+    * ``"pypdf"`` — default. Pure-Python, Termux-safe, MIT-licensed.
+    * ``"pdfplumber"`` — better column / table handling for non-prose
+      PDFs. Requires the ``pdf-plumber`` extra.
+    * ``"pymupdf"`` — best extraction quality but AGPL-3.0; users must
+      opt in explicitly via the ``pdf-mupdf`` extra and acknowledge the
+      licensing implications.
+
+    ``ocr`` enables a fallback pass over pages whose text layer is
+    empty (scanned PDFs). It needs the ``ocr`` extra installed *and*
+    the ``tesseract`` binary on PATH; preflight verifies both.
+    """
+    pdf_engine: str = "pypdf"
+    ocr: bool = False
+    # Hard cap on how long a single OCR call may run per page. Saves the
+    # daemon from a wedged tesseract on a degenerate scan.
+    ocr_timeout_s: int = 30
+
 
 @dataclass
 class MemoryConfig:
@@ -185,6 +225,7 @@ class Config:
     """Main configuration container."""
     vault: VaultConfig = field(default_factory=VaultConfig)
     cognition: CognitionConfig = field(default_factory=CognitionConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     maintenance: MaintenanceConfig = field(default_factory=MaintenanceConfig)
@@ -225,6 +266,7 @@ def load_config(config_path: str = "grimore.toml") -> Config:
     return Config(
         vault=VaultConfig(**_filter_known(VaultConfig, data.get("vault", {}), "vault")),
         cognition=CognitionConfig(**_filter_known(CognitionConfig, data.get("cognition", {}), "cognition")),
+        ingest=IngestConfig(**_filter_known(IngestConfig, data.get("ingest", {}), "ingest")),
         memory=MemoryConfig(**_filter_known(MemoryConfig, data.get("memory", {}), "memory")),
         output=OutputConfig(**_filter_known(OutputConfig, data.get("output", {}), "output")),
         maintenance=MaintenanceConfig(**_filter_known(MaintenanceConfig, data.get("maintenance", {}), "maintenance")),

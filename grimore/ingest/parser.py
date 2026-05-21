@@ -151,6 +151,7 @@ class MarkdownParser:
         file_path: Path,
         *,
         vault_root: Optional[Union[str, Path]] = None,
+        config=None,
     ) -> ParsedNote:
         """Parse ``file_path`` into a :class:`ParsedNote`.
 
@@ -158,6 +159,10 @@ class MarkdownParser:
         Markdown adapter when none is registered. Raises ``ValueError``
         on oversize / unreadable / out-of-vault files (the adapter does
         the actual checks).
+
+        ``config`` is optional; when present, ingest-section overrides
+        (e.g. ``pdf_engine``, ``ocr``) flow through ``AdapterOptions``
+        so adapters that care can react without consulting global state.
         """
         path = Path(file_path)
 
@@ -166,8 +171,10 @@ class MarkdownParser:
             SecurityGuard.resolve_within_vault(path, vault_root)
 
         adapter = for_path(path) or self._fallback_adapter
-        options = AdapterOptions(
-            vault_root=Path(vault_root) if vault_root is not None else None,
-        )
+        resolved_root = Path(vault_root) if vault_root is not None else None
+        if config is not None:
+            options = AdapterOptions.from_config(config, vault_root=resolved_root)
+        else:
+            options = AdapterOptions(vault_root=resolved_root)
         doc = adapter.extract(path, options=options)
         return ParsedNote.from_extracted(doc)

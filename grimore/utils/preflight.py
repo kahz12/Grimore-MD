@@ -16,9 +16,12 @@ Checks performed:
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+_which = shutil.which
 
 from grimore.output.git_guard import GitGuard
 from grimore.utils.http import build_session
@@ -121,6 +124,7 @@ class PreflightChecker:
         self._check_models_pulled(report, tags)
         self._check_vault_accessible(report)
         self._check_adapters(report)
+        self._check_ingest_engines(report)
 
         want_git = check_git if check_git is not None else self.config.output.auto_commit
         if want_git:
@@ -304,6 +308,31 @@ class PreflightChecker:
         # the HTML probe already covers. Defer to that check via _probe_html.
         return PreflightChecker._probe_html()
 
+    @staticmethod
+    def _probe_rtf() -> Optional[str]:
+        try:
+            from striprtf.striprtf import rtf_to_text  # noqa: F401
+        except ImportError as e:
+            return str(e)
+        return None
+
+    @staticmethod
+    def _probe_odt() -> Optional[str]:
+        # Pure-stdlib adapter (zipfile + xml.etree). No third-party deps.
+        return None
+
+    @staticmethod
+    def _probe_doc() -> Optional[str]:
+        # Legacy .doc needs the antiword binary on PATH. We re-export the
+        # adapter's own resolver so the two paths can't drift apart.
+        try:
+            from grimore.ingest.adapters.doc import antiword_available
+        except ImportError as e:  # pragma: no cover - import path
+            return str(e)
+        if not antiword_available():
+            return "antiword binary not found on PATH"
+        return None
+
     @classmethod
     def _adapter_probes(cls) -> dict[str, tuple]:
         # Lazily populated so the dict literal at class-scope doesn't
@@ -317,6 +346,13 @@ class PreflightChecker:
                 "docx": (cls._probe_docx, ""),
                 "pdf":  (cls._probe_pdf,  "pip install pypdf"),
                 "epub": (cls._probe_epub, "pip install beautifulsoup4"),
+                "rtf":  (cls._probe_rtf,  "pip install striprtf"),
+                "odt":  (cls._probe_odt,  ""),
+                "doc":  (
+                    cls._probe_doc,
+                    "Install antiword (Linux: `apt install antiword`; "
+                    "Termux: `pkg install antiword`).",
+                ),
             }
         return cls._ADAPTER_PROBES
 
@@ -395,6 +431,112 @@ class PreflightChecker:
                     message=f"Adapter for .{key} unavailable: {failure}",
                     fix=fix,
                 ))
+
+    def _check_ingest_engines(self, report: PreflightReport) -> None:
+        """Probe opt-in ingest engines (alternative PDF engines, OCR).
+
+        Only fires when the user has actually selected them in
+        ``[ingest]``. Probes that nothing is configured for stay silent
+        so a default install doesn't surface irrelevant checks.
+        """
+        ingest = getattr(self.config, "ingest", None)
+        if ingest is None:
+            return
+
+        # Alternative PDF engine — pypdf is the always-available default,
+        # so we only probe when the user has switched it.
+        engine = (getattr(ingest, "pdf_engine", "pypdf") or "pypdf").lower()
+        if engine == "pdfplumber":
+            self._probe_optional(
+                report,
+                name="pdf_engine:pdfplumber",
+                module="pdfplumber",
+                fix="pip install 'grimore[pdf-plumber]'",
+            )
+        elif engine == "pymupdf":
+            # Try both the modern and legacy import names.
+            failure = self._probe_module("pymupdf") and self._probe_module("fitz")
+            report.add(CheckResult(
+                name="pdf_engine:pymupdf",
+                ok=failure is None,
+                severity="error" if failure else "error",
+                message=(
+                    f"PyMuPDF unavailable: {failure}" if failure
+                    else "PyMuPDF engine ready (AGPL — verify licence compatibility)."
+                ),
+                fix=(
+                    "pip install 'grimore[pdf-mupdf]'  # AGPL-3.0"
+                    if failure else ""
+                ),
+            ))
+        elif engine not in ("pypdf", ""):
+            report.add(CheckResult(
+                name=f"pdf_engine:{engine}",
+                ok=False,
+                severity="error",
+                message=f"Unknown pdf_engine {engine!r}.",
+                fix=(
+                    "Set [ingest].pdf_engine to one of: pypdf, pdfplumber, pymupdf."
+                ),
+            ))
+
+        # OCR fallback — opt-in. Needs both the Python wheels and the
+        # tesseract binary on PATH. Either missing is an error because
+        # the user explicitly asked for OCR; silent fallback would mask
+        # a configuration mistake.
+        if bool(getattr(ingest, "ocr", False)):
+            wheel_missing = self._probe_module("pytesseract") or self._probe_module("pdf2image")
+            binary_missing = None if _which("tesseract") else "tesseract binary not on PATH"
+            if wheel_missing or binary_missing:
+                fix_parts = []
+                if wheel_missing:
+                    fix_parts.append("pip install 'grimore[ocr]'")
+                if binary_missing:
+                    fix_parts.append(
+                        "Install tesseract (Linux: `apt install tesseract-ocr`; "
+                        "Termux: `pkg install tesseract`)."
+                    )
+                report.add(CheckResult(
+                    name="ocr",
+                    ok=False,
+                    severity="error",
+                    message=(
+                        f"OCR enabled but unavailable: "
+                        f"{wheel_missing or binary_missing}"
+                    ),
+                    fix="\n".join(fix_parts),
+                ))
+            else:
+                report.add(CheckResult(
+                    name="ocr",
+                    ok=True,
+                    message="OCR fallback ready (tesseract + pytesseract).",
+                ))
+
+    @staticmethod
+    def _probe_module(module: str) -> Optional[str]:
+        """Import probe shared by the optional-engine checks."""
+        try:
+            __import__(module)
+        except ImportError as e:
+            return str(e)
+        return None
+
+    def _probe_optional(
+        self, report: PreflightReport, *, name: str, module: str, fix: str,
+    ) -> None:
+        failure = self._probe_module(module)
+        if failure is None:
+            report.add(CheckResult(
+                name=name, ok=True,
+                message=f"Optional engine {module} ready.",
+            ))
+        else:
+            report.add(CheckResult(
+                name=name, ok=False, severity="error",
+                message=f"Optional engine {module} unavailable: {failure}",
+                fix=fix,
+            ))
 
     def _check_git_ready(self, report: PreflightReport) -> None:
         """When auto_commit is on, confirm the vault is a git repo."""

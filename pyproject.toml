@@ -30,6 +30,11 @@ dependencies = [
     # zipfile + xml.etree with bs4 reused for the chapter XHTML, so the
     # only new wheel is pypdf itself.
     "pypdf>=4.0.0",
+    # Multi-format ingest (Phase 4): RTF adapter. Pure-Python, no native
+    # deps — Termux-safe. ODT is parsed via stdlib (zipfile + xml.etree)
+    # and .doc shells out to antiword when available, so neither adds a
+    # Python dep here.
+    "striprtf>=0.0.27",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +44,15 @@ html-fast = ["lxml>=5.1.0"]
 # Richer DOCX extraction (style names, core properties). The built-in
 # stdlib path covers the 90% case without any native deps.
 docx-rich = ["python-docx>=1.1.0"]
+# Phase 4 PDF engine alternatives. Both are opt-in because they're
+# heavier than pypdf and (in PyMuPDF's case) have a stricter licence.
+pdf-plumber = ["pdfplumber>=0.11"]
+# WARNING: PyMuPDF is AGPL-3.0. Only enable this extra if your usage
+# is compatible with that licence.
+pdf-mupdf = ["pymupdf>=1.24"]
+# OCR fallback for scanned PDFs. Requires the `tesseract` and `poppler`
+# binaries on PATH in addition to the Python wheels here.
+ocr = ["pytesseract>=0.3", "pdf2image>=1.17"]
 
 [project.scripts]
 grimore = "grimore.cli:app"

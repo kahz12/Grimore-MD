@@ -205,7 +205,7 @@ def scan(
 
             try:
                 # Step 1: Parse document into a format-neutral ParsedNote
-                note = parser.parse_file(file, vault_root=vault_root)
+                note = parser.parse_file(file, vault_root=vault_root, config=config)
             except Exception as e:
                 stats["errors"] += 1
                 logger.error("parse_failed", path=str(file), error=str(e))

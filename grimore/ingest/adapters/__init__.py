@@ -29,6 +29,9 @@ from grimore.ingest.adapters import html as _html            # noqa: F401
 from grimore.ingest.adapters import docx as _docx            # noqa: F401
 from grimore.ingest.adapters import pdf as _pdf              # noqa: F401
 from grimore.ingest.adapters import epub as _epub            # noqa: F401
+from grimore.ingest.adapters import rtf as _rtf              # noqa: F401
+from grimore.ingest.adapters import odt as _odt              # noqa: F401
+from grimore.ingest.adapters import doc as _doc              # noqa: F401
 
 __all__ = [
     "AdapterOptions",

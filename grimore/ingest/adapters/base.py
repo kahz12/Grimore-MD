@@ -54,12 +54,33 @@ class ExtractedDocument:
 class AdapterOptions:
     """Per-call adapter knobs.
 
-    Kept tiny on purpose: anything format-specific (PDF engine choice,
-    OCR toggle, max-bytes cap) is read by the adapter from the global
-    config — these options only carry information the *caller* of the
-    parse provides on a per-file basis.
+    Kept tiny on purpose. ``vault_root`` lets the adapter sandbox path
+    resolution; everything else is opt-in and consulted only by adapters
+    that care. PDF-specific overrides (``pdf_engine``, ``ocr``,
+    ``ocr_timeout_s``) flow in from ``IngestConfig`` so the scan / daemon
+    paths can swap engines without re-instantiating the adapter.
     """
     vault_root: Optional[Path] = None
+    pdf_engine: Optional[str] = None
+    ocr: Optional[bool] = None
+    ocr_timeout_s: Optional[int] = None
+
+    @classmethod
+    def from_config(cls, config, *, vault_root: Optional[Path] = None) -> "AdapterOptions":
+        """Build options from a loaded ``Config`` — the canonical caller
+        for scan / daemon code that already has the config in hand. When
+        the config has no ``ingest`` section (older grimore.toml files),
+        the defaults fall through to the per-adapter built-ins.
+        """
+        ingest = getattr(config, "ingest", None)
+        if ingest is None:
+            return cls(vault_root=vault_root)
+        return cls(
+            vault_root=vault_root,
+            pdf_engine=getattr(ingest, "pdf_engine", None),
+            ocr=getattr(ingest, "ocr", None),
+            ocr_timeout_s=getattr(ingest, "ocr_timeout_s", None),
+        )
 
 
 @runtime_checkable

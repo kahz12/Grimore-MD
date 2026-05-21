@@ -17,6 +17,10 @@ def _make_oracle():
     o.db.fts_available = False
     o.embedder.embed.return_value = [0.0] * 16
     o.db.get_note_title.side_effect = lambda nid: f"Note {nid}"
+    # Phase 3: Oracle._build_context calls db.get_chunk_anchors to render
+    # anchor-aware citations. MD-style sources (which is what these tests
+    # construct) have no page/heading, so always return (None, None).
+    o.db.get_chunk_anchors.return_value = (None, None)
     return o
 
 

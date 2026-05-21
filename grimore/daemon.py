@@ -252,7 +252,9 @@ class GrimoreDaemon:
                 return
 
             # 1. Parse file (defence-in-depth: parser re-validates vault scope)
-            note = self.parser.parse_file(file_path, vault_root=self.vault_root)
+            note = self.parser.parse_file(
+                file_path, vault_root=self.vault_root, config=self.config,
+            )
 
             # 2. Security & Policy Check
             privacy = note.metadata.get("privacy", "local")
