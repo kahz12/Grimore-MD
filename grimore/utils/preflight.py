@@ -454,12 +454,14 @@ class PreflightChecker:
                 fix="pip install 'grimore[pdf-plumber]'",
             )
         elif engine == "pymupdf":
-            # Try both the modern and legacy import names.
+            # Try both the modern and legacy import names — older releases
+            # ship as ``fitz``. ``X and Y`` short-circuits to None on the
+            # first success, or to the last error string when both fail.
             failure = self._probe_module("pymupdf") and self._probe_module("fitz")
             report.add(CheckResult(
                 name="pdf_engine:pymupdf",
                 ok=failure is None,
-                severity="error" if failure else "error",
+                severity="error",
                 message=(
                     f"PyMuPDF unavailable: {failure}" if failure
                     else "PyMuPDF engine ready (AGPL — verify licence compatibility)."

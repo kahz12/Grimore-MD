@@ -65,10 +65,6 @@ class VaultConfig:
     # outside their original documents.
     write_sidecars: bool = True
 
-# NB: the matching ``formats`` default and Config wiring live below; this
-# comment marker is here so it's clear ``IngestConfig`` slots in next to
-# the per-format defaults rather than next to the runtime LLM settings.
-
 
 def is_ignored_path(file_path, ignored_dirs: list[str]) -> bool:
     """

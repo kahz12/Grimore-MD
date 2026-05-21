@@ -30,6 +30,7 @@ grimore.log
 backups/
 test_vault/
 docs/MULTIFORMAT_BLUEPRINT.md
+docs/screenshots/
 
 # Tooling caches
 .pytest_cache/
