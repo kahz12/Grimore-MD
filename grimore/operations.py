@@ -66,6 +66,7 @@ def _do_ask(
     export: Optional[Path] = None,
     stream: bool = False,
     extra_sources: Optional[list[tuple[str, str]]] = None,
+    history: Optional[list[dict]] = None,
 ) -> dict:
     """Body of ``grimore ask``.
 
@@ -90,10 +91,13 @@ def _do_ask(
         title="Question",
     ))
 
-    # Only forward ``extra_sources`` when present, so older mocks /
-    # alternate Oracle implementations that don't take the kwarg keep
-    # working unchanged.
-    extra_kw = {"extra_sources": extra_sources} if extra_sources else {}
+    # Only forward optional kwargs when present, so older mocks / alternate
+    # Oracle implementations that don't take them keep working unchanged.
+    extra_kw: dict = {}
+    if extra_sources:
+        extra_kw["extra_sources"] = extra_sources
+    if history:
+        extra_kw["history"] = history
 
     if stream and export is None:
         # Render tokens as they arrive; collect the answer for the
@@ -101,6 +105,7 @@ def _do_ask(
         ui.section("Oracle")
         answer_chunks: list[str] = []
         sources: list[str] = []
+        dropped_citations = 0
         stream_iter = session.oracle.ask_stream(
             question, top_k=top_k, **extra_kw
         )
@@ -128,6 +133,7 @@ def _do_ask(
                 answer_chunks.append(first_event["text"])
             elif first_event["type"] == "done":
                 sources = first_event["sources"]
+                dropped_citations = first_event.get("dropped_citations", 0)
 
         # Drain the rest of the stream without the spinner — tokens now
         # flow at their natural cadence.
@@ -137,6 +143,7 @@ def _do_ask(
                 answer_chunks.append(event["text"])
             elif event["type"] == "done":
                 sources = event["sources"]
+                dropped_citations = event.get("dropped_citations", 0)
         console.print()
         if not answer_chunks:
             console.print()
@@ -144,7 +151,11 @@ def _do_ask(
                 "The Oracle returned no tokens. Is Ollama running?",
                 title="Silence",
             ))
-        result = {"answer": "".join(answer_chunks), "sources": sources}
+        result = {
+            "answer": "".join(answer_chunks),
+            "sources": sources,
+            "dropped_citations": dropped_citations,
+        }
     else:
         with console.status(
             "[grimore.mystic]The Oracle listens to the whispers...[/]",
@@ -163,6 +174,15 @@ def _do_ask(
             ))
     else:
         ui.tip("The Oracle found no relevant notes. Have you run [cyan]grimore scan[/]?")
+
+    if result.get("dropped_citations"):
+        n = result["dropped_citations"]
+        console.print()
+        console.print(ui.warn_panel(
+            f"{n} citation(s) in the answer weren't among the retrieved "
+            f"sources and may be ungrounded — treat them with caution.",
+            title="Citations",
+        ))
 
     if export:
         vault_root = Path(config.vault.path).resolve()

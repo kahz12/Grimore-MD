@@ -14,6 +14,11 @@ from grimore.utils.http import build_session
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
 
+try:  # numpy powers the vectorized retrieval fast path; degrade if absent.
+    import numpy as _np
+except Exception:  # pragma: no cover - numpy is a declared dep
+    _np = None
+
 logger = get_logger(__name__)
 
 # Hard cap on payload to the embedder to prevent memory/DoS issues
@@ -159,6 +164,36 @@ class Embedder:
         """Deserializes binary data back to a list of floats."""
         num_floats = len(data) // 4
         return list(struct.unpack(f'{num_floats}f', data))
+
+    @staticmethod
+    def vectors_to_matrix(blobs: list[bytes]):
+        """Stack raw float32 vector BLOBs into an ``(N, D)`` numpy matrix.
+
+        This is the fast path for retrieval: building one contiguous matrix
+        from the stored bytes lets the Connector score every chunk with a
+        single matmul instead of a per-row Python dot product.
+
+        Returns ``None`` (so callers fall back to the per-row path) when:
+        * numpy is unavailable, or
+        * ``blobs`` is empty, or
+        * the vectors are ragged — mixed byte lengths, which happens when the
+          embedding model was swapped without a re-scan (different dims), or a
+          blob is truncated. We don't try to coerce these; the loop fallback
+          handles them one vector at a time exactly as before.
+        """
+        if _np is None or not blobs:
+            return None
+        first_len = len(blobs[0])
+        if first_len == 0 or first_len % 4 != 0:
+            return None
+        for blob in blobs:
+            if len(blob) != first_len:
+                return None  # ragged → caller uses the per-row fallback
+        try:
+            flat = _np.frombuffer(b"".join(blobs), dtype=_np.float32)
+            return flat.reshape(len(blobs), first_len // 4)
+        except Exception:  # pragma: no cover - defensive
+            return None
 
     @staticmethod
     def dot_product(v1: list[float], v2: list[float]) -> float:

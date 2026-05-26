@@ -90,6 +90,12 @@ class CognitionConfig:
     # Retrieval: fuse BM25 (FTS5) and cosine similarity via Reciprocal Rank Fusion.
     hybrid_search: bool = True
     rrf_k: int = 60
+    # Optional second-stage re-rank: after RRF fusion, ask the local LLM to
+    # rate the top ``rerank_pool`` candidates for relevance and reorder them
+    # before truncating to top_k. Off by default — it adds one LLM call per
+    # query. Degrades to the RRF order if the call fails.
+    rerank: bool = False
+    rerank_pool: int = 20
     # Minimum cosine-similarity score for `connect` to propose a wikilink.
     # Below this the candidate is dropped; exposed so vaults that lean more
     # on RAG recall can relax it and vice versa.

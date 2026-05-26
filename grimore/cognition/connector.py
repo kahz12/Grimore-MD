@@ -10,6 +10,11 @@ from grimore.cognition.embedder import Embedder
 from grimore.memory.db import Database
 from grimore.utils.logger import get_logger
 
+try:  # vectorized scoring fast path; the per-row loop is the fallback.
+    import numpy as _np
+except Exception:  # pragma: no cover - numpy is a declared dep
+    _np = None
+
 logger = get_logger(__name__)
 
 
@@ -21,10 +26,52 @@ class Connector:
 
     * :py:meth:`find_similar_notes` — dense only (cosine similarity).
     * :py:meth:`find_hybrid` — dense + BM25 fused with Reciprocal Rank Fusion.
+
+    ``router`` is optional and only consulted by the opt-in LLM re-rank pass
+    in :py:meth:`find_hybrid`; dense/hybrid retrieval works without it.
     """
-    def __init__(self, db: Database, embedder: Embedder):
+    def __init__(self, db: Database, embedder: Embedder, router=None):
         self.db = db
         self.embedder = embedder
+        self.router = router
+        # Matrix cache for the warm shell session — see _load_dense().
+        self._cache_sig: Optional[tuple[int, int]] = None
+        self._cache_rows: Optional[list] = None
+        self._cache_matrix = None
+
+    def _load_dense(self):
+        """Return ``(rows, matrix)`` for dense scoring, cached across queries.
+
+        ``rows`` are ``(embedding_id, note_id, text, vector_blob)`` tuples;
+        ``matrix`` is the aligned ``(N, D)`` numpy matrix (or ``None`` when
+        numpy is absent / vectors are ragged, in which case the caller scores
+        per-row). The cache is keyed on the DB's cheap embeddings signature so
+        a long-lived shell ``Session`` rebuilds only when the vault changes.
+        """
+        sig = self.db.embeddings_signature()
+        if sig != self._cache_sig:
+            rows = self.db.get_all_embeddings_with_id()
+            self._cache_rows = rows
+            self._cache_matrix = Embedder.vectors_to_matrix([r[3] for r in rows])
+            self._cache_sig = sig
+        return self._cache_rows, self._cache_matrix
+
+    def _scores_for(self, query_vector, rows, matrix) -> list[float]:
+        """Cosine score for every row, aligned to ``rows``.
+
+        Vectors are unit-normalized at embed time, so cosine == dot product.
+        Fast path: one ``matrix @ query`` matmul. Fallback (no numpy, ragged
+        vectors, or a query/matrix dimension mismatch): per-row Python dot
+        product, identical to the pre-numpy behaviour.
+        """
+        if matrix is not None and _np is not None and matrix.size:
+            q = _np.asarray(query_vector, dtype=_np.float32)
+            if q.shape[0] == matrix.shape[1]:
+                return (matrix @ q).tolist()
+        return [
+            Embedder.dot_product(query_vector, Embedder.deserialize_vector(r[3]))
+            for r in rows
+        ]
 
     def find_similar_notes(
         self,
@@ -45,18 +92,17 @@ class Connector:
         chunks of the same note can all feed the context window.
         """
         query = list(query_vector)
-        # Fetch all indexed embeddings for comparison
-        all_embeddings = self.db.get_all_embeddings()
+        rows, matrix = self._load_dense()
+        scores = self._scores_for(query, rows, matrix)
         similarities = []
 
-        for note_id, text, vector_blob in all_embeddings:
+        for (_emb_id, note_id, text, _blob), score in zip(rows, scores):
             # Skip self-comparison
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
-
-            vector = self.embedder.deserialize_vector(vector_blob)
-            score = Embedder.dot_product(query, vector)
-            similarities.append({"note_id": note_id, "text": text, "score": score})
+            similarities.append(
+                {"note_id": note_id, "text": text, "score": float(score)}
+            )
 
         # Sort results by similarity score in descending order
         similarities.sort(key=lambda x: x["score"], reverse=True)
@@ -81,19 +127,18 @@ class Connector:
     ) -> list[dict]:
         """Return ranked dense-similarity candidates keyed by embedding id."""
         query = list(query_vector)
-        rows = self.db.get_all_embeddings_with_id()
+        rows, matrix = self._load_dense()
+        scores = self._scores_for(query, rows, matrix)
 
         scored: list[dict] = []
-        for embedding_id, note_id, text, vector_blob in rows:
+        for (embedding_id, note_id, text, _blob), score in zip(rows, scores):
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
-            vector = self.embedder.deserialize_vector(vector_blob)
-            score = Embedder.dot_product(query, vector)
             scored.append({
                 "embedding_id": embedding_id,
                 "note_id": note_id,
                 "text": text,
-                "score": score,
+                "score": float(score),
             })
         scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
@@ -105,6 +150,8 @@ class Connector:
         top_k: int = 5,
         rrf_k: int = 60,
         exclude_note_id: Optional[int] = None,
+        rerank: bool = False,
+        rerank_pool: int = 20,
     ) -> list[dict]:
         """
         Fuse dense retrieval and FTS5 BM25 with Reciprocal Rank Fusion.
@@ -138,32 +185,97 @@ class Connector:
             return []
         if not sparse:
             # BM25 contributed nothing — behave exactly like the dense path.
-            for item in dense:
-                item.pop("embedding_id", None)
-            return dense[:top_k]
-        if not dense:
-            return [
-                {"note_id": s["note_id"], "text": s["text"], "score": -s["bm25"]}
-                for s in sparse[:top_k]
+            ranked = [
+                {k: v for k, v in item.items() if k != "embedding_id"}
+                for item in dense
             ]
+        elif not dense:
+            ranked = [
+                {"note_id": s["note_id"], "text": s["text"], "score": -s["bm25"]}
+                for s in sparse
+            ]
+        else:
+            ranks: dict[int, dict] = {}
+            for rank, item in enumerate(dense):
+                ranks.setdefault(item["embedding_id"], {
+                    "note_id": item["note_id"],
+                    "text": item["text"],
+                    "rrf": 0.0,
+                })["rrf"] += 1.0 / (rrf_k + rank + 1)
+            for rank, item in enumerate(sparse):
+                ranks.setdefault(item["embedding_id"], {
+                    "note_id": item["note_id"],
+                    "text": item["text"],
+                    "rrf": 0.0,
+                })["rrf"] += 1.0 / (rrf_k + rank + 1)
 
-        ranks: dict[int, dict] = {}
-        for rank, item in enumerate(dense):
-            ranks.setdefault(item["embedding_id"], {
-                "note_id": item["note_id"],
-                "text": item["text"],
-                "rrf": 0.0,
-            })["rrf"] += 1.0 / (rrf_k + rank + 1)
-        for rank, item in enumerate(sparse):
-            ranks.setdefault(item["embedding_id"], {
-                "note_id": item["note_id"],
-                "text": item["text"],
-                "rrf": 0.0,
-            })["rrf"] += 1.0 / (rrf_k + rank + 1)
+            ranked = [
+                {"note_id": v["note_id"], "text": v["text"], "score": v["rrf"]}
+                for v in ranks.values()
+            ]
+            ranked.sort(key=lambda x: x["score"], reverse=True)
 
-        fused = [
-            {"note_id": v["note_id"], "text": v["text"], "score": v["rrf"]}
-            for v in ranks.values()
-        ]
-        fused.sort(key=lambda x: x["score"], reverse=True)
-        return fused[:top_k]
+        # Optional second-stage LLM re-rank over the head of the pool. Falls
+        # back to the fusion order on any failure (handled inside _llm_rerank).
+        if rerank and self.router is not None and len(ranked) > 1:
+            ranked = self._llm_rerank(query_text, ranked, rerank_pool)
+
+        return ranked[:top_k]
+
+    def _llm_rerank(
+        self, query_text: str, candidates: list[dict], pool: int
+    ) -> list[dict]:
+        """Reorder the top ``pool`` candidates by LLM-judged relevance.
+
+        One batched ``router.complete`` call asks the local model to rate each
+        candidate 0–10 for the query; the head is re-sorted by that score and
+        the tail (beyond ``pool``) is appended unchanged. Returns ``candidates``
+        untouched on any failure — unreachable model, circuit open, unparseable
+        JSON, or no usable scores — so re-rank is strictly best-effort.
+        """
+        head = candidates[: max(pool, 0)]
+        tail = candidates[max(pool, 0):]
+        if len(head) < 2:
+            return candidates
+
+        listing = "\n".join(
+            f"[{i}] {(c.get('text') or '')[:300]}" for i, c in enumerate(head)
+        )
+        prompt = (
+            f"Question: {query_text}\n\n"
+            f"Passages:\n{listing}\n\n"
+            "Rate how relevant each passage is to answering the question, on a "
+            "0-10 scale.\n"
+            'Return ONLY JSON: {"scores": [{"index": <int>, "score": <number>}, ...]}'
+        )
+        try:
+            resp = self.router.complete(
+                prompt=prompt,
+                system_prompt="You rate passage relevance for retrieval re-ranking.",
+                json_format=True,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("rerank_failed", error=str(e))
+            return candidates
+
+        if not isinstance(resp, dict) or not isinstance(resp.get("scores"), list):
+            return candidates
+        score_by_idx: dict[int, float] = {}
+        for entry in resp["scores"]:
+            if isinstance(entry, dict) and isinstance(entry.get("index"), int):
+                try:
+                    score_by_idx[entry["index"]] = float(entry.get("score", 0))
+                except (TypeError, ValueError):
+                    continue
+        if not score_by_idx:
+            return candidates
+
+        # Stable sort keeps the original fusion order among ties / unscored
+        # items (which default below the lowest real score).
+        order = sorted(
+            range(len(head)),
+            key=lambda i: score_by_idx.get(i, float("-inf")),
+            reverse=True,
+        )
+        logger.info("rerank_applied", pool=len(head), scored=len(score_by_idx))
+        return [head[i] for i in order] + tail

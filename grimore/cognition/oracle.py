@@ -3,6 +3,7 @@ The Oracle: Retrieval-Augmented Generation (RAG) Engine.
 This module combines semantic search (via the Connector) with LLM completion
 (via the LLMRouter) to answer questions based on the vault's content.
 """
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -22,6 +23,9 @@ logger = get_logger(__name__)
 # and the model's own answer space (B-07).
 _ORACLE_CONTEXT_MAX_CHARS = 16_000
 _CONTEXT_SEPARATOR = "\n\n"
+
+# Matches a single ``[[wikilink]]`` citation; group 1 is the inner label.
+_WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 
 
 def _format_source_label(title: str, page, heading) -> str:
@@ -49,7 +53,7 @@ class Oracle:
         self.db = db
         self.router = router
         self.embedder = embedder
-        self.connector = Connector(db, embedder)
+        self.connector = Connector(db, embedder, router=router)
         self.system_prompt_template = self._load_prompt()
 
     def _load_prompt(self):
@@ -58,7 +62,7 @@ class Oracle:
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def ask(self, question: str, top_k: int = 5, extra_sources=None) -> dict:
+    def ask(self, question: str, top_k: int = 5, extra_sources=None, history=None) -> dict:
         """
         Main RAG entry point:
         1. Generates an embedding for the user's question.
@@ -71,13 +75,20 @@ class Oracle:
         budget. Same wrap_untrusted defence applies.
         """
         logger.info("oracle_query", question=question)
+        retrieval_query = self._rewrite_query(question, history)
         full_context, sources = self._build_context(
-            question, top_k, extra_sources=extra_sources
+            retrieval_query, top_k, extra_sources=extra_sources
         )
         if full_context is None:
-            return {"answer": "Your vault seems empty of relevant whispers on this subject.", "sources": []}
+            return {
+                "answer": "Your vault seems empty of relevant whispers on this subject.",
+                "sources": [],
+                "dropped_citations": 0,
+            }
 
         system_prompt = self.system_prompt_template.replace("{context}", full_context)
+        if history:
+            system_prompt = self._format_history(history) + "\n\n" + system_prompt
         response = self.router.complete(
             prompt=f"Question: {question}",
             system_prompt=system_prompt,
@@ -85,12 +96,110 @@ class Oracle:
 
         if not response or not isinstance(response, dict):
             logger.warning("oracle_no_response")
-            return {"answer": "The Oracle is silent.", "sources": sources}
+            return {"answer": "The Oracle is silent.", "sources": sources, "dropped_citations": 0}
 
+        answer, dropped = self.verify_citations(
+            response.get("answer", "The Oracle is silent."), sources
+        )
         return {
-            "answer": response.get("answer", "The Oracle is silent."),
+            "answer": answer,
             "sources": sources,
+            "dropped_citations": dropped,
         }
+
+    @staticmethod
+    def verify_citations(text: str, sources) -> tuple[str, int]:
+        """Unlink any ``[[wikilink]]`` the model emitted that wasn't among the
+        retrieved ``sources`` — a hallucinated citation.
+
+        Returns ``(cleaned_text, dropped_count)``. Ungrounded citations keep
+        their words but lose the ``[[ ]]`` so the prose stays readable while no
+        longer pointing at a note that didn't inform the answer. Matching is
+        tolerant of a missing ``#anchor`` (a bare ``[[Title]]`` is accepted for
+        a retrieved ``[[Title#p.4]]``) so legitimate citations aren't stripped.
+        """
+        if not text:
+            return text, 0
+        allowed = set(sources or [])
+        allowed_titles = {s.split("#", 1)[0].strip() for s in (sources or [])}
+        dropped = 0
+
+        def _sub(match: "re.Match") -> str:
+            nonlocal dropped
+            label = match.group(1).strip()
+            title = label.split("#", 1)[0].strip()
+            if label in allowed or title in allowed_titles:
+                return match.group(0)
+            dropped += 1
+            logger.warning("oracle_citation_hallucinated", citation=label)
+            return label
+
+        cleaned = _WIKILINK_RE.sub(_sub, text)
+        return cleaned, dropped
+
+    # ── conversation memory ──────────────────────────────────────────────
+
+    _HISTORY_MAX_CHARS = 2_000
+
+    def _rewrite_query(self, question: str, history) -> str:
+        """Condense a follow-up + recent turns into one standalone retrieval
+        query, resolving pronouns/references ("expand on that" → the topic).
+
+        Returns the original ``question`` unchanged when there's no history,
+        or whenever the rewrite LLM call fails (circuit open, Ollama down,
+        unparseable JSON) — retrieval then behaves exactly as it did before
+        conversation memory existed.
+        """
+        if not history:
+            return question
+        convo = "\n".join(
+            f"Q: {t.get('q', '').strip()}\nA: {(t.get('a', '') or '').strip()[:300]}"
+            for t in history[-3:]
+        )
+        prompt = (
+            f"Conversation so far:\n{convo}\n\n"
+            f"Follow-up question: {question}\n\n"
+            "Rewrite the follow-up as a single self-contained search query that "
+            "resolves any pronouns or references to earlier turns. Keep it short.\n"
+            'Return ONLY JSON: {"query": "..."}'
+        )
+        try:
+            resp = self.router.complete(
+                prompt=prompt,
+                system_prompt="You rewrite follow-up questions into standalone search queries.",
+                json_format=True,
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("oracle_query_rewrite_failed", error=str(e))
+            return question
+        if isinstance(resp, dict):
+            rewritten = resp.get("query")
+            if isinstance(rewritten, str) and rewritten.strip():
+                logger.info(
+                    "oracle_query_rewritten",
+                    original=question,
+                    rewritten=rewritten.strip(),
+                )
+                return rewritten.strip()
+        return question
+
+    def _format_history(self, history) -> str:
+        """Render the last few turns as a bounded 'recent conversation' block
+        for the system prompt. Capped to :attr:`_HISTORY_MAX_CHARS` so a long
+        thread can't crowd out the retrieved context."""
+        lines: list[str] = []
+        for turn in history[-3:]:
+            q = (turn.get("q", "") or "").strip()
+            a = (turn.get("a", "") or "").strip()
+            if q:
+                lines.append(f"User: {q}")
+            if a:
+                lines.append(f"Oracle: {a}")
+        block = (
+            "Recent conversation (for continuity only — cite ONLY from the "
+            "Context section below):\n" + "\n".join(lines)
+        )
+        return block[: self._HISTORY_MAX_CHARS]
 
     def _build_context(self, question: str, top_k: int, extra_sources=None):
         """Run retrieval + context-cap and return (full_context, sources).
@@ -117,6 +226,8 @@ class Oracle:
                 query_vector=query_vector,
                 top_k=top_k,
                 rrf_k=getattr(self.config.cognition, "rrf_k", 60),
+                rerank=getattr(self.config.cognition, "rerank", False),
+                rerank_pool=getattr(self.config.cognition, "rerank_pool", 20),
             )
         elif query_vector:
             similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
@@ -180,7 +291,7 @@ class Oracle:
 
         return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources))
 
-    def ask_stream(self, question: str, top_k: int = 5, extra_sources=None) -> Iterator[dict]:
+    def ask_stream(self, question: str, top_k: int = 5, extra_sources=None, history=None) -> Iterator[dict]:
         """Streaming variant of :meth:`ask`.
 
         Yields events::
@@ -198,9 +309,10 @@ class Oracle:
         for callers like ``--export`` that depend on a structured payload.
         """
         logger.info("oracle_query_stream", question=question)
-        full_context, sources = self._build_context(question, top_k, extra_sources=extra_sources)
+        retrieval_query = self._rewrite_query(question, history)
+        full_context, sources = self._build_context(retrieval_query, top_k, extra_sources=extra_sources)
         if full_context is None:
-            yield {"type": "done", "sources": []}
+            yield {"type": "done", "sources": [], "dropped_citations": 0}
             return
 
         # Drop the JSON-output rule and example block from the template so
@@ -219,15 +331,22 @@ class Oracle:
                 )
 
         system_prompt = streaming_template.replace("{context}", full_context)
+        if history:
+            system_prompt = self._format_history(history) + "\n\n" + system_prompt
 
         produced = False
+        chunks: list[str] = []
         for chunk in self.router.complete_streaming(
             prompt=f"Question: {question}",
             system_prompt=system_prompt,
         ):
             produced = True
+            chunks.append(chunk)
             yield {"type": "token", "text": chunk}
 
         if not produced:
             logger.warning("oracle_stream_no_response")
-        yield {"type": "done", "sources": sources}
+        # Tokens are already on screen, so we can't unlink in place; surface a
+        # count instead so the caller can warn the user about ungrounded links.
+        _, dropped = self.verify_citations("".join(chunks), sources)
+        yield {"type": "done", "sources": sources, "dropped_citations": dropped}

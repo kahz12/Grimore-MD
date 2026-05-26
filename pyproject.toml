@@ -1,6 +1,6 @@
 [project]
 name = "grimore"
-version = "2.0.0"
+version = "2.1.0"
 description = "Automated Knowledge Engine for your Markdown Vault"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,10 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
     "platformdirs>=4.0.0",
     "rapidfuzz>=3.0.0",
+    # Vectorized retrieval: stack stored float32 vectors into one matrix and
+    # score every chunk with a single matmul instead of a per-row Python loop.
+    # Pure-wheel on Linux/Windows/Termux — no native build required.
+    "numpy>=1.24.0",
     # Multi-format ingest (Phase 2): TXT, HTML, DOCX adapters.
     # beautifulsoup4 falls back to stdlib html.parser when lxml is absent
     # (Termux can't always dlopen lxml's .so), so it's the only Phase 2

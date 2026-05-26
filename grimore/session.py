@@ -55,6 +55,30 @@ class Session:
         # One-shot attachments parsed out of ``@…`` mentions in the next ask.
         # Cleared after every dispatched question.
         self.staged_attachments: list[NoteAttachment] = []
+        # Rolling conversation memory for the shell: the last few
+        # ``{"q", "a", "sources"}`` turns. Feeds the Oracle's query-rewrite
+        # and answer-coherence context so follow-ups resolve. The one-shot
+        # CLI never populates this, so its behaviour is unchanged.
+        self.turns: list[dict] = []
+
+    # Number of prior turns kept for conversational context. Small on
+    # purpose — enough to resolve "expand on that" without blowing the
+    # local model's context window or leaking the whole session.
+    MAX_TURNS = 3
+
+    def record_turn(self, question: str, answer: str, sources: list[str]) -> None:
+        """Append one Q&A turn, trimming to the last :attr:`MAX_TURNS`."""
+        self.turns.append({"q": question, "a": answer or "", "sources": list(sources or [])})
+        if len(self.turns) > self.MAX_TURNS:
+            self.turns = self.turns[-self.MAX_TURNS:]
+
+    def forget(self) -> None:
+        """Drop all conversational state (``/forget``) without touching the
+        warm service handles or the on-disk shell history file."""
+        self.turns = []
+        self.last_question = None
+        self.last_answer = None
+        self.question_log = []
 
     @property
     def db(self) -> Database:
@@ -85,11 +109,17 @@ class Session:
         return Path(self.config.vault.path)
 
     def refresh(self) -> None:
-        """Drop cached services so the next access rebuilds them."""
+        """Drop cached services so the next access rebuilds them.
+
+        Also clears conversation memory: ``refresh()`` runs when the vault
+        may have changed underneath us (e.g. a scan from another terminal),
+        so stale conversational context is dropped along with the services.
+        """
         self._db = None
         self._router = None
         self._embedder = None
         self._oracle = None
+        self.turns = []
 
     def set_chat_model(self, name: str) -> None:
         """Override the LLM model for this session only.

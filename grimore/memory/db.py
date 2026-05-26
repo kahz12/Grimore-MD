@@ -616,6 +616,21 @@ class Database:
             )
             return cursor.fetchall()
 
+    def embeddings_signature(self) -> tuple[int, int]:
+        """Cheap change-detection key for the embeddings table.
+
+        Returns ``(row_count, max_id)``. ``id`` is an AUTOINCREMENT PK, so any
+        insert bumps ``max_id`` and any delete changes the count — together
+        they let :class:`~grimore.cognition.connector.Connector` cache its
+        scoring matrix across queries in the warm shell session and skip a
+        rebuild when the vault hasn't changed since the last ask.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM embeddings"
+            ).fetchone()
+            return (int(row[0]), int(row[1]))
+
     def get_cached_embedding(self, key: str) -> Optional[bytes]:
         """Retrieves a vector from the embedding cache if present."""
         with self._get_connection() as conn:

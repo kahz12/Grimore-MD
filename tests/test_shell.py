@@ -63,10 +63,10 @@ def patched_services(monkeypatch):
         def __init__(self, *a, **kw):
             counts["oracle"] += 1
 
-        def ask(self, question, top_k=5):
+        def ask(self, question, top_k=5, extra_sources=None, history=None):
             return {"answer": "Oracle says hi.", "sources": ["Note A"]}
 
-        def ask_stream(self, question, top_k=5):
+        def ask_stream(self, question, top_k=5, extra_sources=None, history=None):
             yield {"type": "token", "text": "Oracle "}
             yield {"type": "token", "text": "streams."}
             yield {"type": "done", "sources": ["Note A"]}
@@ -519,7 +519,7 @@ def test_mention_extraction_attaches_note(tmp_path, shell_config, patched_servic
     captured = {}
     real_ask = session.oracle.ask_stream  # _FakeOracle stream
 
-    def spy_stream(question, top_k=5, extra_sources=None):
+    def spy_stream(question, top_k=5, extra_sources=None, history=None):
         captured["extras"] = extra_sources
         yield from real_ask(question, top_k=top_k)
 
@@ -540,7 +540,7 @@ def test_pin_persists_across_asks(tmp_path, shell_config, patched_services):
     captured = []
     real_ask = session.oracle.ask_stream
 
-    def spy_stream(question, top_k=5, extra_sources=None):
+    def spy_stream(question, top_k=5, extra_sources=None, history=None):
         captured.append([t for t, _ in (extra_sources or [])])
         yield from real_ask(question, top_k=top_k)
 
@@ -676,7 +676,7 @@ def test_at_mention_outside_vault_is_rejected(tmp_path, shell_config, patched_se
     captured = {"extras": None}
     real_ask = session.oracle.ask_stream
 
-    def spy_stream(question, top_k=5, extra_sources=None):
+    def spy_stream(question, top_k=5, extra_sources=None, history=None):
         captured["extras"] = extra_sources
         yield from real_ask(question, top_k=top_k)
 

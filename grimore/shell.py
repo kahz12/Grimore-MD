@@ -141,6 +141,7 @@ class GrimoreShell:
             "unpin": self._cmd_unpin,
             "save": self._cmd_save,
             "history": self._cmd_history,
+            "forget": self._cmd_forget,
         }
         # Built lazily on first @-mention; reset by /refresh so a vault
         # scan from another terminal becomes visible.
@@ -562,6 +563,9 @@ class GrimoreShell:
                 export=export,
                 stream=stream,
                 extra_sources=extras or None,
+                # Prior turns only — the current turn is recorded after the
+                # call returns, so this resolves follow-ups against history.
+                history=self.session.turns or None,
             )
         finally:
             # Always clear the one-shot staging, even if _do_ask raised —
@@ -572,6 +576,9 @@ class GrimoreShell:
             self.session.last_question = question
             self.session.last_answer = result
             self.session.question_log.append(question)
+            self.session.record_turn(
+                question, result.get("answer", ""), result.get("sources", [])
+            )
 
     def _cmd_status(self, argv: Sequence[str]) -> None:
         from grimore.cli import _render_status_dashboard
@@ -1095,6 +1102,19 @@ class GrimoreShell:
                 (q, "grimore.primary"),
             ))
 
+    def _cmd_forget(self, argv: Sequence[str]) -> None:
+        """Clear conversation memory so the next ask starts a fresh thread.
+
+        Drops the rolling turns plus ``last_*``/question log; pinned notes
+        and the on-disk shell history file are left untouched."""
+        had = bool(self.session.turns or self.session.question_log)
+        self.session.forget()
+        if had:
+            console.print(Text("Conversation forgotten — starting fresh.",
+                               style="grimore.success"))
+        else:
+            console.print(Text("Nothing to forget yet.", style="grimore.muted"))
+
     # ── @-mention plumbing ─────────────────────────────────────────────
 
     def _extract_mentions(self, line: str) -> tuple[str, list[NoteAttachment]]:
@@ -1304,6 +1324,11 @@ class GrimoreShell:
             "  Refuses to overwrite an existing file unless --force is passed."
         ),
         "history": "/history [N]\n  Show the last N questions (default 10).",
+        "forget": (
+            "/forget\n"
+            "  Clear conversation memory so the next ask starts a fresh\n"
+            "  thread. Leaves pins and the on-disk history file intact."
+        ),
         "help": "/help [command]\n  Show this list, or details for one command.",
         "exit": "/exit | /quit\n  Leave the shell.",
         "quit": "/exit | /quit\n  Leave the shell.",

@@ -41,8 +41,15 @@ console = Console(theme=THEME, highlight=False)
 
 # ── Brand / Headers ─────────────────────────────────────────────────────────
 
-def render_banner(version: str = "v2.0") -> Panel:
-    """Returns the large centered brand panel for the dashboard."""
+def render_banner(version: str = "") -> Panel:
+    """Returns the large centered brand panel for the dashboard.
+
+    ``version`` defaults to the installed package version so the banner can't
+    drift from ``pyproject.toml`` the way a hard-coded string did.
+    """
+    if not version:
+        from grimore import __version__
+        version = f"v{__version__}"
     title = Text.assemble(
         ("🔮  ", "grimore.accent"),
         ("GRIMORE", "grimore.primary"),

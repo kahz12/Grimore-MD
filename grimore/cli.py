@@ -56,6 +56,28 @@ console = ui.console
 logger = get_logger(__name__)
 
 
+def _version_callback(value: bool) -> None:
+    """Eager ``--version`` handler: print the installed version and exit."""
+    if value:
+        from grimore import __version__
+        console.print(f"grimore {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show the Grimore version and exit.",
+    ),
+) -> None:
+    """🔮 Grimore — Automated Knowledge Engine."""
+
+
 def _mode_badge(is_dry_run: bool) -> Text:
     """Returns a visual badge indicating if the current execution is a dry run or live."""
     return ui.dry_run_badge() if is_dry_run else ui.live_mode_badge()
@@ -709,8 +731,11 @@ def _render_status_dashboard(config) -> None:
     console.print()
     console.print(ui.render_banner())
 
+    from grimore import __version__
+
     ui.section("Vault")
     console.print(ui.kv_table([
+        ("Version",      Text(__version__, style="grimore.muted")),
         ("Path",         Text(config.vault.path, style="grimore.accent")),
         ("Notes",        ui.coverage_bar(tagged_notes, total_notes)),
         ("Chunks",       Text(str(total_embeddings), style="grimore.accent")),
