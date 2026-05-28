@@ -72,3 +72,6 @@ include = ["grimore*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end test that calls a real Ollama server (auto-skips when none is reachable; opt out with -m 'not e2e').",
+]
