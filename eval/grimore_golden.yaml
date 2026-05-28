@@ -1,0 +1,54 @@
+# Grimore eval golden set — Phase 0.1
+#
+# This is the BASELINE golden set used by `grimore eval` to measure
+# retrieval + answer quality after every retrieval-related change. Keep it
+# small (so iteration is fast) and diverse (so the metrics actually move
+# when retrieval quality moves).
+#
+# Conventions for editing this file:
+# * Each `id` is short, kebab-case, and stable across edits — eval reports
+#   key off it, so a renamed id breaks history comparisons.
+# * `expected_sources` are BARE note titles (no `#anchor` suffix). They are
+#   what `grimore search <query>` would print in the "title" column after a
+#   `grimore scan`. Anchors on the retrieved side are stripped before
+#   matching, so a retrieved `[[Gothic Architecture#p.3]]` still satisfies
+#   an `expected_sources: ["Gothic Architecture"]` entry.
+# * `expected_keywords` are substring-matched into the answer, case
+#   insensitively. Pick terms the answer must mention — not phrasing tricks.
+# * `follow_ups` walk Session.record_turn between turns, so the rewrite +
+#   history features in Oracle.ask are exercised (and scored) too.
+#
+# Phase 2 (cross-encoder reranker, semantic chunker) MUST use a separate
+# held-out file (`eval/grimore_golden_v2.yaml`) — this one trained the
+# defaults, so testing on it would be train-on-test.
+version: 1
+questions:
+  - id: gothic-trilogy
+    question: "What three structural innovations defined Gothic cathedrals?"
+    expected_sources: ["gothic_architecture"]
+    expected_keywords: ["pointed arch", "ribbed vault", "flying buttress"]
+    follow_ups:
+      - id: gothic-trilogy-followup
+        question: "Which one carried the lateral thrust outward?"
+        expected_sources: ["gothic_architecture"]
+        expected_keywords: ["flying buttress"]
+
+  - id: wpa2-basics
+    question: "What is the WPA2 protocol about?"
+    expected_sources: ["nota2"]
+    expected_keywords: ["cryptography", "wpa2"]
+
+  - id: nihilism-and-tech
+    question: "How does technology relate to nihilism, according to the vault?"
+    expected_sources: ["nihilismo_tech"]
+    expected_keywords: ["heidegger", "technology"]
+
+  - id: gothic-origin
+    question: "Where and when did Gothic architecture originate?"
+    expected_sources: ["gothic_architecture"]
+    expected_keywords: ["france", "12th"]
+
+  - id: existentialism-philosophy
+    question: "What does the existentialism note discuss?"
+    expected_sources: ["nota1"]
+    expected_keywords: ["existential"]

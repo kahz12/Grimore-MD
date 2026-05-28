@@ -3,6 +3,7 @@ Persistence Layer (SQLite).
 This module manages the SQLite database, handling note metadata, tags,
 and vector embeddings. It uses WAL mode to allow concurrent access.
 """
+import re
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -32,7 +33,36 @@ class Database:
     """
     def __init__(self, db_path: str):
         self.db_path = db_path
+        # sqlite-vec capability is probed once at startup. ``_vec_available``
+        # gates every other vec-aware code path so a missing extension
+        # degrades silently to the numpy fast path.
+        self._vec_available: bool = self._probe_vec_extension()
+        self._vec_dim: Optional[int] = None
         self._init_db()
+
+    @staticmethod
+    def _probe_vec_extension() -> bool:
+        """One-shot check that the sqlite-vec extension loads on this Python.
+
+        Two things can fail here: the stdlib sqlite3 was built without
+        ``enable_load_extension`` (some distro packages), or the
+        ``sqlite_vec`` wheel isn't installed. Both are silent fallbacks —
+        the caller (Connector) treats the absence as "use numpy" without
+        warning so a default Grimore install stays Termux-friendly.
+        """
+        try:
+            import sqlite_vec  # type: ignore[import-not-found]
+        except ImportError:
+            return False
+        probe = sqlite3.connect(":memory:")
+        try:
+            probe.enable_load_extension(True)
+            sqlite_vec.load(probe)
+        except (AttributeError, sqlite3.OperationalError, sqlite3.NotSupportedError):
+            return False
+        finally:
+            probe.close()
+        return True
 
     def _get_connection(self):
         """Creates a new SQLite connection with optimized settings for concurrency."""
@@ -40,6 +70,19 @@ class Database:
         # WAL (Write-Ahead Logging) lets the daemon write while the CLI reads.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        # Load sqlite-vec on every connection so its virtual tables and
+        # MATCH operator are visible. Cheap (~tens of µs) once the .so is
+        # cached in the OS page cache.
+        if self._vec_available:
+            try:
+                import sqlite_vec  # type: ignore[import-not-found]
+                conn.enable_load_extension(True)
+                sqlite_vec.load(conn)
+                conn.enable_load_extension(False)
+            except Exception as e:  # pragma: no cover - defensive
+                # Flip the flag off so we don't keep retrying every call.
+                logger.warning("sqlite_vec_load_failed", error=str(e))
+                self._vec_available = False
         return conn
 
     def _init_db(self):
@@ -107,7 +150,123 @@ class Database:
             self._fts_available = self._migrate_fts_index(conn)
             self._migrate_freshness_table(conn)
             self._migrate_mirror_tables(conn)
+            if self._vec_available:
+                self._migrate_vec_table(conn)
+            self._migrate_embedding_migration_table(conn)
             conn.commit()
+
+    @staticmethod
+    def _migrate_embedding_migration_table(conn) -> None:
+        """Bookkeeping table for in-flight embedding-model swaps (v2.3).
+
+        The table is always present so a resumed migration after an
+        interrupted run finds a place to land. The per-attempt
+        ``embeddings_migration`` shadow table is created on demand by
+        :py:meth:`begin_embedding_migration` and dropped on swap / abort.
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS migrations (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind          TEXT NOT NULL,
+                started_at    DATETIME NOT NULL,
+                target_model  TEXT,
+                total         INTEGER NOT NULL DEFAULT 0,
+                done          INTEGER NOT NULL DEFAULT 0,
+                status        TEXT NOT NULL DEFAULT 'running'
+                              CHECK(status IN ('running','complete','aborted'))
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_migrations_status ON migrations(status)"
+        )
+
+    def _migrate_vec_table(self, conn) -> None:
+        """Create / detect the ``embeddings_vec`` virtual table.
+
+        Three cases:
+
+        * No ``embeddings`` rows yet → defer creation. We don't know the
+          embedding dim until the first vector lands; the next
+          :py:meth:`store_embedding` call backfills here on its own
+          before inserting.
+        * Table exists → record its dim on ``self._vec_dim`` so the
+          insert path can refuse mismatches.
+        * Table missing but rows exist → create at the dim of the first
+          row's vector and backfill from ``embeddings``.
+
+        A dim-mismatched legacy table (e.g. user swapped embedding model
+        without migrating) is left alone and ``_vec_available`` flipped
+        off so the connector uses numpy; the user gets one warning in
+        the log and nothing silently corrupts.
+        """
+        existing_dim = self._read_vec_table_dim(conn)
+        if existing_dim is not None:
+            self._vec_dim = existing_dim
+            return
+
+        row = conn.execute(
+            "SELECT vector FROM embeddings WHERE vector IS NOT NULL LIMIT 1"
+        ).fetchone()
+        if row is None:
+            # Empty vault. The table will be created lazily on first insert.
+            self._vec_dim = None
+            return
+
+        dim = len(row[0]) // 4
+        if dim <= 0:
+            self._vec_dim = None
+            return
+        self._create_vec_table(conn, dim)
+        self._backfill_vec_table(conn)
+        self._vec_dim = dim
+
+    def _create_vec_table(self, conn, dim: int) -> None:
+        """Create ``embeddings_vec`` at ``dim``. Cosine distance for parity
+        with the numpy path (vectors are unit-normalized at embed time, so
+        cosine == dot product)."""
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_vec "
+            f"USING vec0(embedding float[{dim}] distance_metric=cosine)"
+        )
+
+    @staticmethod
+    def _read_vec_table_dim(conn) -> Optional[int]:
+        """Return the vec table's embedding dim, or None if the table is absent.
+
+        The dim is parsed out of the ``sqlite_master`` DDL because vec0
+        doesn't expose it via PRAGMA. A future sqlite-vec might change
+        this surface; falling through to ``None`` triggers a safe
+        rebuild path so a schema change doesn't wedge the DB.
+        """
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'embeddings_vec'"
+        ).fetchone()
+        if not row or not row[0]:
+            return None
+        match = re.search(r"float\[(\d+)\]", row[0])
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _backfill_vec_table(conn) -> int:
+        """Copy every existing ``embeddings`` row into ``embeddings_vec``.
+
+        Used on the first upgrade after a user installs sqlite-vec on an
+        existing vault. Reuses each row's primary key as the vec rowid so
+        the join back to ``embeddings`` is a straight rowid lookup.
+        """
+        rows = conn.execute(
+            "SELECT id, vector FROM embeddings WHERE vector IS NOT NULL"
+        ).fetchall()
+        for rowid, blob in rows:
+            conn.execute(
+                "INSERT INTO embeddings_vec(rowid, embedding) VALUES (?, ?)",
+                (rowid, blob),
+            )
+        if rows:
+            logger.info("vec_table_backfilled", rows=len(rows))
+        return len(rows)
 
     @staticmethod
     def _migrate_category_column(conn) -> None:
@@ -145,6 +304,16 @@ class Database:
             conn.execute("ALTER TABLE embeddings ADD COLUMN page INTEGER")
         if "heading" not in emb_cols:
             conn.execute("ALTER TABLE embeddings ADD COLUMN heading TEXT")
+        # Chunk-level incremental re-embedding (v2.3) keys each row by a
+        # content+model hash so an unchanged chunk skips a network round-trip
+        # on re-scan. Legacy rows have NULL here and are treated as stale on
+        # first contact, which back-fills naturally without an explicit pass.
+        if "chunk_hash" not in emb_cols:
+            conn.execute("ALTER TABLE embeddings ADD COLUMN chunk_hash TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_hash "
+            "ON embeddings(note_id, chunk_hash)"
+        )
 
     @staticmethod
     def _migrate_freshness_table(conn) -> None:
@@ -576,27 +745,441 @@ class Database:
         *,
         page: Optional[int] = None,
         heading: Optional[str] = None,
+        chunk_hash: Optional[str] = None,
     ):
         """Stores a vector embedding for a specific note chunk.
 
         ``page`` / ``heading`` are the multi-format anchors used by the
-        Oracle when rendering citations (``[[Title#p.42]]``). Both are
-        keyword-only with ``None`` defaults so the old four-arg call sites
-        keep working without modification.
+        Oracle when rendering citations (``[[Title#p.42]]``). ``chunk_hash``
+        is the content+model fingerprint used by the incremental re-embed
+        path; legacy callers that omit it write NULL and back-fill on the
+        next scan. All three are keyword-only so the v2.0 four-arg call
+        shape keeps working.
         """
         with self._get_connection() as conn:
-            conn.execute("""
+            cur = conn.execute("""
                 INSERT INTO embeddings (note_id, chunk_index, text_content, vector,
-                                        page, heading)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (note_id, chunk_index, text_content, vector_blob, page, heading))
+                                        page, heading, chunk_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (note_id, chunk_index, text_content, vector_blob, page, heading, chunk_hash))
+            new_rowid = cur.lastrowid
+            self._mirror_vec_insert(conn, new_rowid, vector_blob)
             conn.commit()
+
+    def _mirror_vec_insert(self, conn, rowid: int, vector_blob: bytes) -> None:
+        """Insert the freshly-stored vector into ``embeddings_vec``.
+
+        Skips silently when sqlite-vec isn't available or the vector dim
+        doesn't match the table — the connector will keep using numpy in
+        that case. Lazily creates the vec table on the first insert if
+        the vault was empty at startup (so the dim is finally known).
+        """
+        if not self._vec_available:
+            return
+        dim = len(vector_blob) // 4
+        if dim <= 0:
+            return
+        if self._vec_dim is None:
+            self._create_vec_table(conn, dim)
+            self._vec_dim = dim
+        if dim != self._vec_dim:
+            # Mid-flight dim mismatch (model swap without migration). Skip
+            # the vec write so the source-of-truth ``embeddings`` row still
+            # lands; the connector falls back to numpy until migrate-embeddings
+            # rebuilds the vec table.
+            return
+        try:
+            conn.execute(
+                "INSERT INTO embeddings_vec(rowid, embedding) VALUES (?, ?)",
+                (rowid, vector_blob),
+            )
+        except sqlite3.OperationalError as e:  # pragma: no cover - defensive
+            logger.warning("vec_insert_failed", rowid=rowid, error=str(e))
 
     def delete_note_embeddings(self, note_id: int):
         """Deletes all embeddings associated with a note (usually before re-indexing)."""
         with self._get_connection() as conn:
+            if self._vec_available and self._vec_dim is not None:
+                # Drop the mirrored vec rows first so we don't leave orphans.
+                conn.execute(
+                    "DELETE FROM embeddings_vec WHERE rowid IN "
+                    "(SELECT id FROM embeddings WHERE note_id = ?)",
+                    (note_id,),
+                )
             conn.execute("DELETE FROM embeddings WHERE note_id = ?", (note_id,))
             conn.commit()
+
+    def get_chunk_hashes(self, note_id: int) -> dict[int, Optional[str]]:
+        """Return ``{chunk_index: chunk_hash}`` for a note's stored chunks.
+
+        Used by the incremental re-embed path to detect which chunks
+        actually changed since the last scan. Rows that pre-date the
+        chunk_hash migration carry ``None`` here — the caller treats
+        those as always-stale, which back-fills the column on first
+        re-scan without an explicit migration pass.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_index, chunk_hash FROM embeddings WHERE note_id = ?",
+                (note_id,),
+            ).fetchall()
+        return {int(r[0]): r[1] for r in rows}
+
+    def delete_chunks(self, note_id: int, chunk_indices: Iterable[int]) -> int:
+        """Drop a subset of a note's chunks by ``chunk_index``.
+
+        Surgical complement to :py:meth:`delete_note_embeddings`: the
+        incremental re-embed path uses this to evict only stale + surplus
+        chunks while leaving unchanged rows (and their AUTOINCREMENT ids)
+        in place. Returns the number of rows removed.
+        """
+        indices = list(chunk_indices)
+        if not indices:
+            return 0
+        with self._get_connection() as conn:
+            # SQLite's parameter limit is generous; even a 10k-chunk doc
+            # comfortably fits one IN-list.
+            placeholders = ",".join("?" * len(indices))
+            if self._vec_available and self._vec_dim is not None:
+                conn.execute(
+                    f"DELETE FROM embeddings_vec WHERE rowid IN "
+                    f"(SELECT id FROM embeddings WHERE note_id = ? "
+                    f"AND chunk_index IN ({placeholders}))",
+                    (note_id, *indices),
+                )
+            cur = conn.execute(
+                f"DELETE FROM embeddings WHERE note_id = ? AND chunk_index IN ({placeholders})",
+                (note_id, *indices),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+
+    # ── sqlite-vec search ─────────────────────────────────────────────────
+
+    @property
+    def vec_available(self) -> bool:
+        """True only when the extension loaded AND a vec table is ready.
+
+        The connector reads this to decide whether to skip the numpy
+        matrix build entirely; if it ever returns True transiently and
+        flips to False (extension misbehaves mid-session), the connector
+        falls back to numpy on the next call without raising.
+        """
+        return bool(self._vec_available and self._vec_dim is not None)
+
+    @property
+    def vec_dim(self) -> Optional[int]:
+        """Embedding dim currently held by ``embeddings_vec`` (None if absent)."""
+        return self._vec_dim
+
+    def vec_search(
+        self,
+        query_vector: bytes | list[float],
+        limit: int,
+        exclude_note_id: Optional[int] = None,
+    ) -> list[tuple[int, int, str, float]]:
+        """k-NN search against ``embeddings_vec``.
+
+        Returns ``[(embedding_id, note_id, text_content, similarity), …]``
+        sorted by descending similarity. ``similarity = 1 - cosine_distance``
+        so the score range matches the numpy dot-product path and the
+        connector can fuse with BM25 the same way.
+
+        Caller filters ``exclude_note_id`` post-hoc by widening ``limit``
+        a touch — same pattern as the numpy fast path. Safe no-op (empty
+        list) when the vec table isn't available.
+        """
+        if not self.vec_available or limit <= 0:
+            return []
+        if isinstance(query_vector, list):
+            import struct
+            qbytes = struct.pack(f"{len(query_vector)}f", *query_vector)
+        else:
+            qbytes = bytes(query_vector)
+        with self._get_connection() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT e.id, e.note_id, e.text_content, v.distance
+                    FROM embeddings_vec v
+                    JOIN embeddings e ON e.id = v.rowid
+                    WHERE v.embedding MATCH ?
+                      AND k = ?
+                    ORDER BY v.distance ASC
+                    """,
+                    (qbytes, limit),
+                ).fetchall()
+            except sqlite3.OperationalError as e:
+                logger.warning("vec_query_failed", error=str(e))
+                return []
+        out: list[tuple[int, int, str, float]] = []
+        for eid, nid, text, dist in rows:
+            if exclude_note_id is not None and nid == exclude_note_id:
+                continue
+            out.append((int(eid), int(nid), text, 1.0 - float(dist)))
+        return out
+
+    def drop_vec_table(self) -> None:
+        """Tear down ``embeddings_vec`` (e.g. before a migrate-embeddings rebuild).
+
+        Idempotent — silently does nothing when sqlite-vec is unavailable or
+        the table doesn't exist. Resets ``_vec_dim`` so the next insert
+        recreates the table at the new dim.
+        """
+        if not self._vec_available:
+            return
+        with self._get_connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS embeddings_vec")
+            conn.commit()
+        self._vec_dim = None
+
+    def rebuild_vec_table(self) -> int:
+        """Drop and rebuild ``embeddings_vec`` from the current ``embeddings``.
+
+        Used after a model swap when the dim changes — the existing
+        virtual table can't be altered in place. Returns the row count
+        that was reinserted. No-op when sqlite-vec isn't loaded.
+        """
+        if not self._vec_available:
+            return 0
+        self.drop_vec_table()
+        with self._get_connection() as conn:
+            self._migrate_vec_table(conn)
+            conn.commit()
+        # _migrate_vec_table already backfilled when it found pre-existing rows.
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM embeddings_vec").fetchone()
+        return int(row[0]) if row else 0
+
+    # ── Embedding-model migration ────────────────────────────────────────
+
+    def get_active_embedding_migration(self) -> Optional[dict]:
+        """Return the in-flight migration row, if any.
+
+        Resume relies on this: rerunning ``migrate-embeddings`` with the
+        same target picks up the existing row instead of starting over.
+        A target-mismatch (user changed their mind mid-migration) is
+        treated as a hard error by the caller — they have to ``--abort``
+        first.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, kind, started_at, target_model, total, done, status
+                FROM migrations
+                WHERE status = 'running' AND kind = 'embedding'
+                ORDER BY id DESC LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]), "kind": row[1], "started_at": row[2],
+            "target_model": row[3], "total": int(row[4]),
+            "done": int(row[5]), "status": row[6],
+        }
+
+    def begin_embedding_migration(self, target_model: str) -> dict:
+        """Start (or no-op resume) an embedding-model migration.
+
+        On a fresh start: creates the shadow ``embeddings_migration``
+        table mirroring the source shape, stamps a ``running`` row in
+        ``migrations`` with ``total = COUNT(*) FROM embeddings``, and
+        returns the new row. If a ``running`` row already exists for the
+        same target, this is a silent no-op and returns the existing
+        row (used for resume).
+        """
+        existing = self.get_active_embedding_migration()
+        if existing is not None:
+            if existing["target_model"] != target_model:
+                raise ValueError(
+                    f"another embedding migration is in flight for "
+                    f"{existing['target_model']!r}; abort it first"
+                )
+            return existing
+
+        with self._get_connection() as conn:
+            # Shadow table mirrors the source — same anchor + chunk_hash columns.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS embeddings_migration (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    note_id       INTEGER,
+                    chunk_index   INTEGER,
+                    text_content  TEXT,
+                    vector        BLOB,
+                    page          INTEGER,
+                    heading       TEXT,
+                    chunk_hash    TEXT
+                )
+                """
+            )
+            total = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+            now = datetime.now().isoformat()
+            cur = conn.execute(
+                """
+                INSERT INTO migrations (kind, started_at, target_model, total, done, status)
+                VALUES ('embedding', ?, ?, ?, 0, 'running')
+                """,
+                (now, target_model, int(total)),
+            )
+            conn.commit()
+            mid = int(cur.lastrowid)
+        return {
+            "id": mid, "kind": "embedding", "started_at": now,
+            "target_model": target_model, "total": int(total),
+            "done": 0, "status": "running",
+        }
+
+    def iter_pending_migration_rows(self) -> list[tuple[int, int, int, str, Optional[int], Optional[str]]]:
+        """Source rows the worker still needs to re-embed.
+
+        Returns ``(id, note_id, chunk_index, text_content, page, heading)``
+        for every ``embeddings`` row whose primary key is greater than the
+        max ``id`` already mirrored into ``embeddings_migration`` — so
+        resume after an interrupted run skips finished work without a
+        secondary "done" set lookup.
+        """
+        with self._get_connection() as conn:
+            already = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM embeddings_migration"
+            ).fetchone()[0]
+            rows = conn.execute(
+                """
+                SELECT id, note_id, chunk_index, text_content, page, heading
+                FROM embeddings
+                WHERE id > ?
+                ORDER BY id ASC
+                """,
+                (int(already),),
+            ).fetchall()
+        return [(int(r[0]), int(r[1]), int(r[2]), r[3], r[4], r[5]) for r in rows]
+
+    def append_migration_row(
+        self,
+        source_id: int,
+        note_id: int,
+        chunk_index: int,
+        text_content: str,
+        vector_blob: bytes,
+        page: Optional[int],
+        heading: Optional[str],
+        chunk_hash: Optional[str],
+    ) -> None:
+        """Insert a re-embedded row into the shadow table at the source id.
+
+        Reusing the source ``id`` is what makes resume cheap: the next
+        :py:meth:`iter_pending_migration_rows` call simply picks up where
+        the max(id) left off. ``done`` is advanced in the same
+        transaction so an interrupted process can't double-count.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO embeddings_migration
+                    (id, note_id, chunk_index, text_content, vector, page, heading, chunk_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (source_id, note_id, chunk_index, text_content,
+                 vector_blob, page, heading, chunk_hash),
+            )
+            conn.execute(
+                "UPDATE migrations SET done = done + 1 "
+                "WHERE status = 'running' AND kind = 'embedding'"
+            )
+            conn.commit()
+
+    def swap_embedding_migration(self) -> dict:
+        """Atomically replace ``embeddings`` with the shadow contents.
+
+        Single transaction so a crash mid-swap leaves the original table
+        intact. The vec table is dropped here (it was sized for the old
+        dim) and rebuilt lazily on the next insert / explicit
+        ``rebuild_vec_table`` call.
+
+        Returns the migration row in its new ``complete`` state.
+        """
+        active = self.get_active_embedding_migration()
+        if active is None:
+            raise RuntimeError("no in-flight embedding migration to swap")
+        if active["done"] < active["total"]:
+            raise RuntimeError(
+                f"migration not done yet: {active['done']}/{active['total']}"
+            )
+
+        with self._get_connection() as conn:
+            # Drop the vec table first — it's keyed on rowid + dim, both of
+            # which become wrong after the swap. The rebuild happens after.
+            if self._vec_available:
+                conn.execute("DROP TABLE IF EXISTS embeddings_vec")
+            conn.execute("BEGIN")
+            try:
+                conn.execute("DELETE FROM embeddings")
+                conn.execute(
+                    """
+                    INSERT INTO embeddings
+                        (id, note_id, chunk_index, text_content, vector,
+                         page, heading, chunk_hash)
+                    SELECT id, note_id, chunk_index, text_content, vector,
+                           page, heading, chunk_hash
+                    FROM embeddings_migration
+                    """
+                )
+                conn.execute("DROP TABLE embeddings_migration")
+                conn.execute(
+                    "UPDATE migrations SET status = 'complete' WHERE id = ?",
+                    (active["id"],),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+
+        # Rebuild the FTS index and (if available) the vec table from the
+        # newly-installed embeddings rows.
+        with self._get_connection() as conn:
+            if self.fts_available:
+                conn.execute("INSERT INTO embeddings_fts(embeddings_fts) VALUES ('rebuild')")
+                conn.commit()
+        if self._vec_available:
+            self._vec_dim = None
+            with self._get_connection() as conn:
+                self._migrate_vec_table(conn)
+                conn.commit()
+
+        active["status"] = "complete"
+        return active
+
+    def abort_embedding_migration(self) -> Optional[dict]:
+        """Tear down any in-flight migration: drop the shadow table and
+        mark the row aborted. Returns the (now aborted) row, or ``None``
+        if there was nothing to abort.
+        """
+        active = self.get_active_embedding_migration()
+        if active is None:
+            return None
+        with self._get_connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS embeddings_migration")
+            conn.execute(
+                "UPDATE migrations SET status = 'aborted' WHERE id = ?",
+                (active["id"],),
+            )
+            conn.commit()
+        active["status"] = "aborted"
+        return active
+
+    def embeddings_total_bytes(self) -> int:
+        """Approximate on-disk size of the ``embeddings.vector`` column.
+
+        Used as a disk-pressure preflight in the migrate command: a
+        rough doubling of this number must fit on the filesystem
+        before we kick off a full re-embed.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM embeddings"
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def get_all_embeddings(self):
         """Returns all embeddings in the database for connection discovery."""

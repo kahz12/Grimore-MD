@@ -210,6 +210,135 @@ class TestDaemonConfig:
         cfg = load_config(str(toml))
         assert isinstance(cfg.daemon, DaemonConfig)
 
+    def test_phase0_observer_fields_have_sensible_defaults(self):
+        # Phase 0.2: new knobs are present, off/sane by default so the v2.1
+        # behaviour is unchanged for users who don't touch [daemon].
+        cfg = DaemonConfig()
+        assert cfg.debounce_seconds == 45
+        assert cfg.poll_fallback is False
+        assert cfg.poll_interval_s == 30.0
+
+    def test_phase0_observer_fields_load_from_toml(self, tmp_path):
+        toml = tmp_path / "grimore.toml"
+        toml.write_text(
+            "[daemon]\n"
+            "debounce_seconds = 5\n"
+            "poll_fallback = true\n"
+            "poll_interval_s = 10.0\n"
+        )
+        cfg = load_config(str(toml))
+        assert cfg.daemon.debounce_seconds == 5
+        assert cfg.daemon.poll_fallback is True
+        assert cfg.daemon.poll_interval_s == 10.0
+
+
+# ── event log: parse + tail ───────────────────────────────────────────────
+
+
+class TestEventLogParse:
+    def test_parse_event_line_simple(self):
+        from grimore.utils.event_log import parse_event_line
+
+        out = parse_event_line("2026-05-28T00:00:00Z\tprocessed\tpath=notes/a.md\tchunks=3")
+        assert out == {
+            "ts": "2026-05-28T00:00:00Z", "event": "processed",
+            "path": "notes/a.md", "chunks": "3",
+        }
+
+    def test_parse_decodes_json_quoted_values(self):
+        from grimore.utils.event_log import parse_event_line
+
+        # _format_value JSON-encodes values containing whitespace; parse
+        # round-trips them so a path with a space is intact downstream.
+        out = parse_event_line(
+            '2026-05-28T00:00:00Z\tprocessed\tpath="notes/with space.md"'
+        )
+        assert out["path"] == "notes/with space.md"
+
+    def test_parse_malformed_returns_empty(self):
+        from grimore.utils.event_log import parse_event_line
+        assert parse_event_line("") == {}
+        assert parse_event_line("garbage") == {}
+
+    def test_tail_events_returns_last_n(self, tmp_path):
+        from grimore.utils.event_log import DaemonEventLog, tail_events
+
+        log_path = tmp_path / "daemon.log"
+        log = DaemonEventLog(log_path)
+        for i in range(7):
+            log.write("processed", path=f"f{i}.md", chunks=i)
+        out = tail_events(log_path, n=3)
+        assert [e["path"] for e in out] == ["f4.md", "f5.md", "f6.md"]
+
+    def test_tail_missing_file_returns_empty(self, tmp_path):
+        from grimore.utils.event_log import tail_events
+        assert tail_events(tmp_path / "does-not-exist.log", n=5) == []
+
+    def test_tail_zero_is_empty(self, tmp_path):
+        from grimore.utils.event_log import tail_events
+        (tmp_path / "x.log").write_text("a\nb\n")
+        assert tail_events(tmp_path / "x.log", n=0) == []
+
+
+# ── daemon status ─────────────────────────────────────────────────────────
+
+
+class TestDaemonStatus:
+    def test_not_running_shape(self, tmp_path, cache_redirect):
+        # No PID file exists → `running` False, no PID/uptime, empty events.
+        from grimore.operations import _do_daemon_status
+        from grimore.utils.config import Config
+
+        out = _do_daemon_status(
+            Config(),
+            pid_file=str(tmp_path / "nope.pid"),
+            log_file=str(tmp_path / "nope.log"),
+        )
+        assert out["running"] is False
+        assert out["pid"] is None
+        assert out["events"] == []
+        assert out["debounce_seconds"] == 45  # default
+        assert "uptime_s" not in out
+
+    def test_running_includes_pid_uptime_events(self, tmp_path, monkeypatch, cache_redirect):
+        # Stand up a fake "running" daemon: write a PID file pointing at our
+        # own pid (is_running checks os.kill(pid, 0)), seed the event log,
+        # then bypass _is_grimore_process which would reject the python test
+        # runner as not-grimore.
+        from grimore.operations import _do_daemon_status
+        from grimore.utils import system as sysmod
+        from grimore.utils.event_log import DaemonEventLog
+        from grimore.utils.config import Config
+
+        monkeypatch.setattr(sysmod, "_is_grimore_process", lambda pid: True)
+
+        pid_file = tmp_path / "daemon.pid"
+        pid_file.write_text(str(os.getpid()))
+        log_file = tmp_path / "daemon.log"
+        log = DaemonEventLog(log_file)
+        log.write("daemon_started", vault="/v", pid=os.getpid())
+        log.write("processed", path="a.md", chunks=2)
+
+        out = _do_daemon_status(
+            Config(), pid_file=str(pid_file), log_file=str(log_file), tail_n=5,
+        )
+        assert out["running"] is True
+        assert out["pid"] == os.getpid()
+        assert out["uptime_s"] >= 0.0
+        assert len(out["events"]) == 2
+        assert out["last_event"] == "processed"
+        assert out["last_path"] == "a.md"
+
+
+class TestUptimeFormatting:
+    def test_fmt_uptime_branches(self):
+        from grimore.operations import _fmt_uptime
+        assert _fmt_uptime(None) == "?"
+        assert _fmt_uptime(0) == "0s"
+        assert _fmt_uptime(45) == "45s"
+        assert _fmt_uptime(125) == "2m 5s"
+        assert _fmt_uptime(3 * 3600 + 42 * 60) == "3h 42m"
+
 
 # ── daemon signal plumbing ────────────────────────────────────────────────
 

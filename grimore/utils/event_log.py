@@ -66,3 +66,53 @@ class DaemonEventLog:
             # combined with the threading lock that's enough for our line sizes.
             with open(self._path, "a", encoding="utf-8") as fh:
                 fh.write(line)
+
+
+def parse_event_line(line: str) -> dict[str, Any]:
+    """Parse one tab-separated event-log line into a dict.
+
+    Lines look like ``<ts>\\t<event>\\t<k=v>\\t<k=v>…`` (see DaemonEventLog
+    format). Values that contain whitespace or ``=`` are JSON-encoded by
+    ``_format_value``, so they pass through ``json.loads`` cleanly here.
+    Returns ``{}`` on a malformed line so callers iterating the log don't
+    have to guard each record individually.
+    """
+    line = line.rstrip("\n")
+    if not line:
+        return {}
+    parts = line.split("\t")
+    if len(parts) < 2:
+        return {}
+    out: dict[str, Any] = {"ts": parts[0], "event": parts[1]}
+    for chunk in parts[2:]:
+        if "=" not in chunk:
+            continue
+        k, _, v = chunk.partition("=")
+        # Mirror _format_value's encoding rule.
+        if v.startswith('"') and v.endswith('"'):
+            try:
+                v = json.loads(v)
+            except ValueError:
+                pass
+        out[k] = v
+    return out
+
+
+def tail_events(path: Path | str, n: int = 5) -> list[dict[str, Any]]:
+    """Return the last ``n`` parsed events from a daemon event log.
+
+    Reads the whole file (event logs are line-oriented and small — even a
+    busy vault under heavy editing tops out at a few MB before any
+    sensible rotation). Returns an empty list when the file is missing or
+    unreadable so the status command can treat "no log" the same as "no
+    events" without a second branch.
+    """
+    if n <= 0:
+        return []
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return [parse_event_line(ln) for ln in lines[-n:]]

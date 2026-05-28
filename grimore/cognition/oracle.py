@@ -53,7 +53,10 @@ class Oracle:
         self.db = db
         self.router = router
         self.embedder = embedder
-        self.connector = Connector(db, embedder, router=router)
+        self.connector = Connector(
+            db, embedder, router=router,
+            vector_backend=getattr(config.cognition, "vector_backend", "auto"),
+        )
         self.system_prompt_template = self._load_prompt()
 
     def _load_prompt(self):

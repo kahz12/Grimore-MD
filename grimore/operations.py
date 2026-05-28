@@ -231,6 +231,371 @@ def _do_ask(
     return result
 
 
+# ── Daemon status ────────────────────────────────────────────────────────
+
+
+def _do_daemon_status(
+    config,
+    *,
+    pid_file: str,
+    log_file: str,
+    tail_n: int = 5,
+) -> dict:
+    """Body of ``grimore daemon status``: render a Rich panel summarising
+    the live daemon and return a structured dict for tests / scripting.
+
+    The dict shape is stable so a future ``--json`` flag can serialise it
+    directly. ``running`` is the only field guaranteed present; the
+    others are populated when the daemon is up.
+    """
+    from grimore.utils.event_log import tail_events
+    from grimore.utils.system import _read_pid, is_running
+
+    running = is_running(pid_file)
+    pid = _read_pid(pid_file) if running else None
+    events = tail_events(log_file, tail_n)
+
+    out: dict = {
+        "running": running,
+        "pid": pid,
+        "pid_file": pid_file,
+        "log_file": log_file,
+        "events": events,
+        "debounce_seconds": getattr(config.daemon, "debounce_seconds", 45),
+        "poll_fallback": getattr(config.daemon, "poll_fallback", False),
+    }
+
+    # Uptime: PID file mtime is set the moment we acquire the lock, so it's
+    # a tight upper bound on the daemon's wall-clock age.
+    uptime_s: Optional[float] = None
+    if running:
+        try:
+            uptime_s = max(0.0, time.time() - Path(pid_file).stat().st_mtime)
+            out["uptime_s"] = uptime_s
+        except OSError:
+            pass
+
+    # Newest event timestamp + last-processed file for the "is anything
+    # actually happening?" signal.
+    last_event = events[-1] if events else None
+    if last_event:
+        out["last_event_ts"] = last_event.get("ts")
+        out["last_event"] = last_event.get("event")
+        if last_event.get("path"):
+            out["last_path"] = last_event["path"]
+
+    _render_daemon_status(out)
+    return out
+
+
+def _render_daemon_status(s: dict) -> None:
+    """Pretty-print a daemon status dict as a Rich panel + recent-events table.
+
+    Kept separate from data-gathering so tests can call ``_do_daemon_status``
+    and assert against the dict without parsing Rich output.
+    """
+    from rich.table import Table
+    from rich import box
+
+    badge = ui.daemon_badge(s["running"])
+    if s["running"]:
+        uptime = _fmt_uptime(s.get("uptime_s"))
+        body_lines = [
+            f"PID:       [bold cyan]{s.get('pid', '?')}[/]",
+            f"Uptime:    [bold]{uptime}[/]",
+            f"Debounce:  [bold]{s['debounce_seconds']}s[/]"
+            f"{'  (polling)' if s['poll_fallback'] else ''}",
+            f"PID file:  [grimore.muted]{s['pid_file']}[/]",
+            f"Log file:  [grimore.muted]{s['log_file']}[/]",
+        ]
+        if s.get("last_event_ts"):
+            body_lines.append(
+                f"Last event: [bold]{s['last_event']}[/] at "
+                f"[grimore.muted]{s['last_event_ts']}[/]"
+            )
+        body = Text.from_markup("\n".join(body_lines))
+        console.print(ui.info_panel(body, title=Text.assemble("Daemon  ", badge)))
+    else:
+        console.print(ui.warn_panel(
+            Text.from_markup(
+                f"No daemon running. Start one with [cyan]grimore daemon start[/].\n"
+                f"PID file checked: [grimore.muted]{s['pid_file']}[/]"
+            ),
+            title=Text.assemble("Daemon  ", badge),
+        ))
+
+    events = s.get("events") or []
+    if not events:
+        return
+    table = Table(box=box.SIMPLE, header_style="grimore.muted", pad_edge=False)
+    table.add_column("Time", style="grimore.muted", no_wrap=True)
+    table.add_column("Event", style="grimore.primary", no_wrap=True)
+    table.add_column("Path / detail")
+    for ev in events:
+        detail_parts = []
+        for key in ("path", "reason", "chunks", "tags", "error"):
+            if key in ev:
+                detail_parts.append(f"{key}={ev[key]}")
+        table.add_row(
+            ev.get("ts", "?"),
+            ev.get("event", "?"),
+            ", ".join(detail_parts) or "—",
+        )
+    console.print(table)
+
+
+def _fmt_uptime(seconds: Optional[float]) -> str:
+    """Compact human uptime: 3h 42m / 12m 9s / 47s. Returns '?' on None."""
+    if seconds is None:
+        return "?"
+    s = int(seconds)
+    if s >= 3600:
+        return f"{s // 3600}h {(s % 3600) // 60}m"
+    if s >= 60:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s}s"
+
+
+# ── Embedding-model migration ────────────────────────────────────────────
+
+
+def _disk_free_bytes(path: Path) -> int:
+    """Free bytes on the filesystem holding ``path`` (0 if undetectable)."""
+    try:
+        import shutil
+        return int(shutil.disk_usage(str(path.parent if path.is_file() else path)).free)
+    except OSError:
+        return 0
+
+
+def _do_migrate_embeddings(
+    config,
+    db,
+    target_model: str,
+    *,
+    abort: bool = False,
+    status_only: bool = False,
+    write_config: bool = True,
+    progress_factory=None,
+) -> dict:
+    """Body of ``grimore migrate-embeddings``.
+
+    Three modes share one entry point:
+
+    * ``status_only=True`` — show the current migration (if any) and
+      exit. No work performed.
+    * ``abort=True`` — drop the shadow table and mark the row aborted.
+      Original ``embeddings`` is untouched throughout (the swap is the
+      only destructive step).
+    * Neither flag — start or resume a migration against ``target_model``,
+      run the worker loop to completion, swap atomically, rebuild the
+      vec table, and (when ``write_config``) persist the new model
+      name to ``grimore.toml``.
+
+    ``progress_factory`` is an optional zero-arg callable returning a
+    Rich Progress instance for the worker loop's progress bar. Tests
+    pass ``None`` (the default no-progress path) to keep output clean.
+
+    Returns the final migration row dict.
+    """
+    from grimore.cognition.embedder import Embedder
+    from grimore.utils.config import update_cognition_models
+
+    if status_only:
+        active = db.get_active_embedding_migration()
+        if active is None:
+            console.print(ui.info_panel(
+                "No embedding migration in flight.",
+                title="migrate-embeddings",
+            ))
+            return {"status": "idle"}
+        console.print(ui.info_panel(
+            f"Target: [bold]{active['target_model']}[/]\n"
+            f"Progress: [bold]{active['done']}/{active['total']}[/]\n"
+            f"Started: [grimore.muted]{active['started_at']}[/]",
+            title=f"migration #{active['id']}",
+        ))
+        return active
+
+    if abort:
+        result = db.abort_embedding_migration()
+        if result is None:
+            console.print(ui.info_panel(
+                "Nothing to abort — no migration in flight.",
+                title="migrate-embeddings",
+            ))
+            return {"status": "idle"}
+        console.print(ui.warn_panel(
+            f"Migration #{result['id']} ({result['target_model']}) aborted. "
+            f"Shadow table dropped; original embeddings untouched.",
+            title="Aborted",
+        ))
+        return result
+
+    # ── Active mode: start / resume / swap ─────────────────────────────
+    active = db.get_active_embedding_migration()
+    if active is not None and active["target_model"] != target_model:
+        console.print(ui.error_panel(
+            f"Another migration is in flight for "
+            f"[bold]{active['target_model']}[/].\n"
+            f"Abort it first with [cyan]grimore migrate-embeddings --abort[/].",
+            title="Migration conflict",
+        ))
+        raise typer.Exit(code=1)
+
+    # Disk-pressure preflight: a shadow table roughly doubles vector
+    # storage. Refuse early rather than dying mid-migration.
+    needed = max(db.embeddings_total_bytes(), 1) * 2
+    free = _disk_free_bytes(Path(db.db_path))
+    if free and free < needed:
+        console.print(ui.error_panel(
+            f"Not enough free disk to migrate safely.\n"
+            f"Need ~[bold]{needed // (1024*1024)} MiB[/], "
+            f"have [bold]{free // (1024*1024)} MiB[/].",
+            title="Disk pressure",
+        ))
+        raise typer.Exit(code=1)
+
+    row = db.begin_embedding_migration(target_model)
+    if row["total"] == 0:
+        console.print(ui.warn_panel(
+            "No embeddings to migrate — vault is empty. "
+            "Just edit [cyan]grimore.toml[/] to switch models.",
+            title="migrate-embeddings",
+        ))
+        # Still mark the row complete so the bookkeeping is clean.
+        if write_config:
+            update_cognition_models(embedding_model=target_model)
+        return row
+
+    # Build a temporary Embedder targeting the new model.
+    from dataclasses import replace
+    migrating_cog = replace(config.cognition, model_embeddings_local=target_model)
+    migrating_cfg = replace(config, cognition=migrating_cog)
+    embedder = Embedder(migrating_cfg, cache=None)  # no cache reuse across models
+
+    pending = db.iter_pending_migration_rows()
+    if pending:
+        ui.command_header(
+            "migrate-embeddings",
+            f"→ {target_model} · {row['done']}/{row['total']} done · "
+            f"{len(pending)} remaining",
+        )
+
+    progress = progress_factory() if progress_factory else None
+    task_id = None
+    if progress is not None:
+        progress.__enter__()
+        task_id = progress.add_task("Re-embedding", total=len(pending))
+
+    failures = 0
+    try:
+        for src_id, note_id, chunk_index, text, page, heading in pending:
+            vector = embedder.embed(text or "")
+            if vector is None:
+                failures += 1
+                if progress is not None and task_id is not None:
+                    progress.advance(task_id)
+                continue
+            chunk_hash = Embedder.chunk_hash(text or "", target_model)
+            db.append_migration_row(
+                source_id=src_id,
+                note_id=note_id,
+                chunk_index=chunk_index,
+                text_content=text,
+                vector_blob=Embedder.serialize_vector(vector),
+                page=page,
+                heading=heading,
+                chunk_hash=chunk_hash,
+            )
+            if progress is not None and task_id is not None:
+                progress.advance(task_id)
+    finally:
+        if progress is not None:
+            progress.__exit__(None, None, None)
+
+    refreshed = db.get_active_embedding_migration()
+    if refreshed is None or refreshed["done"] < refreshed["total"]:
+        # Incomplete: surface and bail without swapping. Rerun resumes.
+        done = refreshed["done"] if refreshed else row["done"]
+        total = refreshed["total"] if refreshed else row["total"]
+        console.print(ui.warn_panel(
+            f"Migration stopped at [bold]{done}/{total}[/] "
+            f"({failures} embed failure(s)). Run the same command again to "
+            f"resume — completed rows persist in the shadow table.",
+            title="Incomplete",
+        ))
+        return refreshed or row
+
+    swapped = db.swap_embedding_migration()
+    if write_config:
+        update_cognition_models(embedding_model=target_model)
+    console.print(ui.success_panel(
+        f"Migrated [bold]{swapped['total']}[/] embeddings to "
+        f"[bold cyan]{target_model}[/]. Original table replaced atomically.",
+        title="migrate-embeddings",
+    ))
+    return swapped
+
+
+# ── Eval ─────────────────────────────────────────────────────────────────
+
+
+def _do_eval(
+    session: Session,
+    golden_path: Path,
+    *,
+    top_k: int = 5,
+    judge: bool = True,
+    export: Optional[Path] = None,
+) -> dict:
+    """Body of ``grimore eval``: load the YAML golden set, run every case
+    through the Oracle, render the Rich summary, optionally dump JSON.
+
+    Returns the report ``summary()`` dict so callers (tests, the daemon,
+    a future CI integration) can assert on aggregate numbers without
+    re-parsing the rendered output. Never raises on a per-case failure —
+    the harness already converts those into zero-recall turns.
+    """
+    from grimore.cognition.eval import load_golden, run_eval, export_report
+
+    if not golden_path.exists():
+        console.print(ui.error_panel(
+            f"Golden file not found: [bold]{golden_path}[/].\n"
+            f"Ship one at [cyan]eval/grimore_golden.yaml[/] or pass [cyan]--golden[/].",
+            title="Eval input missing",
+        ))
+        raise typer.Exit(code=1)
+
+    cases = load_golden(golden_path)
+    if not cases:
+        console.print(ui.warn_panel(
+            f"No cases in [bold]{golden_path}[/].",
+            title="Empty golden",
+        ))
+        return {"top_k": top_k, "n": 0, "aggregate": {}, "turns": []}
+
+    ui.command_header("eval", f"→ {golden_path} · top-k={top_k} · judge={'on' if judge else 'off'}")
+    total_turns = sum(1 + len(c.follow_ups) for c in cases)
+    console.print(ui.info_panel(
+        f"Evaluating [bold]{len(cases)}[/] case(s) ({total_turns} turn(s)) "
+        f"against [cyan]{session.vault_root}[/].",
+        title="Eval",
+    ))
+
+    report = run_eval(session, cases, top_k=top_k, judge=judge)
+    report.render(console)
+
+    if export is not None:
+        export_report(report, export)
+        console.print(ui.success_panel(
+            f"Report written to [bold cyan]{export}[/].",
+            title="Exported",
+        ))
+
+    return report.summary()
+
+
 # ── Chronicler ───────────────────────────────────────────────────────────
 
 

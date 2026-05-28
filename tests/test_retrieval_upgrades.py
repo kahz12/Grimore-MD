@@ -94,6 +94,29 @@ class TestVectorSearch:
         ) == []
 
 
+class TestTopK:
+    def test_argpartition_matches_full_sort(self):
+        """``_topk_indices`` must return exactly what a full descending sort
+        truncated to k would — same indices, same order. Uses a deterministic
+        random sample so the assertion is reproducible across runs."""
+        import random
+
+        rng = random.Random(0xC0FFEE)
+        scores = [rng.random() for _ in range(1_000)]
+        # Inject a few exact ties to exercise stable tie-breaking by index.
+        scores[10] = scores[20] = scores[30] = 0.5
+
+        expected = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:10]
+        assert Connector._topk_indices(scores, 10) == expected
+
+    def test_topk_edges(self):
+        assert Connector._topk_indices([], 5) == []
+        assert Connector._topk_indices([0.9, 0.1], 0) == []
+        # k >= len falls back to a full sort; result is still a permutation.
+        out = Connector._topk_indices([0.1, 0.3, 0.2], 5)
+        assert sorted(out) == [0, 1, 2] and out == [1, 2, 0]
+
+
 class TestEmbeddingsSignature:
     def test_signature_tracks_inserts(self, db):
         assert db.embeddings_signature() == (0, 0)

@@ -10,9 +10,11 @@ from typing import Optional
 import typer
 from rich.text import Text
 
+from grimore.cognition.chunker import Chunk, chunk_markdown, chunk_sections
 from grimore.cognition.connector import Connector
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.llm_router import LLMRouter
+from grimore.cognition.reembed import reembed_note
 from grimore.cognition.tagger import Tagger
 from grimore.ingest.parser import MarkdownParser, iter_vault_documents
 from grimore.memory.db import Database
@@ -24,7 +26,10 @@ from grimore.operations import (
     _do_chronicler_check,
     _do_chronicler_list,
     _do_chronicler_verify,
+    _do_daemon_status,
     _do_distill,
+    _do_eval,
+    _do_migrate_embeddings,
     _do_mirror_dismiss,
     _do_mirror_list,
     _do_mirror_resolve,
@@ -315,33 +320,20 @@ def scan(
                 # Step 6: Vectorize content for semantic search.
                 # Section-aware path when the adapter provided structural
                 # anchors (PDF pages, EPUB / DOCX / HTML headings); falls
-                # back to body-only chunking for MD / TXT.
-                if note.sections:
-                    embedded_secs = embedder.embed_sections(note.sections)
-                    if embedded_secs and note_id is not None:
-                        db.delete_note_embeddings(note_id)
-                        for idx, (chunk_text, vector, page, heading) in enumerate(embedded_secs):
-                            db.store_embedding(
-                                note_id,
-                                idx,
-                                chunk_text[:500],
-                                embedder.serialize_vector(vector),
-                                page=page,
-                                heading=heading,
-                            )
-                        stats["chunks"] += len(embedded_secs)
-                else:
-                    embedded = embedder.embed_chunks(clean_content)
-                    if embedded and note_id is not None:
-                        db.delete_note_embeddings(note_id)
-                        for idx, (chunk_text, vector) in enumerate(embedded):
-                            db.store_embedding(
-                                note_id,
-                                idx,
-                                chunk_text[:500],
-                                embedder.serialize_vector(vector),
-                            )
-                        stats["chunks"] += len(embedded)
+                # back to body-only chunking for MD / TXT. The chunker
+                # runs first (cheap, deterministic); ``reembed_note`` then
+                # diffs the resulting chunks against stored hashes so
+                # untouched chunks skip the Ollama round-trip.
+                if note_id is not None:
+                    if note.sections:
+                        candidate_chunks = chunk_sections(note.sections)
+                    else:
+                        candidate_chunks = [
+                            Chunk(text=t) for t in chunk_markdown(clean_content)
+                        ]
+                    if candidate_chunks:
+                        result = reembed_note(db, embedder, note_id, candidate_chunks)
+                        stats["chunks"] += result.embedded
 
                 stats["processed"] += 1
             except Exception as e:
@@ -406,7 +398,10 @@ def connect(
 
     db = Database(config.memory.db_path)
     embedder = Embedder(config, cache=db)
-    connector = Connector(db, embedder)
+    connector = Connector(
+        db, embedder,
+        vector_backend=config.cognition.vector_backend,
+    )
     injector = LinkInjector()
 
     all_embeddings = db.get_all_embeddings()
@@ -522,6 +517,39 @@ def ask(
     _do_ask(session, question, top_k=top_k, export=export)
 
 
+@app.command(rich_help_panel="Knowledge ops")
+def eval(
+    golden: Path = typer.Option(
+        Path("eval/grimore_golden.yaml"), "--golden", "-g",
+        help="Path to the golden YAML (see eval/grimore_golden.yaml for the schema).",
+    ),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Context fragments to retrieve per ask."),
+    judge: bool = typer.Option(
+        True, "--judge/--no-judge",
+        help="Use the local LLM to rate answer relevance. Off when Ollama is busy or offline.",
+    ),
+    export: Optional[Path] = typer.Option(
+        None, "--export", help="Write the full report as JSON to this path.",
+    ),
+    json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format."),
+):
+    """
+    📊 Evaluate retrieval + answer quality against a golden YAML.
+
+    Reports recall@k, MRR, citation faithfulness, keyword recall, an
+    LLM-as-judge relevance score, and p50/p95 latency. Read-only (no vault
+    writes). Skip the judge with --no-judge for fast offline runs.
+    """
+    setup_logger(json_format=json_logs)
+    config = load_config()
+
+    # eval is read-only over the vault; skip the git-clean nag.
+    _preflight_or_exit(config, check_git=False)
+
+    session = Session(config)
+    _do_eval(session, golden, top_k=top_k, judge=judge, export=export)
+
+
 @app.command(rich_help_panel="Daemon")
 def daemon(
     action: str = typer.Argument("run", help="Action: run · start · stop · status"),
@@ -584,9 +612,10 @@ def daemon(
         stop_daemon(pid_file)
         console.print(ui.success_panel("Daemon stopped.", title="Stop"))
     elif action == "status":
-        # Check if daemon is active
-        active = is_running(pid_file)
-        console.print(Text.assemble("  ", ui.daemon_badge(active)))
+        # Rich panel: PID, uptime, debounce config, last few events from
+        # daemon.log. Falls back to the bare "not running" message when
+        # there's no live process.
+        _do_daemon_status(load_config(), pid_file=pid_file, log_file=log_file)
     else:
         console.print(ui.error_panel(
             f"Unknown action: [bold]{action}[/]\nUse [cyan]run · start · stop · status[/].",
@@ -623,6 +652,68 @@ def tags(
         ("  ·  ", "grimore.muted"),
         (f"{db.get_tag_count()} unique in use", "grimore.muted"),
     ))
+
+
+@app.command("migrate-embeddings", rich_help_panel="System")
+def migrate_embeddings(
+    target_model: Optional[str] = typer.Argument(
+        None,
+        help="The new embedding model name (e.g. 'qwen3-embedding:0.6b').",
+    ),
+    abort: bool = typer.Option(
+        False, "--abort",
+        help="Drop the shadow table and mark any in-flight migration aborted.",
+    ),
+    status: bool = typer.Option(
+        False, "--status",
+        help="Show the current migration's progress and exit.",
+    ),
+    write_config: bool = typer.Option(
+        True, "--write-config/--no-write-config",
+        help="On success, update [cognition].model_embeddings_local in grimore.toml.",
+    ),
+):
+    """
+    🔄 Hot-swap the embedding model without dropping the index.
+
+    Re-embeds every chunk under the new model into a shadow table while
+    the live ``embeddings`` keeps serving queries. When complete, swaps
+    atomically in a single transaction; on interruption, rerun the same
+    command to resume from the last completed row.
+    """
+    setup_logger()
+    config = load_config()
+
+    if status or abort:
+        db = Database(config.memory.db_path)
+        _do_migrate_embeddings(
+            config, db,
+            target_model=target_model or "",
+            abort=abort,
+            status_only=status,
+            write_config=write_config,
+        )
+        return
+
+    if not target_model:
+        console.print(ui.error_panel(
+            "Missing target model. Pass it as an argument, e.g.\n"
+            "  [cyan]grimore migrate-embeddings qwen3-embedding:0.6b[/]\n"
+            "Or check progress: [cyan]grimore migrate-embeddings --status[/].",
+            title="migrate-embeddings",
+        ))
+        raise typer.Exit(code=1)
+
+    _preflight_or_exit(config, check_git=False)
+    db = Database(config.memory.db_path)
+    _do_migrate_embeddings(
+        config, db,
+        target_model=target_model,
+        abort=False,
+        status_only=False,
+        write_config=write_config,
+        progress_factory=ui.progress_bar,
+    )
 
 
 @app.command(rich_help_panel="System")

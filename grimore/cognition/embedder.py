@@ -55,6 +55,23 @@ class Embedder:
         h.update(text.encode("utf-8"))
         return h.hexdigest()
 
+    @staticmethod
+    def chunk_hash(text: str, model: str) -> str:
+        """Stable fingerprint over (model, chunk text) for incremental re-embed.
+
+        Truncated to 32 hex chars — collision-resistant enough at the
+        per-note scale (a doc with billions of chunks is not a realistic
+        adversary) and noticeably cheaper than the 64-char form to index
+        and compare. Including the model name in the digest means a model
+        swap implicitly invalidates every chunk_hash, so the migrate path
+        doesn't need a separate "wipe hashes" step.
+        """
+        h = hashlib.sha256()
+        h.update(model.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(text.encode("utf-8"))
+        return h.hexdigest()[:32]
+
     def chunk(self, text: str) -> list[str]:
         """Delegates text splitting to the markdown-aware chunker."""
         return chunk_markdown(text)

@@ -106,6 +106,13 @@ class CognitionConfig:
     request_timeout_s: int = 60   # /api/generate, JSON path
     stream_timeout_s: int = 120   # /api/generate, streaming path
     embed_timeout_s: int = 30     # /api/embeddings
+    # Vector search backend. "auto" (default) uses the sqlite-vec extension
+    # when it loads cleanly and the embeddings_vec virtual table is present at
+    # the active dim, otherwise falls back to the numpy matmul path. Force
+    # "numpy" to pin the in-memory path even when sqlite-vec is installed
+    # (handy for parity tests). "sqlite-vec" is the strict opt-in — Connector
+    # logs and falls back to numpy if the extension probe fails.
+    vector_backend: str = "auto"
 
 @dataclass
 class IngestConfig:
@@ -226,9 +233,23 @@ class DaemonConfig:
     ``daemon.log`` under the user cache dir. When false the daemon still
     runs structured logging through ``structlog``; this just skips the
     extra append-only file.
+
+    ``debounce_seconds`` is how long the observer waits after the *last*
+    file event on a path before firing the re-index callback. Editor
+    save flurries (autosave + on-blur + format-on-save) collapse to one
+    re-index. Set lower (e.g. 5) for snappier feedback during writing,
+    higher (e.g. 120) on slow disks.
+
+    ``poll_fallback`` swaps the inotify-based observer for a polling one
+    that walks the vault every ``poll_interval_s`` seconds. Necessary on
+    filesystems where inotify is unreliable (Termux's storage shim, some
+    NFS mounts, FUSE drivers).
     """
     enabled: bool = False
     log_events: bool = True
+    debounce_seconds: int = 45
+    poll_fallback: bool = False
+    poll_interval_s: float = 30.0
 
 
 @dataclass

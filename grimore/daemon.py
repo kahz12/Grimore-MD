@@ -21,7 +21,9 @@ from grimore.memory.db import Database
 from grimore.memory.maintenance import MaintenanceRunner
 from grimore.output.git_guard import GitGuard
 from grimore.output.frontmatter_writer import FrontmatterWriter
+from grimore.cognition.chunker import Chunk, chunk_markdown, chunk_sections
 from grimore.cognition.llm_router import LLMRouter
+from grimore.cognition.reembed import reembed_note
 from grimore.cognition.tagger import Tagger
 from grimore.memory.taxonomy import load_taxonomy_from_vault
 from grimore.cognition.embedder import Embedder
@@ -70,7 +72,10 @@ class GrimoreDaemon:
         self.vault_tax = load_taxonomy_from_vault(Path(config.vault.path))
         self.tagger = Tagger(config, self.router, self.vault_tax)
         self.embedder = Embedder(config, cache=self.db)
-        self.connector = Connector(self.db, self.embedder)
+        self.connector = Connector(
+            self.db, self.embedder,
+            vector_backend=getattr(config.cognition, "vector_backend", "auto"),
+        )
         
         self.vault_root = Path(config.vault.path).resolve()
         self.observer = None
@@ -138,12 +143,18 @@ class GrimoreDaemon:
 
         logger.info("daemon_starting", vault=self.config.vault.path)
         self.event_log.write("daemon_started", vault=self.config.vault.path, pid=str(_os_getpid()))
+        # Pull the debounce + polling knobs from DaemonConfig so users can
+        # tune them via grimore.toml without editing source. The defaults
+        # match the v2.1 behaviour (45s debounce, native inotify/FSEvents).
         self.observer = VaultObserver(
             vault_path=self.config.vault.path,
             callback=self.process_file,
             ignored_dirs=self.config.vault.ignored_dirs,
             supported_extensions=self.config.vault.formats,
             sniff_magic=self.config.ingest.sniff_magic,
+            debounce_seconds=getattr(self.config.daemon, "debounce_seconds", 45),
+            poll_fallback=getattr(self.config.daemon, "poll_fallback", False),
+            poll_interval_s=getattr(self.config.daemon, "poll_interval_s", 30.0),
         )
         self.observer.start()
 
@@ -307,18 +318,7 @@ class GrimoreDaemon:
                 dry_run=self.config.output.dry_run,
             )
 
-            # 7. Embeddings: Vectorize for semantic index. Section-aware
-            # when the adapter handed us page / heading anchors (PDF /
-            # EPUB / DOCX / HTML); body-only chunking otherwise.
-            embedded_secs = (
-                self.embedder.embed_sections(note.sections) if note.sections else None
-            )
-            embedded = (
-                None if embedded_secs is not None
-                else self.embedder.embed_chunks(clean_content)
-            )
-
-            # 8. Update Database records
+            # 7. Update Database records
             sidecar_target_str = (
                 str(target) if (note.format != "md" and target is not None) else None
             )
@@ -334,40 +334,32 @@ class GrimoreDaemon:
                 self.db.upsert_tags(note_id, cognition_data["tags"])
                 self.db.set_note_category(note_id, cognition_data.get("category") or None)
 
-            if embedded_secs and note_id is not None:
-                # Section-aware rows persist the page / heading anchors
-                # for precise citation rendering downstream.
-                self.db.delete_note_embeddings(note_id)
-                for idx, (chunk_text, vector, page, heading) in enumerate(embedded_secs):
-                    self.db.store_embedding(
-                        note_id,
-                        idx,
-                        chunk_text[:500],
-                        self.embedder.serialize_vector(vector),
-                        page=page,
-                        heading=heading,
+            # 8. Embeddings: Vectorize for semantic index. Section-aware
+            # when the adapter handed us page / heading anchors (PDF /
+            # EPUB / DOCX / HTML); body-only chunking otherwise. The
+            # incremental re-embed path means an edit to one paragraph
+            # of a long doc only re-embeds that paragraph's chunk.
+            chunk_count = 0
+            if note_id is not None:
+                if note.sections:
+                    candidate_chunks = chunk_sections(note.sections)
+                else:
+                    candidate_chunks = [
+                        Chunk(text=t) for t in chunk_markdown(clean_content)
+                    ]
+                if candidate_chunks:
+                    result = reembed_note(self.db, self.embedder, note_id, candidate_chunks)
+                    chunk_count = result.stored
+                    logger.info(
+                        "file_embedded", path=rel,
+                        kept=result.kept, embedded=result.embedded,
+                        removed=result.removed,
                     )
-                logger.info("file_embedded", path=rel, chunks=len(embedded_secs))
-            elif embedded and note_id is not None:
-                # MD / TXT body-only path: no anchors to record.
-                self.db.delete_note_embeddings(note_id)
-                for idx, (chunk_text, vector) in enumerate(embedded):
-                    self.db.store_embedding(
-                        note_id,
-                        idx,
-                        chunk_text[:500],
-                        self.embedder.serialize_vector(vector),
-                    )
-                logger.info("file_embedded", path=rel, chunks=len(embedded))
 
             with self._counter_lock:
                 self.processed_count += 1
             self.last_batch_time = time.monotonic()
             logger.info("file_processed_complete", path=rel)
-            chunk_count = (
-                len(embedded_secs) if embedded_secs
-                else (len(embedded) if embedded else 0)
-            )
             self.event_log.write(
                 "processed",
                 path=rel,

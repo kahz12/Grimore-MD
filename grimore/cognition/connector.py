@@ -30,14 +30,32 @@ class Connector:
     ``router`` is optional and only consulted by the opt-in LLM re-rank pass
     in :py:meth:`find_hybrid`; dense/hybrid retrieval works without it.
     """
-    def __init__(self, db: Database, embedder: Embedder, router=None):
+    def __init__(
+        self,
+        db: Database,
+        embedder: Embedder,
+        router=None,
+        vector_backend: str = "auto",
+    ):
         self.db = db
         self.embedder = embedder
         self.router = router
+        # "auto" picks sqlite-vec when the extension + table are ready, else
+        # numpy. "numpy" pins the matmul path even with sqlite-vec installed
+        # (handy for parity tests). "sqlite-vec" tries the extension and
+        # transparently falls back to numpy if the probe failed.
+        self.vector_backend = vector_backend
         # Matrix cache for the warm shell session — see _load_dense().
         self._cache_sig: Optional[tuple[int, int]] = None
         self._cache_rows: Optional[list] = None
         self._cache_matrix = None
+
+    def _use_vec_backend(self) -> bool:
+        """Whether this call should route through ``db.vec_search`` instead
+        of building the in-memory matmul matrix."""
+        if self.vector_backend == "numpy":
+            return False
+        return self.db.vec_available
 
     def _load_dense(self):
         """Return ``(rows, matrix)`` for dense scoring, cached across queries.
@@ -73,6 +91,29 @@ class Connector:
             for r in rows
         ]
 
+    @staticmethod
+    def _topk_indices(scores, k: int) -> list[int]:
+        """Indices of the top ``k`` scores, descending. Ties broken by index.
+
+        Uses ``np.argpartition`` when numpy is available and worth it
+        (``len(scores) > k > 0``): partition is O(N) and the follow-up sort
+        only touches ``k`` items, so the total drops from O(N log N) (full
+        Python sort) to O(N + k log k). Falls back to a Python sort when
+        numpy is missing or ``k`` already covers the whole list.
+
+        We negate the scores so ``argpartition``/``argsort`` give the
+        *largest* values first; with ``kind="stable"`` ties resolve by
+        original index, matching the Python sort baseline.
+        """
+        n = len(scores)
+        if n == 0 or k <= 0:
+            return []
+        if _np is not None and n > k:
+            arr = _np.asarray(scores, dtype=_np.float32)
+            part = _np.argpartition(-arr, k - 1)[:k]
+            return part[_np.argsort(-arr[part], kind="stable")].tolist()
+        return sorted(range(n), key=lambda i: scores[i], reverse=True)[:k]
+
     def find_similar_notes(
         self,
         query_vector: List[float],
@@ -92,20 +133,54 @@ class Connector:
         chunks of the same note can all feed the context window.
         """
         query = list(query_vector)
+
+        # sqlite-vec fast path: let SQLite do the ranking and skip the
+        # all-vectors load entirely. Same oversample math as the numpy path
+        # so post-filters keep the final set behaviour-identical.
+        if self._use_vec_backend():
+            needed = top_k + (1 if exclude_note_id is not None else 0)
+            if dedupe_by_note:
+                needed = max(needed * 5, needed + 10)
+            hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
+            similarities = [
+                {"note_id": nid, "text": text, "score": score}
+                for _eid, nid, text, score in hits
+            ]
+            if dedupe_by_note:
+                seen: set[int] = set()
+                unique: list[dict] = []
+                for item in similarities:
+                    if item["note_id"] in seen:
+                        continue
+                    seen.add(item["note_id"])
+                    unique.append(item)
+                similarities = unique
+            return similarities[:top_k]
+
         rows, matrix = self._load_dense()
         scores = self._scores_for(query, rows, matrix)
-        similarities = []
+        if not scores:
+            return []
 
-        for (_emb_id, note_id, text, _blob), score in zip(rows, scores):
-            # Skip self-comparison
+        # Oversample headroom for the post-filters: ``exclude_note_id`` may
+        # drop one of the picks, and ``dedupe_by_note`` collapses repeated
+        # note_ids — both happen *after* top-k, so we need a wider window
+        # going in. The 5× + 10 floor for dedupe is generous enough that
+        # any realistic vault keeps the same final set as the old full-sort
+        # path while still being O(N) instead of O(N log N).
+        needed = top_k + (1 if exclude_note_id is not None else 0)
+        if dedupe_by_note:
+            needed = max(needed * 5, needed + 10)
+        top_idx = self._topk_indices(scores, needed)
+
+        similarities: list[dict] = []
+        for i in top_idx:
+            _emb_id, note_id, text, _blob = rows[i]
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
             similarities.append(
-                {"note_id": note_id, "text": text, "score": float(score)}
+                {"note_id": note_id, "text": text, "score": float(scores[i])}
             )
-
-        # Sort results by similarity score in descending order
-        similarities.sort(key=lambda x: x["score"], reverse=True)
 
         if dedupe_by_note:
             seen: set[int] = set()
@@ -127,20 +202,42 @@ class Connector:
     ) -> list[dict]:
         """Return ranked dense-similarity candidates keyed by embedding id."""
         query = list(query_vector)
+
+        if self._use_vec_backend():
+            needed = limit + (1 if exclude_note_id is not None else 0)
+            hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
+            return [
+                {
+                    "embedding_id": eid,
+                    "note_id": nid,
+                    "text": text,
+                    "score": score,
+                }
+                for eid, nid, text, score in hits
+            ][:limit]
+
         rows, matrix = self._load_dense()
         scores = self._scores_for(query, rows, matrix)
+        if not scores:
+            return []
+
+        # Same +1 headroom as find_similar_notes: the excluded row could be
+        # one of the picks. No dedupe here (the fusion pass keys on
+        # embedding_id, not note_id), so a single extra slot is enough.
+        needed = limit + (1 if exclude_note_id is not None else 0)
+        top_idx = self._topk_indices(scores, needed)
 
         scored: list[dict] = []
-        for (embedding_id, note_id, text, _blob), score in zip(rows, scores):
+        for i in top_idx:
+            embedding_id, note_id, text, _blob = rows[i]
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
             scored.append({
                 "embedding_id": embedding_id,
                 "note_id": note_id,
                 "text": text,
-                "score": float(score),
+                "score": float(scores[i]),
             })
-        scored.sort(key=lambda x: x["score"], reverse=True)
         return scored[:limit]
 
     def find_hybrid(

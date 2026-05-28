@@ -9,6 +9,7 @@ default; PDFs, ePubs, DOCX, … as later phases ship their adapters).
 import time
 from pathlib import Path
 from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 from queue import Queue, Empty
 from threading import Thread
@@ -103,6 +104,12 @@ class VaultObserver:
     """
     High-level observer that manages the watchdog process and implements
     a debounce timer (default 45s) to ensure file writes are complete.
+
+    ``poll_fallback`` swaps the native inotify/FSEvents/ReadDirectoryChangesW
+    observer for ``watchdog.observers.polling.PollingObserver`` — necessary
+    on filesystems where the native APIs don't deliver events reliably
+    (Termux's ``/storage`` shim, some NFS/FUSE mounts). The trade-off is
+    poll latency in exchange for never missing a change.
     """
     def __init__(
         self,
@@ -112,6 +119,8 @@ class VaultObserver:
         debounce_seconds: int = 45,
         supported_extensions: Optional[Iterable[str]] = None,
         sniff_magic: bool = False,
+        poll_fallback: bool = False,
+        poll_interval_s: float = 30.0,
     ):
         self.vault_path = vault_path
         self.callback = callback  # Function to call when a file is ready to process
@@ -119,13 +128,18 @@ class VaultObserver:
         self.supported_extensions = _normalise_extensions(supported_extensions)
         self.sniff_magic = sniff_magic
         self.debounce_seconds = debounce_seconds
+        self.poll_fallback = poll_fallback
+        self.poll_interval_s = poll_interval_s
         self.queue = Queue()
         self.pending_changes = {}  # Maps Path -> last_event_timestamp
         self._stop = False
 
     def start(self):
         """Starts the watchdog observer and the background processing thread."""
-        self.observer = Observer()
+        if self.poll_fallback:
+            self.observer = PollingObserver(timeout=self.poll_interval_s)
+        else:
+            self.observer = Observer()
         self.handler = VaultEventHandler(
             self.queue, self.ignored_dirs, self.supported_extensions,
             sniff_magic=self.sniff_magic,
@@ -137,7 +151,13 @@ class VaultObserver:
         self.processor_thread = Thread(target=self._process_queue, daemon=True)
         self.processor_thread.start()
         
-        logger.info("observer_started", path=self.vault_path, debounce=self.debounce_seconds)
+        logger.info(
+            "observer_started",
+            path=self.vault_path,
+            debounce=self.debounce_seconds,
+            mode="polling" if self.poll_fallback else "native",
+            poll_interval=self.poll_interval_s if self.poll_fallback else None,
+        )
 
     def stop(self):
         """Signals the observer to stop and waits for the thread to join."""

@@ -63,6 +63,15 @@ ocr = ["pytesseract>=0.3", "pdf2image>=1.17"]
 # system (Linux: `apt install libmagic1`; Termux: `pkg install file`;
 # Windows: install the `python-magic-bin` wheel instead).
 sniff = ["python-magic>=0.4"]
+# Opt-in vector backend (Phase 1.2). When installed and
+# [cognition].vector_backend is "auto" (the default) or "sqlite-vec",
+# the connector pushes k-NN ranking into SQLite via the sqlite-vec
+# extension instead of building an in-memory numpy matrix. Worth the
+# install on vaults beyond ~100k chunks; below that, the numpy path
+# is faster end-to-end. Pure-wheel on Linux/Windows; Termux works when
+# the stdlib `sqlite3` was built with `enable_load_extension` (most
+# distributions ship it, Termux's default Python does as of 3.11).
+vec = ["sqlite-vec>=0.1.0"]
 
 [project.scripts]
 grimore = "grimore.cli:app"
@@ -74,4 +83,5 @@ include = ["grimore*"]
 testpaths = ["tests"]
 markers = [
     "e2e: end-to-end test that calls a real Ollama server (auto-skips when none is reachable; opt out with -m 'not e2e').",
+    "vec: requires the sqlite-vec extension (auto-skips when unavailable).",
 ]

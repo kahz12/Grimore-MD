@@ -247,6 +247,49 @@ class TestConversationFollowUp:
         )
 
 
+class TestEvalHarnessLive:
+    def test_harness_reports_high_recall_on_seeded_vault(self, seeded, tmp_path):
+        """End-to-end: feed a 2-case golden through ``run_eval`` against the
+        same seeded vault used by the other live tests; assert the report
+        has the expected shape and recall@5 ≥ 0.5 on questions whose
+        expected_sources match notes we actually inserted."""
+        from grimore.cognition.eval import EvalCase, run_eval, export_report
+
+        cases = [
+            EvalCase(
+                id="esp",
+                question="What pressure is used to brew espresso?",
+                expected_sources=["Espresso Brewing"],
+                expected_keywords=["bar"],
+            ),
+            EvalCase(
+                id="stoic",
+                question="Who articulated the dichotomy of control?",
+                expected_sources=["Stoic Ethics"],
+                expected_keywords=["epictetus"],
+            ),
+        ]
+        # judge=False keeps this fast — we already have live coverage of
+        # the ask path; the harness's judge call is exercised by the unit
+        # tests with a mocked router.
+        report = run_eval(seeded["session"], cases, top_k=5, judge=False)
+
+        summary = report.summary()
+        assert summary["n"] == 2
+        assert summary["aggregate"]["recall_at_k"] >= 0.5, (
+            f"recall too low: {summary['aggregate']!r}"
+        )
+        # Latency is non-zero on a real run (the mocked unit test can't
+        # assert this) — a sanity check that the wall-clock plumbing works.
+        assert summary["aggregate"]["latency_p50"] > 0.0
+
+        # The export round-trips to disk and re-parses as JSON.
+        out = tmp_path / "report.json"
+        export_report(report, out)
+        import json
+        assert json.loads(out.read_text())["n"] == 2
+
+
 class TestRerankPath:
     def test_rerank_enabled_runs_and_keeps_relevant_note(self, seeded):
         """Enable the LLM re-rank stage and confirm the live model returns
