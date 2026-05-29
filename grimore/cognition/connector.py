@@ -7,6 +7,7 @@ via Reciprocal Rank Fusion.
 from typing import List, Optional
 
 from grimore.cognition.embedder import Embedder
+from grimore.cognition.reranker import Reranker, build_reranker
 from grimore.memory.db import Database
 from grimore.utils.logger import get_logger
 
@@ -36,6 +37,9 @@ class Connector:
         embedder: Embedder,
         router=None,
         vector_backend: str = "auto",
+        rerank_engine: str = "llm",
+        rerank_model: str = "BAAI/bge-reranker-base",
+        reranker: Optional[Reranker] = None,
     ):
         self.db = db
         self.embedder = embedder
@@ -49,6 +53,15 @@ class Connector:
         self._cache_sig: Optional[tuple[int, int]] = None
         self._cache_rows: Optional[list] = None
         self._cache_matrix = None
+        # Second-stage re-ranker. ``reranker`` (explicit injection) is
+        # for tests / advanced wiring; otherwise build one from the
+        # engine name, falling back to LLM when cross-encoder extras
+        # aren't installed. ``None`` means re-rank is silently a no-op
+        # — keeps find_hybrid simple when there's no router and no extra.
+        if reranker is not None:
+            self._reranker: Optional[Reranker] = reranker
+        else:
+            self._reranker = build_reranker(rerank_engine, router, model_name=rerank_model)
 
     def _use_vec_backend(self) -> bool:
         """Whether this call should route through ``db.vec_search`` instead
@@ -312,67 +325,67 @@ class Connector:
             ]
             ranked.sort(key=lambda x: x["score"], reverse=True)
 
-        # Optional second-stage LLM re-rank over the head of the pool. Falls
-        # back to the fusion order on any failure (handled inside _llm_rerank).
-        if rerank and self.router is not None and len(ranked) > 1:
-            ranked = self._llm_rerank(query_text, ranked, rerank_pool)
+        # Optional second-stage re-rank over the head of the pool. Falls
+        # back to the fusion order on any failure (handled inside _rerank).
+        if rerank and self._reranker is not None and len(ranked) > 1:
+            ranked = self._rerank(query_text, ranked, rerank_pool)
 
         return ranked[:top_k]
+
+    def _rerank(
+        self, query_text: str, candidates: list[dict], pool: int
+    ) -> list[dict]:
+        """Reorder the top ``pool`` candidates by reranker-judged relevance.
+
+        The active backend (set at construction by ``rerank_engine``)
+        scores each head passage; the head is re-sorted by that score
+        and the tail (beyond ``pool``) is appended unchanged. Returns
+        ``candidates`` untouched on any failure — no reranker, fewer
+        than 2 head items, an empty score list — so re-rank is strictly
+        best-effort.
+        """
+        head = candidates[: max(pool, 0)]
+        tail = candidates[max(pool, 0):]
+        if len(head) < 2 or self._reranker is None:
+            return candidates
+
+        passages = [(c.get("text") or "") for c in head]
+        scores = self._reranker.score(query_text, passages)
+        if not scores or len(scores) != len(head):
+            return candidates
+
+        # Stable sort: ties keep the original fusion order, and unscored
+        # entries (encoded as -inf by LLMReranker) sink below real scores.
+        order = sorted(range(len(head)), key=lambda i: scores[i], reverse=True)
+        logger.info(
+            "rerank_applied",
+            engine=type(self._reranker).__name__,
+            pool=len(head),
+            scored=sum(1 for s in scores if s != float("-inf")),
+        )
+        return [head[i] for i in order] + tail
 
     def _llm_rerank(
         self, query_text: str, candidates: list[dict], pool: int
     ) -> list[dict]:
-        """Reorder the top ``pool`` candidates by LLM-judged relevance.
+        """Back-compat shim: always uses the LLM reranker against ``self.router``.
 
-        One batched ``router.complete`` call asks the local model to rate each
-        candidate 0–10 for the query; the head is re-sorted by that score and
-        the tail (beyond ``pool``) is appended unchanged. Returns ``candidates``
-        untouched on any failure — unreachable model, circuit open, unparseable
-        JSON, or no usable scores — so re-rank is strictly best-effort.
+        Pre-2.4 callers (and a couple of unit tests) used this method
+        directly. The new general dispatch is :py:meth:`_rerank`, but
+        this name is preserved so callers that hard-coded the LLM path
+        keep their semantics — a fresh :class:`LLMReranker` is built
+        per call so the test helpers that bypass ``__init__`` and set
+        only ``.router`` continue to work unchanged.
         """
+        from grimore.cognition.reranker import LLMReranker
         head = candidates[: max(pool, 0)]
         tail = candidates[max(pool, 0):]
         if len(head) < 2:
             return candidates
-
-        listing = "\n".join(
-            f"[{i}] {(c.get('text') or '')[:300]}" for i, c in enumerate(head)
-        )
-        prompt = (
-            f"Question: {query_text}\n\n"
-            f"Passages:\n{listing}\n\n"
-            "Rate how relevant each passage is to answering the question, on a "
-            "0-10 scale.\n"
-            'Return ONLY JSON: {"scores": [{"index": <int>, "score": <number>}, ...]}'
-        )
-        try:
-            resp = self.router.complete(
-                prompt=prompt,
-                system_prompt="You rate passage relevance for retrieval re-ranking.",
-                json_format=True,
-            )
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("rerank_failed", error=str(e))
+        reranker = LLMReranker(self.router)
+        scores = reranker.score(query_text, [(c.get("text") or "") for c in head])
+        if not scores or len(scores) != len(head):
             return candidates
-
-        if not isinstance(resp, dict) or not isinstance(resp.get("scores"), list):
-            return candidates
-        score_by_idx: dict[int, float] = {}
-        for entry in resp["scores"]:
-            if isinstance(entry, dict) and isinstance(entry.get("index"), int):
-                try:
-                    score_by_idx[entry["index"]] = float(entry.get("score", 0))
-                except (TypeError, ValueError):
-                    continue
-        if not score_by_idx:
-            return candidates
-
-        # Stable sort keeps the original fusion order among ties / unscored
-        # items (which default below the lowest real score).
-        order = sorted(
-            range(len(head)),
-            key=lambda i: score_by_idx.get(i, float("-inf")),
-            reverse=True,
-        )
-        logger.info("rerank_applied", pool=len(head), scored=len(score_by_idx))
+        order = sorted(range(len(head)), key=lambda i: scores[i], reverse=True)
+        logger.info("rerank_applied", engine="LLMReranker", pool=len(head))
         return [head[i] for i in order] + tail

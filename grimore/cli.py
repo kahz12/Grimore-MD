@@ -10,7 +10,7 @@ from typing import Optional
 import typer
 from rich.text import Text
 
-from grimore.cognition.chunker import Chunk, chunk_markdown, chunk_sections
+from grimore.cognition.chunker import build_candidate_chunks
 from grimore.cognition.connector import Connector
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.llm_router import LLMRouter
@@ -325,12 +325,9 @@ def scan(
                 # diffs the resulting chunks against stored hashes so
                 # untouched chunks skip the Ollama round-trip.
                 if note_id is not None:
-                    if note.sections:
-                        candidate_chunks = chunk_sections(note.sections)
-                    else:
-                        candidate_chunks = [
-                            Chunk(text=t) for t in chunk_markdown(clean_content)
-                        ]
+                    candidate_chunks = build_candidate_chunks(
+                        note, clean_content, embedder, config,
+                    )
                     if candidate_chunks:
                         result = reembed_note(db, embedder, note_id, candidate_chunks)
                         stats["chunks"] += result.embedded

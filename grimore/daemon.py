@@ -21,7 +21,7 @@ from grimore.memory.db import Database
 from grimore.memory.maintenance import MaintenanceRunner
 from grimore.output.git_guard import GitGuard
 from grimore.output.frontmatter_writer import FrontmatterWriter
-from grimore.cognition.chunker import Chunk, chunk_markdown, chunk_sections
+from grimore.cognition.chunker import build_candidate_chunks
 from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.reembed import reembed_note
 from grimore.cognition.tagger import Tagger
@@ -341,12 +341,9 @@ class GrimoreDaemon:
             # of a long doc only re-embeds that paragraph's chunk.
             chunk_count = 0
             if note_id is not None:
-                if note.sections:
-                    candidate_chunks = chunk_sections(note.sections)
-                else:
-                    candidate_chunks = [
-                        Chunk(text=t) for t in chunk_markdown(clean_content)
-                    ]
+                candidate_chunks = build_candidate_chunks(
+                    note, clean_content, self.embedder, self.config,
+                )
                 if candidate_chunks:
                     result = reembed_note(self.db, self.embedder, note_id, candidate_chunks)
                     chunk_count = result.stored

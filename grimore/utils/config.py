@@ -90,12 +90,21 @@ class CognitionConfig:
     # Retrieval: fuse BM25 (FTS5) and cosine similarity via Reciprocal Rank Fusion.
     hybrid_search: bool = True
     rrf_k: int = 60
-    # Optional second-stage re-rank: after RRF fusion, ask the local LLM to
-    # rate the top ``rerank_pool`` candidates for relevance and reorder them
-    # before truncating to top_k. Off by default — it adds one LLM call per
-    # query. Degrades to the RRF order if the call fails.
+    # Optional second-stage re-rank: after RRF fusion, score the top
+    # ``rerank_pool`` candidates and reorder them before truncating to
+    # top_k. Off by default — it adds work per query. Degrades to the
+    # RRF order on any failure.
     rerank: bool = False
     rerank_pool: int = 20
+    # Which re-rank backend to use when ``rerank`` is on. ``"llm"``
+    # (default) asks the local chat model to rate 0-10 in one batched
+    # call — zero extra install, ~15-30 s/query. ``"cross-encoder"``
+    # uses a sentence-transformers cross-encoder (default
+    # ``BAAI/bge-reranker-base``) for sub-second scoring; needs the
+    # ``reranker`` extra. If the extra is missing the Connector falls
+    # back to ``"llm"`` automatically.
+    rerank_engine: str = "llm"
+    rerank_model: str = "BAAI/bge-reranker-base"
     # Minimum cosine-similarity score for `connect` to propose a wikilink.
     # Below this the candidate is dropped; exposed so vaults that lean more
     # on RAG recall can relax it and vice versa.
@@ -142,6 +151,16 @@ class IngestConfig:
     # Hard cap on how long a single OCR call may run per page. Saves the
     # daemon from a wedged tesseract on a degenerate scan.
     ocr_timeout_s: int = 30
+    # Chunker engine (Phase 2.2). "markdown" is the v2.1 baseline:
+    # paragraph-packed, deterministic, no embed cost during scan. The
+    # "semantic" engine embeds each sentence and splits on topic shifts
+    # (cosine drop below ``semantic_threshold``) — better retrieval
+    # recall on long-form prose, but costs one embed per sentence at
+    # scan time. The hard cap ``chunk_max_chars`` is enforced regardless
+    # of engine so a runaway chunk can't break downstream limits.
+    chunker: str = "markdown"
+    semantic_threshold: float = 0.55
+    chunk_max_chars: int = 1500
     # Magic-byte sniffer (Phase 5). Off by default to keep installs lean
     # and avoid noisy logs on vaults without misnamed files. When True,
     # files whose extension is not in ``vault.formats`` are inspected

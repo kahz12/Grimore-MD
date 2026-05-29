@@ -56,6 +56,10 @@ class Oracle:
         self.connector = Connector(
             db, embedder, router=router,
             vector_backend=getattr(config.cognition, "vector_backend", "auto"),
+            rerank_engine=getattr(config.cognition, "rerank_engine", "llm"),
+            rerank_model=getattr(
+                config.cognition, "rerank_model", "BAAI/bge-reranker-base"
+            ),
         )
         self.system_prompt_template = self._load_prompt()
 

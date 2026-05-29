@@ -72,6 +72,13 @@ sniff = ["python-magic>=0.4"]
 # the stdlib `sqlite3` was built with `enable_load_extension` (most
 # distributions ship it, Termux's default Python does as of 3.11).
 vec = ["sqlite-vec>=0.1.0"]
+# Cross-encoder re-ranker (Phase 2.1). Replaces the default LLM-rerank's
+# 15-30 s/query generation with a sub-second forward pass through a
+# small cross-encoder (default BAAI/bge-reranker-base, ~280 MB on first
+# load). Off the install path until users opt in — sentence-transformers
+# pulls in torch, which is a heavy wheel; Termux/ARM users may want to
+# stay on the default "llm" engine.
+reranker = ["sentence-transformers>=2.7"]
 
 [project.scripts]
 grimore = "grimore.cli:app"
@@ -84,4 +91,5 @@ testpaths = ["tests"]
 markers = [
     "e2e: end-to-end test that calls a real Ollama server (auto-skips when none is reachable; opt out with -m 'not e2e').",
     "vec: requires the sqlite-vec extension (auto-skips when unavailable).",
+    "reranker: requires sentence-transformers (auto-skips when unavailable).",
 ]
