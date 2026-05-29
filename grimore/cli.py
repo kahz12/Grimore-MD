@@ -833,7 +833,9 @@ def _render_status_dashboard(config) -> None:
     ]))
 
     ui.section("Cognition")
+    backend_name = getattr(config.cognition, "llm_backend", "ollama") or "ollama"
     console.print(ui.kv_table([
+        ("Backend",      Text(backend_name,                            style="grimore.accent")),
         ("LLM",          Text(config.cognition.model_llm_local,        style="grimore.accent")),
         ("Embeddings",   Text(config.cognition.model_embeddings_local, style="grimore.accent")),
         ("Unique tags",  Text(str(unique_tags),                        style="grimore.accent")),
@@ -1468,7 +1470,16 @@ def serve(
         from grimore.api.app import build_app
     except ImportError:
         console.print(ui.error_panel(
-            "FastAPI / uvicorn aren't installed.\n"
+            "Starlette / uvicorn aren't installed.\n"
+            "Install the extra: [cyan]pip install 'grimore[serve]'[/].",
+            title="serve unavailable",
+        ))
+        raise typer.Exit(code=1)
+    try:
+        import uvicorn  # noqa: F401  (validated here so the error lands before the panel)
+    except ImportError:
+        console.print(ui.error_panel(
+            "uvicorn isn't installed.\n"
             "Install the extra: [cyan]pip install 'grimore[serve]'[/].",
             title="serve unavailable",
         ))
@@ -1498,7 +1509,6 @@ def serve(
         title="serve",
     ))
 
-    import uvicorn
     try:
         uvicorn.run(app_, host=host, port=port, log_config=None)
     finally:

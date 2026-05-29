@@ -266,8 +266,15 @@ def test_keyboardinterrupt_inside_handler_returns_to_loop(
 
 
 def _stub_models(shell, models):
-    """Pin `router.list_installed_models()` to a fixed list for the test."""
+    """Pin `router.list_installed_models()` to a fixed list for the test.
+
+    Also pins the backend name to a stable string so the section title
+    doesn't render a MagicMock auto-attribute. The real router carries
+    a string ``backend.name`` ("ollama" or "openai") set as a class
+    attribute on the backend classes.
+    """
     shell.session.router.list_installed_models = lambda: list(models)
+    shell.session.router.backend.name = "ollama"
 
 
 def test_models_no_args_shows_current_and_list(shell_config, patched_services, capsys):
@@ -279,7 +286,8 @@ def test_models_no_args_shows_current_and_list(shell_config, patched_services, c
     shell.dispatch("models")
     out = capsys.readouterr().out
     assert "qwen2.5:3b" in out and "nomic-embed-text" in out
-    assert "Installed Ollama models" in out
+    assert "Installed models" in out
+    assert "ollama" in out  # backend label appears in the section title
 
 
 def test_models_chat_by_name_updates_config(
@@ -419,18 +427,18 @@ def test_models_chat_without_name_prints_hint(shell_config, patched_services, ca
     _stub_models(shell, [{"name": "qwen2.5:3b", "size": 1}])
     shell.dispatch("models chat")
     out = capsys.readouterr().out
-    assert "Installed Ollama models" in out
+    assert "Installed models" in out
     assert "models chat" in out  # the hint mentions the command
 
 
-def test_models_when_ollama_unreachable_reports_error(
+def test_models_when_backend_unreachable_reports_error(
     shell_config, patched_services, capsys,
 ):
     shell = GrimoreShell(Session(shell_config))
     _stub_models(shell, [])
     shell.dispatch("models chat 1")
     out = capsys.readouterr().out
-    assert "Ollama" in out
+    assert "LLM backend" in out
     assert shell._running is True
 
 

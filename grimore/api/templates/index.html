@@ -3,45 +3,127 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Grimore</title>
+    <title>Grimore — An Arcane Knowledge Engine</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=UnifrakturCook:wght@700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/grimore.css">
 </head>
 <body>
-    <header>
-        <div class="brand">
-            <span class="logo">◆</span>
-            <span class="title">Grimore</span>
+
+    <!-- Atmospheric layers: parchment grain + vignette + candle glow -->
+    <div class="atmosphere" aria-hidden="true">
+        <svg class="atmosphere__noise" xmlns="http://www.w3.org/2000/svg">
+            <filter id="grimore-noise">
+                <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/>
+                <feColorMatrix values="0 0 0 0 0.85   0 0 0 0 0.72   0 0 0 0 0.45   0.55 0.55 0.55 0 0"/>
+            </filter>
+            <rect width="100%" height="100%" filter="url(#grimore-noise)"/>
+        </svg>
+        <div class="atmosphere__vignette"></div>
+        <div class="atmosphere__glow"></div>
+    </div>
+
+    <header class="codex-header">
+        <h1 class="codex-title">
+            <span class="codex-title__fleur" aria-hidden="true">❦</span>
+            <span class="codex-title__word">Grimore</span>
+            <span class="codex-title__sub">— Codex Apparatus —</span>
+        </h1>
+
+        <div class="health" id="health" role="status" aria-live="polite">
+            <svg class="health__flame" viewBox="0 0 24 32" aria-hidden="true">
+                <defs>
+                    <linearGradient id="flame-grad" x1="0" y1="1" x2="0" y2="0">
+                        <stop offset="0%"  stop-color="#b8412c"/>
+                        <stop offset="55%" stop-color="#e8b657"/>
+                        <stop offset="100%" stop-color="#fff4c2"/>
+                    </linearGradient>
+                </defs>
+                <path d="M12 1 C 17 8 21 13 21 19 A 9 9 0 1 1 3 19 C 3 13 7 8 12 1 Z" fill="url(#flame-grad)"/>
+                <path d="M12 11 C 14 14 16 17 16 20 A 4 4 0 1 1 8 20 C 8 17 10 14 12 11 Z" fill="#fff8d0" opacity="0.7"/>
+            </svg>
+            <span class="health__label">awakening…</span>
         </div>
-        <div class="health" id="health">…</div>
     </header>
 
-    <main>
-        <aside class="sidebar">
-            <h2>Categories</h2>
-            <ul id="categories" class="categories"></ul>
+    <main class="codex">
+
+        <!-- Verso: Catalogue (left margin) -->
+        <aside class="codex__verso">
+            <h2 class="rubric"><span>§</span> Catalogue</h2>
+            <ul class="categories" id="categories">
+                <li class="categories__loading">— consulting indices —</li>
+            </ul>
+            <div class="ornament" aria-hidden="true">⁂ &nbsp;❦&nbsp; ⁂</div>
+            <p class="verso-footnote">
+                Press a heading to ask after its contents.
+            </p>
         </aside>
 
-        <section class="content">
-            <form id="ask-form" class="ask-form">
-                <textarea id="question" placeholder="Ask the vault…" rows="2" autofocus></textarea>
-                <div class="controls">
-                    <label>top-k <input id="top-k" type="number" value="5" min="1" max="25"></label>
-                    <button type="submit" id="ask-btn">Ask</button>
+        <!-- Recto: the writing column -->
+        <section class="codex__recto">
+
+            <form class="invocation" id="ask-form" autocomplete="off">
+                <label class="rubric" for="question"><span>I.</span> Invocation</label>
+                <textarea
+                    id="question"
+                    class="invocation__field"
+                    placeholder="Pose a question to the codex…"
+                    rows="2"
+                    autofocus
+                    spellcheck="false"></textarea>
+                <div class="invocation__controls">
+                    <div class="invocation__hint">
+                        <kbd>Ctrl</kbd>&thinsp;+&thinsp;<kbd>↵</kbd>
+                        <span class="invocation__hint-text">&nbsp;to invoke</span>
+                    </div>
+                    <label class="invocation__topk">
+                        <span>passages</span>
+                        <input type="number" id="top-k" min="1" max="25" value="5">
+                    </label>
+                    <button type="submit" class="invocation__btn" id="ask-btn">
+                        <span class="invocation__btn-text">Invoke</span>
+                        <span class="invocation__btn-ornament" aria-hidden="true">❧</span>
+                    </button>
                 </div>
             </form>
 
-            <div id="answer" class="answer hidden">
-                <h3>Answer</h3>
-                <div id="answer-body" class="answer-body"></div>
-                <div id="sources" class="sources"></div>
-                <div id="dropped" class="dropped hidden"></div>
-            </div>
+            <article class="response" id="answer" hidden>
+                <h2 class="rubric rubric--lg"><span>II.</span> Revelation</h2>
+                <div class="response__body" id="answer-body" aria-live="polite"></div>
+                <div class="response__sources" id="sources" hidden>
+                    <h3 class="rubric rubric--sm">Cited Sources</h3>
+                    <ul id="sources-list"></ul>
+                </div>
+                <div class="response__warning" id="dropped" hidden></div>
+            </article>
 
-            <h3 class="search-heading">Search hits</h3>
-            <div id="results" class="results"></div>
+            <section class="hits-section">
+                <h2 class="rubric rubric--lg"><span>III.</span> Related Passages</h2>
+                <ol class="hits" id="results">
+                    <li class="hits__empty">— no passages summoned yet —</li>
+                </ol>
+            </section>
+
         </section>
+
+        <!-- Marginalia: glosses for the top hits -->
+        <aside class="codex__marginalia" id="marginalia">
+            <div class="marginalia__placeholder">
+                <span class="marginalia__symbol" aria-hidden="true">⚜</span>
+                <p>Marginal annotations appear here when you invoke a question.</p>
+            </div>
+        </aside>
+
     </main>
 
-    <script src="/static/app.js"></script>
+    <footer class="codex-footer">
+        <span class="codex-footer__creed">local-first · read-only · offline-capable</span>
+        <span class="codex-footer__sigil" aria-hidden="true">☿ &nbsp;✶&nbsp; ☿</span>
+    </footer>
+
+    <script src="/static/app.js" defer></script>
 </body>
 </html>

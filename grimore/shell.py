@@ -766,7 +766,7 @@ class GrimoreShell:
             ))
 
     def _cmd_models(self, argv: Sequence[str]) -> None:
-        """List Ollama models and switch chat/embedding for this session.
+        """List backend models and switch chat/embedding for this session.
 
         Subcommands:
           models                       — list + show current selection
@@ -789,7 +789,7 @@ class GrimoreShell:
 
         models = self.session.router.list_installed_models()
         if not models:
-            console.print(Text("No models reported by Ollama (or it's unreachable).",
+            console.print(Text("No models reported by the LLM backend (or it's unreachable).",
                                style="grimore.danger"))
             return
 
@@ -834,13 +834,13 @@ class GrimoreShell:
         ]))
         models = self.session.router.list_installed_models()
         if not models:
-            console.print(Text("No models reported by Ollama (or it's unreachable).",
+            console.print(Text("No models reported by the LLM backend (or it's unreachable).",
                                style="grimore.danger"))
             return
         self._models_print_table(models, hint=None)
 
     def _models_print_table(self, models: list[dict], hint: str | None) -> None:
-        ui.section("Installed Ollama models")
+        ui.section(f"Installed models ({self.session.router.backend.name})")
         cog = self.session.config.cognition
         for i, m in enumerate(models, start=1):
             name = m["name"]

@@ -13,5 +13,8 @@ prompt-toolkit
 platformdirs
 rapidfuzz
 numpy
+beautifulsoup4
+pypdf
+striprtf
 pytest
 pytest-mock

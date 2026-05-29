@@ -22,12 +22,12 @@ from pathlib import Path
 from typing import Optional
 
 from starlette.applications import Starlette
+from starlette.concurrency import iterate_in_threadpool
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
-    HTMLResponse,
     JSONResponse,
     PlainTextResponse,
     Response,
@@ -110,13 +110,14 @@ def _build_routes(session: Session, *, api_token: Optional[str]) -> list:
 
         if stream:
             async def event_stream():
-                # Oracle.ask_stream is a sync generator; SSE is simple
-                # enough that wrapping it inline (rather than pulling
-                # in anyio.run_sync) keeps the dependency surface tiny.
+                # Oracle.ask_stream is a sync generator; wrap it via
+                # Starlette's iterate_in_threadpool so a long Ollama
+                # token wait doesn't block the event loop and stall
+                # other in-flight requests.
                 gen = session.oracle.ask_stream(
                     question, top_k=top_k, history=history,
                 )
-                for event in gen:
+                async for event in iterate_in_threadpool(gen):
                     payload = json.dumps(event, ensure_ascii=False)
                     yield f"data: {payload}\n\n".encode("utf-8")
 
