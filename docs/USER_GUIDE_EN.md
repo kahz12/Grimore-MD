@@ -16,20 +16,26 @@
    - [Supported formats](#supported-formats)
    - [Sidecars: how non-MD metadata is stored](#sidecars-how-non-md-metadata-is-stored)
    - [Opt-in engines: PDF backends, OCR, magic-byte sniffer](#opt-in-engines-pdf-backends-ocr-magic-byte-sniffer)
+   - [Multi-vault profiles](#multi-vault-profiles)
 6. [Day-to-day commands](#6-day-to-day-commands)
    - [`scan`](#scan)
    - [`connect`](#connect)
    - [`ask`](#ask)
+   - [`eval`](#eval)
    - [`tags`](#tags)
    - [`prune`](#prune)
    - [`status`](#status)
    - [`preflight`](#preflight)
    - [`daemon`](#daemon)
    - [`maintenance run`](#maintenance-run)
+   - [`migrate-embeddings`](#migrate-embeddings)
    - [`category`](#category)
    - [`chronicler`](#chronicler)
    - [`mirror`](#mirror)
    - [`distill`](#distill)
+   - [`graph export`](#graph-export)
+   - [`mcp`](#mcp)
+   - [`serve`](#serve)
 7. [The interactive shell — `grimore shell`](#7-the-interactive-shell--grimore-shell)
    - [Composing input](#composing-input)
    - [Slash commands](#slash-commands)
@@ -37,15 +43,18 @@
    - [Pinning notes](#pinning-notes)
    - [Approval prompts](#approval-prompts)
    - [Saving transcripts](#saving-transcripts)
+   - [Conversation persistence — `/thread`, `/resume`, `/threads`](#conversation-persistence--thread-resume-threads)
+   - [Conversation memory & `/forget`](#conversation-memory--forget)
    - [Switching models live](#switching-models-live)
    - [Bottom toolbar](#bottom-toolbar)
    - [Vi-mode](#vi-mode)
 8. [Taxonomy: `taxonomy.yml`](#8-taxonomy-taxonomyyml)
 9. [Frontmatter conventions](#9-frontmatter-conventions)
 10. [Privacy & safety](#10-privacy--safety)
-11. [Working with bigger models](#11-working-with-bigger-models)
-12. [Troubleshooting](#12-troubleshooting)
-13. [Glossary](#13-glossary)
+11. [Integrations — MCP, HTTP API, OpenAI-compatible backends](#11-integrations--mcp-http-api-openai-compatible-backends)
+12. [Working with bigger models](#12-working-with-bigger-models)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Glossary](#14-glossary)
 
 ---
 
@@ -186,13 +195,33 @@ display_name = "Library"
 [cognition]
 model_llm_local       = "qwen2.5:3b"
 model_embeddings_local = "nomic-embed-text"
-allow_remote          = false   # block non-loopback Ollama endpoints
+allow_remote          = false   # block non-loopback Ollama / OpenAI endpoints
 hybrid_search         = true    # BM25 + cosine via RRF
 rrf_k                 = 60      # RRF rank-weight; lower = steeper
 connect_threshold     = 0.7     # cosine floor for a suggested wikilink
 request_timeout_s     = 60      # /api/generate, JSON path
 stream_timeout_s      = 120     # /api/generate, streaming path
 embed_timeout_s       = 30      # /api/embeddings
+# Second-stage re-rank after RRF fusion. Off by default — it costs a
+# pass over `rerank_pool` candidates per query. The "llm" engine asks
+# the local chat model to rate each candidate (no extra install,
+# ~15–30 s/query); "cross-encoder" uses a sentence-transformers
+# reranker (sub-second; needs the `reranker` extra).
+rerank          = false
+rerank_pool     = 20
+rerank_engine   = "llm"          # "llm" | "cross-encoder"
+rerank_model    = "BAAI/bge-reranker-base"
+# Vector backend. "auto" (default) uses sqlite-vec when the extension
+# is installed and the index dimension matches, else falls back to
+# numpy matmul. Force "numpy" to pin the in-memory path; "sqlite-vec"
+# requires the optional extra and the wheel to load cleanly.
+vector_backend  = "auto"
+# LLM backend dispatch. "ollama" (default) keeps v2.x behaviour. Set
+# to "openai" to talk to any OpenAI-compatible server (llama.cpp,
+# vLLM, LM Studio, OpenRouter, OpenAI). See §11 for full details.
+llm_backend     = "ollama"
+llm_base_url    = ""              # e.g. "http://localhost:8080/v1" for llama.cpp server
+llm_api_key_env = "GRIMORE_LLM_API_KEY"   # env var holding the bearer token
 
 [ingest]
 # PDF engine. "pypdf" is the always-available default; "pdfplumber" and
@@ -206,6 +235,13 @@ ocr_timeout_s = 30
 # Magic-byte sniffer for misnamed / extension-less files. Off by
 # default; requires the `sniff` extra (python-magic) and libmagic.
 sniff_magic   = false
+# Chunker engine. "markdown" (default) splits on headings + size cap,
+# deterministic and free at scan time. "semantic" embeds each
+# sentence and splits on topic shifts — better recall on long-form
+# prose at the cost of one embedding per sentence during scan.
+chunker            = "markdown"
+semantic_threshold = 0.55     # cosine drop that triggers a new chunk
+chunk_max_chars    = 1500     # hard cap regardless of engine
 
 [memory]
 db_path = "grimore.db"
@@ -233,12 +269,28 @@ wal_checkpoint  = true
 "daily/"       = 0
 
 [daemon]
-enabled    = false
-log_events = true
+enabled         = false
+log_events      = true
+debounce_seconds = 45    # batch rapid editor saves into one re-index
+poll_fallback    = false # use polling instead of inotify (NFS, FUSE, Termux)
+poll_interval_s  = 30.0
 
 [shell]
 vi_mode         = false  # set true for prompt_toolkit vi-mode
 fuzzy_threshold = 55     # 0–100, rapidfuzz score floor for @-completions
+# Where /thread save writes conversation transcripts. Relative paths
+# anchor under your home directory, so the default lives at
+# ~/.grimore/threads. Absolute paths are honoured as-is.
+threads_dir     = ".grimore/threads"
+
+# Optional: named vault profiles. Each [profiles.<name>] block
+# deep-merges over the top-level sections when activated by
+# `--profile <name>` or `GRIMORE_PROFILE=<name>`. See §5 → "Multi-vault profiles".
+# [profiles.work]
+# [profiles.work.vault]
+# path = "/home/me/work-notes"
+# [profiles.work.cognition]
+# model_llm_local = "qwen2.5:14b"
 ```
 
 Unknown keys are logged at WARNING and ignored — copy-pasting old config
@@ -321,6 +373,47 @@ so a default install reports a clean ✓ row per format.
   `apt install libmagic1`; Termux: `pkg install file`; Windows:
   `pip install python-magic-bin`).
 
+### Multi-vault profiles
+
+A single `grimore.toml` can carry several named **profiles**. Each
+`[profiles.<name>]` block holds overrides that *deep-merge* over the
+top-level sections — anything you don't override is inherited. Pick a
+profile per invocation with `--profile <name>` (any command), or set
+the `GRIMORE_PROFILE` environment variable to make it the default.
+
+```toml
+# Top-level keys still apply when no profile is selected.
+[vault]
+path = "./vault"
+display_name = "Personal"
+
+[cognition]
+model_llm_local = "qwen2.5:3b"
+
+# A heavier office machine + a different vault path.
+[profiles.work]
+[profiles.work.vault]
+path = "/home/me/work-notes"
+display_name = "Work"
+[profiles.work.cognition]
+model_llm_local = "qwen2.5:14b"
+request_timeout_s = 180
+```
+
+```bash
+grimore --profile work ask "what changed in last week's standups?"
+GRIMORE_PROFILE=work grimore shell
+```
+
+Precedence: the `--profile`/`-P` flag beats `GRIMORE_PROFILE`, which
+beats the unprofiled defaults. An unknown profile name fails fast
+with a clear error message instead of silently falling back to the
+defaults. `grimore status` shows the active profile name next to the
+vault path.
+
+Lists are replaced wholesale, not concatenated — `formats = ["md"]`
+inside a profile means *only* Markdown, not "Markdown also".
+
 ---
 
 ## 6. Day-to-day commands
@@ -395,6 +488,40 @@ paginated or structured formats they gain an anchor:
 `[[Annual Report#Chapter 3]]` for DOCX, EPUB and ODT. Markdown and TXT
 citations stay anchor-free.
 
+Hallucinated citations (titles the model invents that weren't in the
+retrieved context) are stripped from the rendered answer and logged at
+`oracle_citation_hallucinated`. The returned source list always
+reflects the *retrieved* notes, not whatever the model claimed.
+
+### `eval`
+
+```bash
+grimore eval [-g PATH] [-k N] [--judge/--no-judge] [--export PATH] [--json]
+```
+
+Runs a golden Q&A set against the Oracle and reports retrieval and
+answer-quality metrics. Defaults to `eval/grimore_golden.yaml`.
+
+| Metric | What it measures |
+|---|---|
+| **recall@k** | Fraction of expected sources that appear in the top-k retrieved set. |
+| **MRR** | Mean reciprocal rank of the first expected source hit. |
+| **faithfulness** | 1 − dropped/total citations (1.0 = no hallucinated citations). |
+| **keyword recall** | Fraction of expected keywords present in the answer body. |
+| **answer relevance** | LLM-as-judge: local model rates the answer 0–10 vs the question. |
+| **p50 / p95 latency** | Wall-clock per turn. |
+
+- `-g, --golden` — path to the YAML golden set.
+- `-k, --top-k` — passages retrieved per question (default 5).
+- `--no-judge` — skip the LLM-as-judge pass (handy offline / fast CI).
+- `--export` — dump the full report as JSON for downstream tooling.
+- `--json` — JSON-formatted structured logs.
+
+The golden set format is one entry per Q&A item with optional
+`follow_ups` so conversation memory (`Oracle.history`) is exercised
+too. Schema version is pinned; unknown keys raise so typos surface
+immediately. See `eval/grimore_golden.yaml` for a working example.
+
 ### `tags`
 
 ```bash
@@ -459,6 +586,27 @@ Runs the housekeeping pipeline once, immediately. Reports how many tags
 were purged, how many WAL frames were checkpointed, and how many bytes
 VACUUM reclaimed. Each `--skip-*` flag turns the matching step off for
 this one run only (config defaults are restored next time).
+
+### `migrate-embeddings`
+
+```bash
+grimore migrate-embeddings <new-model> [--status] [--abort] [--write-config/--no-write-config]
+```
+
+Hot-swap the embedding model without taking the vault offline. The
+command builds a shadow `embeddings_migration` table, re-embeds every
+chunk against the new model, then atomically replaces the live table
+in a single transaction. While the migration runs, search keeps
+serving from the old vectors.
+
+- `--status` prints the resume point of an in-flight migration.
+- `--abort` clears the shadow table; the live vectors are untouched.
+- `--write-config` (default) rewrites `[cognition].model_embeddings_local`
+  on success so the next process picks up the new model.
+
+Resumable: re-running the command with the same target picks up at
+the row the worker last finished. A preflight refuses to start if
+disk free space is less than 2 × current embeddings size.
 
 ### `category`
 
@@ -531,6 +679,83 @@ The output gets `grimore_generated: true` in its frontmatter so later
 > default. The shell's `/distill` mirrors that, but adds an interactive
 > "y/N" approval before any write (see §7).
 
+### `graph export`
+
+```bash
+grimore graph export <output> [-f json|dot|obsidian-canvas]
+                              [--suggested/--no-suggested]
+                              [--suggested-top N]
+                              [--suggested-threshold X]
+```
+
+Crawls the vault's link graph and writes it in the chosen format.
+Three edge kinds are produced:
+
+| Kind | Source |
+|---|---|
+| `wikilink` | Explicit `[[Title]]` references in Markdown bodies. |
+| `suggested` | Top-N cosine neighbours per note (mean-pooled chunk vectors). Filtered by `--suggested-threshold` (default 0.7). |
+| `contradicts` | Open or resolved contradiction pairs from the **Black Mirror**, lifted to the note level. Dismissed pairs are excluded. |
+
+Formats:
+
+- **`json`** — `{version, nodes, edges}`. Stable schema, easy to feed
+  into other tools.
+- **`dot`** — Graphviz source. Render with `dot -Tsvg vault.dot -o vault.svg`.
+- **`obsidian-canvas`** — drops the graph into a `.canvas` file that
+  Obsidian opens directly, with nodes grouped by category on a grid.
+
+The semantic-neighbour pass is the slow part — pass `--no-suggested`
+for a quick survey based on wikilinks + contradictions alone.
+
+### `mcp`
+
+```bash
+grimore mcp [--json/--no-json]
+```
+
+Spawns Grimore as a stdio Model Context Protocol server so any
+MCP-aware client (Claude Desktop, Cursor, Zed, …) can call into the
+vault as tools. Read-only by design: `grimore_ask`, `grimore_search`,
+`grimore_get_note`, `grimore_connect`, `grimore_list_categories`.
+Write operations stay on the CLI so a remote client can never trigger
+a destructive op by accident.
+
+See [`docs/mcp-setup.md`](mcp-setup.md) for copy-pasteable client
+configs and the working-directory caveat.
+
+### `serve`
+
+```bash
+grimore serve [-H HOST] [-P PORT] [--allow-lan] [--api-token TOKEN]
+              [--cors-origin ORIGIN]
+```
+
+Boots a read-only HTTP API + minimal vanilla-JS browser UI on
+`http://127.0.0.1:8000`. Routes:
+
+| Method · Path | Description |
+|---|---|
+| `GET /api/health` | Version + preflight summary. |
+| `POST /api/ask` | `{question, top_k?, stream?}`. SSE streaming when `stream: true`. |
+| `POST /api/search` | `{query, top_k?}` → hybrid hits with snippets. |
+| `GET /api/notes/{id}` | Note metadata + on-disk body. |
+| `GET /api/categories` | Vault-wide counts. |
+| `GET /` | The web UI. |
+
+Security gates baked into the CLI (not just docs):
+
+- Bind to loopback by default. Setting `--host 0.0.0.0` (or any
+  non-loopback address) requires both `--allow-lan` and `--api-token`.
+- `--api-token` (also read from `GRIMORE_API_TOKEN`) is checked on every
+  POST. GETs stay open so the loopback browser flow doesn't have to
+  thread credentials into every fetch.
+- CORS is off by default. `--cors-origin <origin>` adds exactly one
+  origin (no wildcards).
+
+The `serve` extra ships only `starlette` + `uvicorn` so the install
+stays Termux-safe (no pydantic-core wheel needed on ARM).
+
 ---
 
 ## 7. The interactive shell — `grimore shell`
@@ -586,7 +811,11 @@ Slash commands tab-complete from a popup as soon as you type `/`.
 | `/unpin [@note]` | Remove one pin (or all, called bare). |
 | `/save [path] [-f]` | Export the session transcript as a vault note. |
 | `/history [N]` | Show the last N questions (default 10). |
-| `/models [chat\|embed [name\|idx]]` | List Ollama models & switch live. |
+| `/forget` | Drop conversation memory (turns + last_*). Pins stay. |
+| `/thread save\|resume\|list` | Persist / reload conversations across shells. |
+| `/resume <name>` | Shortcut for `/thread resume <name>`. |
+| `/threads` | Shortcut for `/thread list`. |
+| `/models [chat\|embed [name\|idx]]` | List backend models & switch live. |
 | `/refresh` | Drop cached services + the @-mention index. |
 | `/clear` | Clear the screen. |
 | `/help [cmd]` | List commands, or detail one. |
@@ -675,6 +904,62 @@ full body of the most recent answer (with its sources). The path is
 re-validated through `SecurityGuard.resolve_within_vault`, so paths that
 escape the vault are refused. If the target file already exists, `/save`
 refuses to clobber it unless you pass `-f` / `--force`.
+
+### Conversation persistence — `/thread`, `/resume`, `/threads`
+
+`/save` exports a one-shot markdown transcript into the vault. To
+persist a *resumable* conversation thread instead, use the `/thread`
+namespace. Threads survive shell restarts so a long research session
+can be picked up later.
+
+```text
+❯ /thread save                                # auto-slug from the first question
+❯ /thread save research-on-stoicism           # explicit slug
+❯ /thread resume research-on-stoicism         # load it back
+❯ /thread list                                # show every saved thread
+❯ /threads                                    # shortcut for /thread list
+❯ /resume research-on-stoicism                # shortcut for /thread resume …
+```
+
+What's stored:
+
+- One JSONL file per thread under the configured `shell.threads_dir`
+  (default `~/.grimore/threads/`).
+- Each line is one turn: `{ts, q, a, sources}`.
+- Atomic writes — the file is written to `<slug>.jsonl.tmp` then
+  renamed, so a crash mid-write can't leave a corrupted thread.
+
+Resuming pre-fills `last_question` and `last_answer` from the final
+turn so `/again` and `/why` work immediately. The rolling
+conversation memory (last 3 turns, see below) is restored from the
+file, so follow-ups like "expand on the last point" resolve cleanly.
+
+The slug for a no-arg `/thread save` is derived from the first six
+word-runs of the first question; non-ASCII characters drop to ASCII
+and punctuation is stripped so the filename stays portable.
+
+### Conversation memory & `/forget`
+
+Inside one shell session, Grimore keeps a rolling memory of the last
+three turns (`{q, a, sources}` each). It feeds two places:
+
+- **Query rewrite for retrieval.** Pronouns and references resolve
+  against earlier turns ("expand on that" finds the same notes).
+- **Answer coherence.** A short "Recent conversation" block precedes
+  the retrieved context, so the model stays on topic across turns.
+
+The one-shot CLI's `grimore ask` never populates this memory — its
+behaviour is byte-identical to v2.0. Inside the shell, `/forget`
+drops the memory plus `last_question` / `last_answer` / the question
+log without touching pins or the on-disk shell history file:
+
+```text
+❯ /forget
+Conversation forgotten — starting fresh.
+```
+
+`/refresh` (which rebuilds caches after a scan from another terminal)
+also clears the conversation memory implicitly.
 
 ### Switching models live
 
@@ -814,7 +1099,89 @@ exfiltrate a file outside the vault, even via symlink.
 
 ---
 
-## 11. Working with bigger models
+## 11. Integrations — MCP, HTTP API, OpenAI-compatible backends
+
+Three surfaces let Grimore be used outside the terminal.
+
+### MCP server
+
+`grimore mcp` exposes the vault as tools to any Model Context Protocol
+client (Claude Desktop, Cursor, Zed). It's a stdio server — your
+client spawns `grimore mcp` and talks JSON-RPC on its stdin/stdout.
+
+The MCP server is **read-only**: `grimore_ask`, `grimore_search`,
+`grimore_get_note`, `grimore_connect`, `grimore_list_categories`.
+Scans and migrations stay on the CLI.
+
+Copy-pasteable client configs and the working-directory caveat (the
+server reads `grimore.toml` from `cwd`, which an MCP client launches
+from elsewhere) are in [`docs/mcp-setup.md`](mcp-setup.md).
+
+### HTTP API + web UI
+
+`grimore serve` boots a Starlette ASGI server on `127.0.0.1:8000` with
+a minimal vanilla-JS UI. Loopback-only by default; non-loopback binds
+require both `--allow-lan` and `--api-token`.
+
+```bash
+# Loopback only — open in your browser
+grimore serve
+
+# Expose on the LAN with a bearer token
+GRIMORE_API_TOKEN="$(openssl rand -hex 32)" \
+  grimore serve --host 0.0.0.0 --port 8000 \
+                --allow-lan --api-token "$GRIMORE_API_TOKEN"
+```
+
+Streaming answers use Server-Sent Events on `POST /api/ask` when the
+body has `stream: true`. CORS is off by default; pass
+`--cors-origin <origin>` to enable exactly one origin.
+
+The `serve` extra is required: `pip install 'grimore[serve]'`. On
+Linux/Windows that pulls FastAPI as the upgrade path; the shipped
+implementation uses only Starlette + uvicorn so a Termux install
+stays viable (pydantic-core has no prebuilt wheel for Termux/ARM).
+
+### OpenAI-compatible LLM backends
+
+Grimore can talk to any server that speaks the OpenAI
+`POST /v1/chat/completions` shape — llama.cpp server, vLLM, LM Studio,
+OpenRouter, OpenAI proper. Configure it in `[cognition]`:
+
+```toml
+[cognition]
+llm_backend     = "openai"
+llm_base_url    = "http://localhost:8080/v1"   # llama.cpp server's default
+llm_api_key_env = "GRIMORE_LLM_API_KEY"        # env var holding the token
+model_llm_local = "your-model-name"            # whatever the server reports
+allow_remote    = false                        # leave false to keep loopback-only
+```
+
+Then in the shell:
+
+```bash
+export GRIMORE_LLM_API_KEY="sk-…"   # leave empty for unauthenticated servers
+grimore preflight
+grimore ask "warm-up question"
+```
+
+Notes:
+
+- The same `SecurityGuard.validate_llm_host` loopback gate enforces
+  `allow_remote = false` against your `llm_base_url`. To point at a
+  remote host you must explicitly set `allow_remote = true` *and*
+  `llm_base_url` must use `https://`.
+- The bearer token is read **lazily** from the env var on every call,
+  so a rotated key takes effect without restarting Grimore.
+- JSON mode uses `response_format: {"type": "json_object"}`; servers
+  that don't honour it fall back to the router's "extract first
+  `{…}`" regex — same fallback path used in the Ollama branch.
+- Embeddings still go through Ollama. The `llm_backend` switch only
+  affects the chat-completion path.
+
+---
+
+## 12. Working with bigger models
 
 Bigger models (e.g. `ministral-3:14b`) often need a longer warm-up window
 before the first token arrives. Bump the relevant timeouts in
@@ -837,7 +1204,7 @@ will not look frozen.
 
 ---
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 **`preflight` says Ollama is unreachable.**
 Ollama isn't running, or `allow_remote = false` is rejecting your
@@ -872,7 +1239,7 @@ Either run `git init` inside the vault, or set
 
 ---
 
-## 13. Glossary
+## 14. Glossary
 
 - **Vault** — the root directory containing your Markdown notes.
 - **Ingest** — the watchdog observer that detects changes.
@@ -886,6 +1253,16 @@ Either run `git init` inside the vault, or set
 - **Dry-run** — preview mode; no writes to disk.
 - **Pin** — a note attached to every ask in the current shell session.
 - **`@`-mention** — a note attached one-shot to the next ask.
+- **Thread** — a JSONL transcript of a shell conversation stored
+  under `shell.threads_dir`, resumable across sessions.
+- **Profile** — a `[profiles.<name>]` block in `grimore.toml` that
+  deep-merges over the defaults when activated via `--profile` or
+  `GRIMORE_PROFILE`.
+- **MCP** — Model Context Protocol; the stdio JSON-RPC contract by
+  which Grimore plugs into Claude Desktop / Cursor / Zed.
+- **Backend** — the chat-completion server Grimore talks to.
+  `[cognition].llm_backend = "ollama" | "openai"` dispatches between
+  Ollama's `/api/generate` and the OpenAI-compatible `/v1/chat/completions`.
 
 ---
 
