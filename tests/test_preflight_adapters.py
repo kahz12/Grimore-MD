@@ -1,5 +1,5 @@
 """
-Per-adapter preflight check tests (Phase 2).
+Per-adapter preflight check tests.
 
 The preflight runner now emits one ✓/✗ per format the user has listed
 in ``[vault].formats``. We verify: (a) shipped adapters pass, (b)

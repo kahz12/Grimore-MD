@@ -1,6 +1,6 @@
 """
-Per-adapter unit tests for the Phase 4 formats (RTF, ODT, legacy .doc)
-and the engine-selection plumbing on the PDF adapter.
+Per-adapter unit tests for the RTF + ODT + legacy .doc formats and
+the engine-selection plumbing on the PDF adapter.
 
 Fixtures are built in-process — no large binaries enter the repo. ODT is
 a zip with XML files inside, so we hand-craft one the same way we do for

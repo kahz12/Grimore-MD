@@ -27,9 +27,9 @@ from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
-# Same cap the old MarkdownParser enforced. Per-format caps come in Phase 2
-# via [ingest.max_bytes] — for now we keep the historical 2 MB ceiling so
-# Phase 1 stays a pure refactor.
+# Same cap the old MarkdownParser enforced. Per-format caps may come
+# later via [ingest.max_bytes] — for now we keep the historical 2 MB
+# ceiling.
 _MAX_MD_BYTES = 2_000_000
 
 _H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
@@ -89,7 +89,7 @@ class MarkdownAdapter:
             content_hash=calculate_content_hash(content),
             file_hash=sha256_file(file_path),
             metadata=metadata,
-            sections=[],          # Phase 3 may revisit MD heading segmentation.
+            sections=[],          # MD heading segmentation may be revisited later.
             size_bytes=size,
         )
 

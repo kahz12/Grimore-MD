@@ -258,7 +258,7 @@ class TestAggregate:
         # Core checks must always appear.
         assert {"ollama_reachable", "models_pulled", "vault_accessible"} <= names
         # Per-format adapter checks (one per entry in vault.formats). The
-        # default config covers every shipped adapter as of Phase 3:
+        # default config covers every shipped adapter:
         # MD + TXT + HTML/HTM + DOCX + PDF + EPUB.
         for ext in ("md", "txt", "html", "htm", "docx", "pdf", "epub"):
             assert f"adapter:{ext}" in names, (

@@ -1,5 +1,5 @@
 """
-Pluggable vector backend (Phase 1.2).
+Pluggable vector backend.
 
 Two surfaces are covered:
 

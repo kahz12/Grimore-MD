@@ -1,5 +1,5 @@
 """
-Per-adapter unit tests for the Phase 3 formats (PDF, EPUB) and the
+Per-adapter unit tests for the PDF + EPUB formats and the
 anchor-propagation chain.
 
 Each test builds its fixture in-process — PDFs are synthesized via

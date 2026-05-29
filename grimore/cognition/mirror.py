@@ -138,7 +138,7 @@ class Mirror:
         """
         report = MirrorRunReport()
 
-        # Phase 0
+        # Stage 0 — extract claims from notes
         notes_to_extract, all_note_paths = self._notes_for_extraction(full=full)
         report.notes_scanned = len(all_note_paths)
         for i, note_path in enumerate(notes_to_extract):
@@ -147,7 +147,7 @@ class Mirror:
             inserted = self._extract_and_persist(note_path)
             report.claims_extracted += inserted
 
-        # Phase 1+2
+        # Stages 1+2 — pair candidate claims and check for contradictions
         all_claims = self.session.db.get_all_claims_with_vectors()
         if not all_claims:
             self._record_run(report)

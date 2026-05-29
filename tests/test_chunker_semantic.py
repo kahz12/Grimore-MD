@@ -1,5 +1,5 @@
 """
-Phase 2.2 — semantic chunker.
+Semantic chunker.
 
 The semantic chunker walks sentences, embeds each, and starts a new
 chunk when the candidate sentence drifts below the running chunk's

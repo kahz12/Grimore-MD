@@ -13,8 +13,8 @@ Extraction rules:
   present; fall back to ``<body>`` and finally the whole document.
 * Title fallback: ``<title>`` → first ``<h1>`` → filename stem.
 * Sections are seeded at each ``<h1>``-``<h6>`` boundary and carry the
-  heading text in ``ExtractedSection.heading``. The citation layer in
-  Phase 5 will surface this as ``[[Doc#Heading]]``.
+  heading text in ``ExtractedSection.heading``. A future citation layer
+  will surface this as ``[[Doc#Heading]]``.
 """
 from __future__ import annotations
 

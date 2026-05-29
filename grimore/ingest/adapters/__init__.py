@@ -7,8 +7,7 @@ struct the rest of the pipeline consumes. Adapters are registered against
 their file extensions in :mod:`grimore.ingest.adapters.registry` and
 looked up by :func:`for_path`.
 
-Importing this package auto-registers every built-in adapter. Phase 1
-ships only the Markdown adapter; later phases add PDF, ePub, DOCX, etc.
+Importing this package auto-registers every built-in adapter.
 """
 from grimore.ingest.adapters.base import (
     AdapterOptions,

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Grimore</title>
+    <link rel="stylesheet" href="/static/grimore.css">
+</head>
+<body>
+    <header>
+        <div class="brand">
+            <span class="logo">◆</span>
+            <span class="title">Grimore</span>
+        </div>
+        <div class="health" id="health">…</div>
+    </header>
+
+    <main>
+        <aside class="sidebar">
+            <h2>Categories</h2>
+            <ul id="categories" class="categories"></ul>
+        </aside>
+
+        <section class="content">
+            <form id="ask-form" class="ask-form">
+                <textarea id="question" placeholder="Ask the vault…" rows="2" autofocus></textarea>
+                <div class="controls">
+                    <label>top-k <input id="top-k" type="number" value="5" min="1" max="25"></label>
+                    <button type="submit" id="ask-btn">Ask</button>
+                </div>
+            </form>
+
+            <div id="answer" class="answer hidden">
+                <h3>Answer</h3>
+                <div id="answer-body" class="answer-body"></div>
+                <div id="sources" class="sources"></div>
+                <div id="dropped" class="dropped hidden"></div>
+            </div>
+
+            <h3 class="search-heading">Search hits</h3>
+            <div id="results" class="results"></div>
+        </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

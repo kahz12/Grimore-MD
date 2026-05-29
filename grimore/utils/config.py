@@ -43,8 +43,8 @@ class VaultConfig:
     # Document formats Grimore will pick up from the vault, by lowercase
     # extension (no leading dot). Adapters auto-register on import; the
     # default tracks the formats whose adapters ship in the current
-    # version with pure-Python, no-OS-dep support. As of Phase 4 that's
-    # MD, TXT, HTML/HTM, DOCX, PDF, EPUB, RTF, ODT.
+    # version with pure-Python, no-OS-dep support: MD, TXT, HTML/HTM,
+    # DOCX, PDF, EPUB, RTF, ODT.
     #
     # Note: ``doc`` is deliberately absent from the default — it requires
     # the ``antiword`` binary on PATH. Users who have antiword should add
@@ -122,10 +122,22 @@ class CognitionConfig:
     # (handy for parity tests). "sqlite-vec" is the strict opt-in — Connector
     # logs and falls back to numpy if the extension probe fails.
     vector_backend: str = "auto"
+    # LLM backend. ``"ollama"`` (default) keeps the v2.x
+    # behaviour: reads ``OLLAMA_HOST``, talks ``/api/generate``.
+    # ``"openai"`` switches the router to ``POST /v1/chat/completions``
+    # against any OpenAI-compatible server (llama.cpp server, vLLM, LM
+    # Studio, OpenRouter, OpenAI). The backend reads its base URL from
+    # ``llm_base_url`` (or the ``OPENAI_BASE_URL`` env var) and a bearer
+    # token from the env var named by ``llm_api_key_env``. The router's
+    # circuit-breaker and JSON-extraction fallback wrap every backend,
+    # so callers like Oracle don't need to know which one is active.
+    llm_backend: str = "ollama"
+    llm_base_url: str | None = None
+    llm_api_key_env: str = "GRIMORE_LLM_API_KEY"
 
 @dataclass
 class IngestConfig:
-    """Ingest pipeline knobs (Phase 4).
+    """Ingest pipeline knobs.
 
     Defaults match the pure-Python, no-OS-dep baseline so a fresh install
     on Linux / Windows / Termux works without further setup. Heavier
@@ -151,7 +163,7 @@ class IngestConfig:
     # Hard cap on how long a single OCR call may run per page. Saves the
     # daemon from a wedged tesseract on a degenerate scan.
     ocr_timeout_s: int = 30
-    # Chunker engine (Phase 2.2). "markdown" is the v2.1 baseline:
+    # Chunker engine. "markdown" is the v2.1 baseline:
     # paragraph-packed, deterministic, no embed cost during scan. The
     # "semantic" engine embeds each sentence and splits on topic shifts
     # (cosine drop below ``semantic_threshold``) — better retrieval
@@ -161,7 +173,7 @@ class IngestConfig:
     chunker: str = "markdown"
     semantic_threshold: float = 0.55
     chunk_max_chars: int = 1500
-    # Magic-byte sniffer (Phase 5). Off by default to keep installs lean
+    # Magic-byte sniffer. Off by default to keep installs lean
     # and avoid noisy logs on vaults without misnamed files. When True,
     # files whose extension is not in ``vault.formats`` are inspected
     # for their content type via libmagic (``python-magic`` extra) and

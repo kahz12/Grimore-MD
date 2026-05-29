@@ -1,10 +1,10 @@
 """
-Adapter registry + dispatcher tests (multi-format Phase 1).
+Adapter registry + dispatcher tests.
 
-Phase 1 ships only the Markdown adapter, so these tests pin down the
-registry contract itself: lookup by extension, fallback semantics in the
-parser, and that the adapter's output round-trips into ParsedNote
-without losing any of the new multi-format fields.
+These tests pin down the registry contract itself: lookup by extension,
+fallback semantics in the parser, and that the Markdown adapter's
+output round-trips into ParsedNote without losing any of the
+multi-format fields.
 """
 from __future__ import annotations
 
@@ -75,9 +75,10 @@ class TestMarkdownAdapterRoundTrip:
         assert note.title == "H"
 
     def test_parser_falls_back_to_markdown_for_unknown_extension(self, tmp_path):
-        # No PDF adapter ships in Phase 1. The dispatcher must not crash;
-        # it falls through to the Markdown adapter, which then refuses the
-        # file because frontmatter.load() can't parse arbitrary bytes.
+        # For an extension with no registered adapter, the dispatcher
+        # must not crash; it falls through to the Markdown adapter,
+        # which then refuses the file because frontmatter.load() can't
+        # parse arbitrary bytes.
         # Either UTF-8 garbage or a ValueError is acceptable; we just
         # require it doesn't import-crash or AttributeError.
         f = tmp_path / "thing.unknownext"

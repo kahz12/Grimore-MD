@@ -23,20 +23,20 @@ dependencies = [
     # score every chunk with a single matmul instead of a per-row Python loop.
     # Pure-wheel on Linux/Windows/Termux — no native build required.
     "numpy>=1.24.0",
-    # Multi-format ingest (Phase 2): TXT, HTML, DOCX adapters.
+    # Multi-format ingest: TXT, HTML, DOCX adapters.
     # beautifulsoup4 falls back to stdlib html.parser when lxml is absent
-    # (Termux can't always dlopen lxml's .so), so it's the only Phase 2
+    # (Termux can't always dlopen lxml's .so), so it's the only HTML
     # runtime add. DOCX is parsed via stdlib zipfile + xml.etree, so
     # python-docx is not required.
     "beautifulsoup4>=4.12.0",
-    # Multi-format ingest (Phase 3): PDF + EPUB adapters.
+    # Multi-format ingest: PDF + EPUB adapters.
     # pypdf is pure-Python (no native compile); EPUB is parsed via stdlib
     # zipfile + xml.etree with bs4 reused for the chapter XHTML, so the
     # only new wheel is pypdf itself.
     "pypdf>=4.0.0",
-    # Multi-format ingest (Phase 4): RTF adapter. Pure-Python, no native
-    # deps — Termux-safe. ODT is parsed via stdlib (zipfile + xml.etree)
-    # and .doc shells out to antiword when available, so neither adds a
+    # Multi-format ingest: RTF adapter. Pure-Python, no native deps —
+    # Termux-safe. ODT is parsed via stdlib (zipfile + xml.etree) and
+    # .doc shells out to antiword when available, so neither adds a
     # Python dep here.
     "striprtf>=0.0.27",
 ]
@@ -48,8 +48,8 @@ html-fast = ["lxml>=5.1.0"]
 # Richer DOCX extraction (style names, core properties). The built-in
 # stdlib path covers the 90% case without any native deps.
 docx-rich = ["python-docx>=1.1.0"]
-# Phase 4 PDF engine alternatives. Both are opt-in because they're
-# heavier than pypdf and (in PyMuPDF's case) have a stricter licence.
+# Alternative PDF engines. Both are opt-in because they're heavier
+# than pypdf and (in PyMuPDF's case) have a stricter licence.
 pdf-plumber = ["pdfplumber>=0.11"]
 # WARNING: PyMuPDF is AGPL-3.0. Only enable this extra if your usage
 # is compatible with that licence.
@@ -57,13 +57,13 @@ pdf-mupdf = ["pymupdf>=1.24"]
 # OCR fallback for scanned PDFs. Requires the `tesseract` and `poppler`
 # binaries on PATH in addition to the Python wheels here.
 ocr = ["pytesseract>=0.3", "pdf2image>=1.17"]
-# Magic-byte content sniffing (Phase 5). Off by default; enable
+# Magic-byte content sniffing. Off by default; enable
 # `[ingest].sniff_magic` in grimore.toml to route misnamed or
 # extension-less files to the right adapter. Needs libmagic on the
 # system (Linux: `apt install libmagic1`; Termux: `pkg install file`;
 # Windows: install the `python-magic-bin` wheel instead).
 sniff = ["python-magic>=0.4"]
-# Opt-in vector backend (Phase 1.2). When installed and
+# Opt-in vector backend. When installed and
 # [cognition].vector_backend is "auto" (the default) or "sqlite-vec",
 # the connector pushes k-NN ranking into SQLite via the sqlite-vec
 # extension instead of building an in-memory numpy matrix. Worth the
@@ -72,13 +72,23 @@ sniff = ["python-magic>=0.4"]
 # the stdlib `sqlite3` was built with `enable_load_extension` (most
 # distributions ship it, Termux's default Python does as of 3.11).
 vec = ["sqlite-vec>=0.1.0"]
-# Cross-encoder re-ranker (Phase 2.1). Replaces the default LLM-rerank's
+# Cross-encoder re-ranker. Replaces the default LLM-rerank's
 # 15-30 s/query generation with a sub-second forward pass through a
 # small cross-encoder (default BAAI/bge-reranker-base, ~280 MB on first
 # load). Off the install path until users opt in — sentence-transformers
 # pulls in torch, which is a heavy wheel; Termux/ARM users may want to
 # stay on the default "llm" engine.
 reranker = ["sentence-transformers>=2.7"]
+# Local HTTP API + minimal web UI. Off by default so a
+# fresh install doesn't pull in fastapi/uvicorn for users who only
+# need the CLI and shell. ``grimore serve`` checks for this extra at
+# launch and prints the install command if missing.
+serve = ["fastapi>=0.110", "uvicorn>=0.27"]
+# Official MCP SDK. The shipped ``grimore mcp`` server
+# implements the JSON-RPC handshake by hand and does NOT require this
+# extra — declared here for a future opt-in upgrade path to the SDK's
+# transport helpers and richer schema validation.
+mcp = ["mcp>=0.1.0"]
 
 [project.scripts]
 grimore = "grimore.cli:app"
@@ -92,4 +102,5 @@ markers = [
     "e2e: end-to-end test that calls a real Ollama server (auto-skips when none is reachable; opt out with -m 'not e2e').",
     "vec: requires the sqlite-vec extension (auto-skips when unavailable).",
     "reranker: requires sentence-transformers (auto-skips when unavailable).",
+    "serve: requires fastapi + uvicorn (auto-skips when unavailable).",
 ]

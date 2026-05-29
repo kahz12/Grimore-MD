@@ -1,5 +1,5 @@
 """
-Phase 2.1 — re-ranker module + Connector dispatch.
+Re-ranker module + Connector dispatch.
 
 Two backends share the :class:`Reranker` protocol so the Connector can
 swap implementations without ripple. These tests pin down:

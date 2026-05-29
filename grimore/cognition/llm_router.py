@@ -1,15 +1,24 @@
-"""
-Local LLM Routing and JSON Extraction.
-This module handles communication with the Ollama API, implements a circuit breaker
-pattern for robustness, and provides robust JSON extraction from LLM responses.
+"""LLM router with circuit-breaker + pluggable backends.
+
+The router itself is backend-agnostic: it owns the circuit-breaker,
+the JSON-extraction fallback for non-strict servers, and the public
+API that the rest of the codebase has used since v2.x.
+The actual wire format lives in
+:mod:`grimore.cognition.llm_backends.ollama` and
+:mod:`grimore.cognition.llm_backends.openai`.
+
+Backwards compat note: existing call sites
+(``oracle.router.complete(...)``, ``tagger.router.complete(...)``,
+``router.complete_streaming(...)``, ``router.list_installed_models()``)
+keep working unchanged. Tests that mock ``LLMRouter`` continue to mock
+the same public surface.
 """
 import json
-import os
 import re
 import time
 from typing import Any, Iterator, Optional
 
-from grimore.utils.http import build_session
+from grimore.cognition.llm_backends import LLMBackend, build_backend
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
 
@@ -26,7 +35,7 @@ def _extract_json_object(text: str) -> Optional[dict]:
     1. Direct parse of the entire text.
     2. Extraction from Markdown fenced code blocks (```json ... ```).
     3. Bracket-balanced substring starting at the first '{'.
-    
+
     Returns None if all strategies fail.
     """
     if not text:
@@ -86,23 +95,39 @@ def _extract_json_object(text: str) -> Optional[dict]:
 
 
 class LLMRouter:
-    """
-    Routes completion requests to the local Ollama backend.
-    Implements a circuit breaker to prevent hammering the service if it's down.
+    """Dispatch completion calls to the configured backend.
+
+    Owns:
+
+    * **Circuit breaker** — after ``_FAILURE_THRESHOLD`` back-to-back
+      failures, calls short-circuit for ``_COOLDOWN_SECONDS`` so we
+      don't hammer a dead backend.
+    * **JSON extraction** — backends return raw strings; this class
+      runs :func:`_extract_json_object` when ``json_format=True`` so
+      servers that don't honour ``response_format`` still mostly work.
+
+    The router holds the backend as ``self.backend``. The legacy
+    attribute ``self.ollama_host`` is preserved (pointing at the
+    backend's host) so any code that read it for logging keeps
+    working — but no production code should reach into it.
     """
     # Circuit breaker: after N back-to-back failures, short-circuit calls
-    # for COOLDOWN_SECONDS so we don't hammer a dead Ollama.
+    # for COOLDOWN_SECONDS so we don't hammer a dead backend.
     _FAILURE_THRESHOLD = 5
     _COOLDOWN_SECONDS = 120
 
-    def __init__(self, config):
+    def __init__(self, config, *, backend: Optional[LLMBackend] = None):
         self.config = config
-        raw_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        # Ensure the host is valid and safe (especially if allow_remote is False)
-        self.ollama_host = SecurityGuard.validate_llm_host(
-            raw_host, allow_remote=config.cognition.allow_remote
+        self.backend: LLMBackend = backend or build_backend(config)
+        # Legacy alias kept for code that surfaced the host in logs or
+        # error messages. Points at whatever URL the backend is using
+        # — Ollama's host or the OpenAI base URL — so the field stays
+        # informative without breaking the contract.
+        self.ollama_host = getattr(
+            self.backend, "host",
+            getattr(self.backend, "base_url", ""),
         )
-        self.session = build_session()
+        self.session = getattr(self.backend, "session", None)
         self._consecutive_failures = 0
         self._open_until = 0.0
 
@@ -135,76 +160,52 @@ class LLMRouter:
         model_override: str = None,
         json_format: bool = True,
     ) -> Any:
-        """
-        Sends a completion request to Ollama.
-        If json_format=True, attempts to parse and return a dictionary.
-        Returns None if the circuit is open or if the request fails.
+        """One-shot completion via the active backend.
+
+        Returns:
+            * the raw answer string when ``json_format`` is False,
+            * a parsed ``dict`` when ``json_format`` is True and JSON
+              extraction succeeds,
+            * ``None`` on circuit-open, network failure, or unparseable
+              JSON.
         """
         if self._circuit_open():
             logger.warning("llm_skipped_circuit_open")
             return None
 
-        model = model_override or self.config.cognition.model_llm_local
-
-        try:
-            url = f"{self.ollama_host}/api/generate"
-            payload = {
-                "model": model,
-                "prompt": prompt,
-                "system": system_prompt,
-                "stream": False,
-            }
-            if json_format:
-                payload["format"] = "json"
-
-            response = self.session.post(
-                url, json=payload, timeout=self.config.cognition.request_timeout_s
-            )
-            response.raise_for_status()
-            result = response.json()
-            raw_response = result.get("response", "")
-
-            if json_format:
-                parsed = _extract_json_object(raw_response)
-                if parsed is None:
-                    logger.warning(
-                        "llm_json_parse_failed",
-                        raw=SecurityGuard.redact_for_log(raw_response),
-                    )
-                    self._record_failure()
-                    return None
-                self._record_success()
-                return parsed
-
-            self._record_success()
-            return raw_response
-
-        except Exception as e:
-            logger.error("llm_call_failed", model=model, error=str(e))
+        raw = self.backend.complete(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            model_override=model_override,
+            json_format=json_format,
+        )
+        if raw is None:
             self._record_failure()
             return None
 
-    def list_installed_models(self) -> list[dict]:
-        """Return the models installed in the local Ollama (`/api/tags`).
+        if json_format:
+            parsed = _extract_json_object(raw if isinstance(raw, str) else "")
+            if parsed is None:
+                logger.warning(
+                    "llm_json_parse_failed",
+                    raw=SecurityGuard.redact_for_log(raw if isinstance(raw, str) else ""),
+                )
+                self._record_failure()
+                return None
+            self._record_success()
+            return parsed
 
-        Each entry is ``{"name": str, "size": int}`` in the order Ollama
-        reports them. Empty list on any failure (logged) so callers can
-        handle "Ollama down" and "vault has no models" the same way.
+        self._record_success()
+        return raw
+
+    def list_installed_models(self) -> list[dict]:
+        """Pass-through to the backend's model listing.
+
+        Each entry is ``{"name": str, "size": int}`` in whatever order
+        the backend reports. Empty list on any failure so callers can
+        handle "backend down" and "no models" the same way.
         """
-        try:
-            url = f"{self.ollama_host}/api/tags"
-            response = self.session.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            models = data.get("models", []) or []
-            return [
-                {"name": m.get("name", ""), "size": int(m.get("size", 0) or 0)}
-                for m in models
-                if m.get("name")
-            ]
-        except Exception as e:
-            logger.error("ollama_list_failed", error=str(e))
-            return []
+        return self.backend.list_installed_models()
 
     def complete_streaming(
         self,
@@ -212,12 +213,7 @@ class LLMRouter:
         system_prompt: str = "",
         model_override: Optional[str] = None,
     ) -> Iterator[str]:
-        """Yield response chunks as Ollama emits them (NDJSON stream).
-
-        Used by the interactive shell so the user sees the answer being
-        typed instead of waiting for the full payload. Always plain text
-        (no json_format) — the Oracle uses this only for the final answer
-        rendering, never for structured calls like the tagger.
+        """Yield response chunks as the backend emits them.
 
         Errors degrade silently: an empty iterator is returned and the
         circuit-breaker counter advances, so callers can fall back to
@@ -227,41 +223,22 @@ class LLMRouter:
             logger.warning("llm_skipped_circuit_open")
             return
 
-        model = model_override or self.config.cognition.model_llm_local
-        url = f"{self.ollama_host}/api/generate"
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "system": system_prompt,
-            "stream": True,
-        }
-
+        got_anything = False
         try:
-            with self.session.post(
-                url,
-                json=payload,
-                timeout=self.config.cognition.stream_timeout_s,
-                stream=True,
-            ) as resp:
-                resp.raise_for_status()
-                got_anything = False
-                for line in resp.iter_lines(decode_unicode=True):
-                    if not line:
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    piece = chunk.get("response", "")
-                    if piece:
-                        got_anything = True
-                        yield piece
-                    if chunk.get("done"):
-                        break
-            if got_anything:
-                self._record_success()
-            else:
-                self._record_failure()
+            for piece in self.backend.complete_streaming(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                model_override=model_override,
+            ):
+                if piece:
+                    got_anything = True
+                    yield piece
         except Exception as e:
-            logger.error("llm_stream_failed", model=model, error=str(e))
+            logger.error("llm_stream_failed", error=str(e))
+            self._record_failure()
+            return
+
+        if got_anything:
+            self._record_success()
+        else:
             self._record_failure()

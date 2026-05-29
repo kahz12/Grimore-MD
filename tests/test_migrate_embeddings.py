@@ -1,5 +1,5 @@
 """
-Embedding-model hot-swap (Phase 1.3).
+Embedding-model hot-swap.
 
 The migration is split into three primitives:
 

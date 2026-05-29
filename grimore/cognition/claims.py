@@ -1,9 +1,9 @@
 """
 ClaimExtractor — atomic factual claim extraction.
 
-Phase 0 of the Black Mirror pipeline: turn each note into a small set
-of atomic, declarative claims that can be embedded and pairwise-checked
-for contradictions. The LLM produces just the text (paraphrased into a
+First stage of the Black Mirror pipeline: turn each note into a small
+set of atomic, declarative claims that can be embedded and pairwise-
+checked for contradictions. The LLM produces just the text (paraphrased into a
 single declarative sentence is fine); we derive the source offsets via
 a substring search when possible, falling back to ``None`` when the
 LLM rephrased too aggressively to map back.

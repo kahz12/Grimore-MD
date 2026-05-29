@@ -1382,5 +1382,128 @@ def shell():
         session.close()
 
 
+@app.command(rich_help_panel="Integrations")
+def mcp(
+    json_logs: bool = typer.Option(
+        True, "--json/--no-json",
+        help="Emit logs as JSON (default). MCP clients spawn the process "
+             "and capture stderr, so JSON logs are easier to grep later.",
+    ),
+):
+    """
+    🔌 Run the Grimore MCP (Model Context Protocol) server over stdio.
+
+    Exposes read-only tools — [bold]grimore_ask[/], [bold]grimore_search[/],
+    [bold]grimore_get_note[/], [bold]grimore_connect[/], and
+    [bold]grimore_list_categories[/] — to MCP-aware clients like Claude
+    Desktop, Cursor, and Zed. The vault stays read-only; scan and migrate
+    operations remain on the CLI.
+
+    Typical Claude Desktop setup (in [cyan]claude_desktop_config.json[/]):
+
+        \b
+        {
+          "mcpServers": {
+            "grimore": {
+              "command": "grimore",
+              "args": ["mcp"]
+            }
+          }
+        }
+    """
+    setup_logger(json_format=json_logs)
+    config = load_config()
+    # Validate before we hand off stdio: a failed preflight at this
+    # point would otherwise be invisible to the client (the server is
+    # supposed to greet the initialize handshake immediately).
+    _preflight_or_exit(config, check_git=False)
+
+    from grimore.mcp_server import run_stdio
+    session = Session(config)
+    try:
+        run_stdio(session=session)
+    finally:
+        session.close()
+
+
+@app.command(rich_help_panel="Integrations")
+def serve(
+    host: str = typer.Option(
+        "127.0.0.1", "--host",
+        help="Bind address. Default is loopback only. Use a non-loopback "
+             "address with --allow-lan to expose on a LAN.",
+    ),
+    port: int = typer.Option(8000, "--port", "-p"),
+    allow_lan: bool = typer.Option(
+        False, "--allow-lan",
+        help="Required when --host is non-loopback. Acknowledges the vault "
+             "will be reachable from other machines on the network.",
+    ),
+    api_token: Optional[str] = typer.Option(
+        None, "--api-token",
+        help="Bearer token required on every POST. Read from env "
+             "GRIMORE_API_TOKEN if unset. Required for any non-loopback bind.",
+        envvar="GRIMORE_API_TOKEN",
+    ),
+    cors_origin: Optional[str] = typer.Option(
+        None, "--cors-origin",
+        help="Allow this origin via CORS. No wildcards. Off by default.",
+    ),
+    json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format."),
+):
+    """
+    🌐 Run the Grimore HTTP API and minimal web UI.
+
+    Exposes the same read-only surface as the MCP server, plus a single-
+    page UI at [cyan]/[/]. Loopback by default — explicitly pass
+    [cyan]--allow-lan[/] together with a non-loopback [cyan]--host[/] to
+    expose on a LAN, in which case [cyan]--api-token[/] becomes
+    mandatory.
+    """
+    setup_logger(json_format=json_logs)
+    config = load_config()
+    _preflight_or_exit(config, check_git=False)
+
+    try:
+        from grimore.api.app import build_app
+    except ImportError:
+        console.print(ui.error_panel(
+            "FastAPI / uvicorn aren't installed.\n"
+            "Install the extra: [cyan]pip install 'grimore[serve]'[/].",
+            title="serve unavailable",
+        ))
+        raise typer.Exit(code=1)
+
+    is_loopback = host in ("127.0.0.1", "localhost", "::1")
+    if not is_loopback and not allow_lan:
+        console.print(ui.error_panel(
+            f"[bold]--host {host}[/] is non-loopback; pass [cyan]--allow-lan[/] "
+            f"to confirm and provide [cyan]--api-token[/] for auth.",
+            title="LAN bind requires --allow-lan",
+        ))
+        raise typer.Exit(code=1)
+    if not is_loopback and not api_token:
+        console.print(ui.error_panel(
+            "Non-loopback binds require [cyan]--api-token[/] (or "
+            "[cyan]GRIMORE_API_TOKEN[/] env).",
+            title="Missing API token",
+        ))
+        raise typer.Exit(code=1)
+
+    session = Session(config)
+    app_ = build_app(session, api_token=api_token, cors_origin=cors_origin)
+    console.print(ui.success_panel(
+        f"Grimore API listening on [bold cyan]http://{host}:{port}[/].\n"
+        f"{'Token auth ON' if api_token else 'No token — loopback only.'}",
+        title="serve",
+    ))
+
+    import uvicorn
+    try:
+        uvicorn.run(app_, host=host, port=port, log_config=None)
+    finally:
+        session.close()
+
+
 if __name__ == "__main__":
     app()

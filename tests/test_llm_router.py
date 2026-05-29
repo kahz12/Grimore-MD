@@ -47,10 +47,17 @@ class TestExtractJsonObject:
 
 
 def _router_with_config(cognition: CognitionConfig) -> LLMRouter:
+    """Construct a router with a MagicMocked HTTP session.
+
+    The backend refactor moved the wire layer into ``router.backend``
+    (an ``OllamaBackend`` by default). Patching the backend's ``session``
+    lets these tests keep asserting on the HTTP call shape without
+    knowing the dispatcher exists.
+    """
     cfg = Config()
     cfg.cognition = cognition
     router = LLMRouter(cfg)
-    router.session = MagicMock()
+    router.backend.session = MagicMock()
     return router
 
 
@@ -61,11 +68,11 @@ class TestRequestTimeoutWiring:
         router = _router_with_config(CognitionConfig(request_timeout_s=181))
         resp = MagicMock()
         resp.json.return_value = {"response": '{"answer": "ok"}'}
-        router.session.post.return_value = resp
+        router.backend.session.post.return_value = resp
 
         router.complete("hi", system_prompt="sys")
 
-        kwargs = router.session.post.call_args.kwargs
+        kwargs = router.backend.session.post.call_args.kwargs
         assert kwargs["timeout"] == 181
 
     def test_complete_streaming_uses_stream_timeout_from_config(self):
@@ -75,11 +82,11 @@ class TestRequestTimeoutWiring:
         resp.__enter__.return_value = resp
         resp.__exit__.return_value = False
         resp.iter_lines.return_value = iter([])
-        router.session.post.return_value = resp
+        router.backend.session.post.return_value = resp
 
         list(router.complete_streaming("hi", system_prompt="sys"))
 
-        kwargs = router.session.post.call_args.kwargs
+        kwargs = router.backend.session.post.call_args.kwargs
         assert kwargs["timeout"] == 240
 
     def test_defaults_match_pre_config_behavior(self):
@@ -99,7 +106,7 @@ class TestListInstalledModels:
                 {"name": "nomic-embed-text", "size": 274_000_000},
             ]
         }
-        router.session.get.return_value = resp
+        router.backend.session.get.return_value = resp
 
         out = router.list_installed_models()
 
@@ -108,12 +115,12 @@ class TestListInstalledModels:
 
     def test_empty_list_on_http_failure(self):
         router = _router_with_config(CognitionConfig())
-        router.session.get.side_effect = RuntimeError("boom")
+        router.backend.session.get.side_effect = RuntimeError("boom")
         assert router.list_installed_models() == []
 
     def test_skips_entries_without_name(self):
         router = _router_with_config(CognitionConfig())
         resp = MagicMock()
         resp.json.return_value = {"models": [{"size": 1}, {"name": "ok"}]}
-        router.session.get.return_value = resp
+        router.backend.session.get.return_value = resp
         assert [m["name"] for m in router.list_installed_models()] == ["ok"]

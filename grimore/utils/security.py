@@ -95,8 +95,13 @@ class SecurityGuard:
     @staticmethod
     def validate_llm_host(url: str, allow_remote: bool = False) -> str:
         """
-        Validates the Ollama host URL to prevent SSRF or unauthorized remote access.
-        If allow_remote is False, only loopback addresses (localhost/127.0.0.1) are permitted.
+        Validates an LLM-backend URL to prevent SSRF or unauthorized
+        remote access. Used by every backend (Ollama, OpenAI-compatible)
+        and by the embedder.
+
+        If ``allow_remote`` is False, only loopback addresses
+        (``localhost`` / ``127.0.0.1`` / ``::1``) are permitted. When
+        ``allow_remote`` is True the URL must use ``https``.
         """
         cache_key = (url, bool(allow_remote))
         if not allow_remote:
@@ -110,14 +115,14 @@ class SecurityGuard:
 
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
-            raise ValueError(f"OLLAMA_HOST scheme must be http(s): {url!r}")
+            raise ValueError(f"LLM host scheme must be http(s): {url!r}")
         if not parsed.hostname:
-            raise ValueError(f"OLLAMA_HOST is missing a hostname: {url!r}")
+            raise ValueError(f"LLM host is missing a hostname: {url!r}")
 
         try:
             infos = socket.getaddrinfo(parsed.hostname, None)
         except socket.gaierror as exc:
-            raise ValueError(f"OLLAMA_HOST does not resolve: {url!r}") from exc
+            raise ValueError(f"LLM host does not resolve: {url!r}") from exc
 
         addrs = {ipaddress.ip_address(info[4][0]) for info in infos}
         all_loopback = all(addr.is_loopback for addr in addrs)
@@ -125,10 +130,10 @@ class SecurityGuard:
         if not all_loopback:
             if not allow_remote:
                 raise ValueError(
-                    f"OLLAMA_HOST {url!r} is non-loopback but cognition.allow_remote is false"
+                    f"LLM host {url!r} is non-loopback but cognition.allow_remote is false"
                 )
             if parsed.scheme != "https":
-                raise ValueError(f"Remote OLLAMA_HOST must use https: {url!r}")
+                raise ValueError(f"Remote LLM host must use https: {url!r}")
 
         if not allow_remote:
             SecurityGuard._host_cache[cache_key] = (url, time.monotonic())

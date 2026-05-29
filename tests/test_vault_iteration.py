@@ -1,5 +1,5 @@
 """
-Tests for ``iter_vault_documents`` (Phase 1).
+Tests for ``iter_vault_documents``.
 
 Pins down: (a) multi-extension enumeration is deterministic and respects
 ``ignored_dirs``; (b) the sidecar tree is never re-enumerated, so the

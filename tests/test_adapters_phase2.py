@@ -1,5 +1,5 @@
 """
-Per-adapter unit tests for the Phase 2 formats (TXT, HTML, DOCX).
+Per-adapter unit tests for the TXT + HTML + DOCX formats.
 
 Each test builds its fixture in-process — no binary blobs in the repo.
 For DOCX we hand-craft the minimal Office Open XML zip the stdlib

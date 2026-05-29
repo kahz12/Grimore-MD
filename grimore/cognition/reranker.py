@@ -1,5 +1,5 @@
 """
-Second-stage re-rankers (Phase 2.1).
+Second-stage re-rankers.
 
 The hybrid retriever returns an RRF-fused pool that's only as good as the
 ranks coming in. A second-stage re-rank step scores the head of that pool

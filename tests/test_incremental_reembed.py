@@ -1,5 +1,5 @@
 """
-Chunk-level incremental re-embedding (Phase 1.1).
+Chunk-level incremental re-embedding.
 
 The old code did ``DELETE FROM embeddings WHERE note_id = ?`` before
 re-indexing on every content change, which forced a full re-embed even

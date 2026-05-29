@@ -1,5 +1,5 @@
 """
-Multi-format DB migration tests (Phase 1).
+Multi-format DB migration tests.
 
 The migration must be idempotent: running it on a v2.0 schema (notes
 table without ``format`` / ``file_hash`` / ``sidecar_path`` / ``size_bytes``,

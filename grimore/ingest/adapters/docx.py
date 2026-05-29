@@ -5,7 +5,7 @@ Avoiding ``python-docx`` (and therefore ``lxml``) keeps the install
 footprint zero-native-dep and sidesteps the Termux dynamic-linker
 namespace issue that prevents lxml's .so from dlopening inside a venv.
 Users who want richer DOCX handling can install the ``docx-rich`` extra
-and pin a fork of this adapter — Phase 2 covers the 90% case here.
+and pin a fork of this adapter — this one covers the 90% case.
 
 The .docx container is a well-specified zip:
 

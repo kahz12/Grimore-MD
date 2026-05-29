@@ -211,7 +211,7 @@ class TestDaemonConfig:
         assert isinstance(cfg.daemon, DaemonConfig)
 
     def test_phase0_observer_fields_have_sensible_defaults(self):
-        # Phase 0.2: new knobs are present, off/sane by default so the v2.1
+        # The observer knobs are present, off/sane by default so the v2.1
         # behaviour is unchanged for users who don't touch [daemon].
         cfg = DaemonConfig()
         assert cfg.debounce_seconds == 45

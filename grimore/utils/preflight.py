@@ -360,9 +360,9 @@ class PreflightChecker:
         """One ✓/✗ per enabled format in ``[vault].formats``.
 
         Built-ins with no third-party dep (txt, docx) are always ✓.
-        Formats whose adapter isn't shipped yet (pdf/epub/rtf/odt in
-        Phase 2) surface a warning so the user knows the extension is
-        configured but the loader will skip it.
+        Formats whose adapter isn't shipped yet surface a warning so the
+        user knows the extension is configured but the loader will skip
+        it.
         """
         formats = list(self.config.vault.formats) or ["md"]
         probes = self._adapter_probes()

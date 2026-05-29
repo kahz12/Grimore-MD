@@ -1,5 +1,5 @@
 """
-Magic-byte sniffer tests (Phase 5).
+Magic-byte sniffer tests.
 
 The sniffer is opt-in and bridges the gap between content type and
 adapter dispatch when a file is misnamed or has no extension. These
@@ -194,9 +194,9 @@ class TestParserIntegration:
     """
 
     def _make_pdf_bytes(self):
-        """Build a one-page PDF in-memory. The PDF adapter is wired in
-        from Phase 3, so we can round-trip a real document instead of
-        mocking the adapter out."""
+        """Build a one-page PDF in-memory. The PDF adapter is wired in,
+        so we can round-trip a real document instead of mocking the
+        adapter out."""
         try:
             from pypdf import PdfWriter
         except ImportError:  # pragma: no cover - pypdf is a hard dep
