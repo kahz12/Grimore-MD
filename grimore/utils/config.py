@@ -3,6 +3,7 @@ Configuration Management.
 This module defines the project's configuration schema using dataclasses
 and handles loading settings from 'grimore.toml' and environment variables.
 """
+import os
 import re
 from pathlib import Path
 import tomllib
@@ -244,9 +245,15 @@ class ShellConfig:
 
     ``fuzzy_threshold`` (0–100) is the minimum rapidfuzz score for an
     ``@`` completion to appear in the popup. Lower = more lenient.
+
+    ``threads_dir`` is where ``/thread save`` writes JSONL conversation
+    transcripts. Relative paths resolve under ``Path.home()`` so the
+    default lives at ``~/.grimore/threads`` regardless of cwd; absolute
+    paths are honoured as-is.
     """
     vi_mode: bool = False
     fuzzy_threshold: int = 55
+    threads_dir: str = ".grimore/threads"
 
 
 @dataclass
@@ -285,7 +292,14 @@ class DaemonConfig:
 
 @dataclass
 class Config:
-    """Main configuration container."""
+    """Main configuration container.
+
+    ``active_profile`` is informational — it carries the name of the
+    selected ``[profiles.<name>]`` block when one is active, so the
+    status dashboard can surface it. It does not affect dataclass
+    hydration: profiles are deep-merged in :func:`load_config` *before*
+    sections are converted to dataclasses.
+    """
     vault: VaultConfig = field(default_factory=VaultConfig)
     cognition: CognitionConfig = field(default_factory=CognitionConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
@@ -295,6 +309,7 @@ class Config:
     chronicler: ChroniclerConfig = field(default_factory=ChroniclerConfig)
     daemon: DaemonConfig = field(default_factory=DaemonConfig)
     shell: ShellConfig = field(default_factory=ShellConfig)
+    active_profile: str | None = None
 
 def _filter_known(cls, data: dict, section: str) -> dict:
     """
@@ -314,17 +329,88 @@ def _filter_known(cls, data: dict, section: str) -> dict:
     return filtered
 
 
-def load_config(config_path: str = "grimore.toml") -> Config:
+# Module-level slot for the CLI flag ``--profile/-P``. Set by the Typer
+# callback once per invocation; ``load_config`` consults it before the
+# environment variable so a flag beats an env var. Tests should clear
+# this between cases via :func:`set_active_profile(None)`.
+_ACTIVE_PROFILE: str | None = None
+
+
+def set_active_profile(name: str | None) -> None:
+    """Stash the CLI's ``--profile`` choice so later :func:`load_config`
+    calls pick it up without having to thread the argument through every
+    command. Pass ``None`` to clear the override (used by tests)."""
+    global _ACTIVE_PROFILE
+    _ACTIVE_PROFILE = name or None
+
+
+def get_active_profile() -> str | None:
+    """Return the currently-stashed profile name, or ``None``."""
+    return _ACTIVE_PROFILE
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively merge ``overlay`` over ``base``.
+
+    Dict values merge key-by-key; scalars and lists are replaced
+    wholesale (we deliberately do not concatenate lists — a profile that
+    sets ``formats = ["md"]`` means "only Markdown", not "Markdown
+    *also*"). Returns a fresh dict; neither input is mutated.
+    """
+    result = dict(base)
+    for key, value in overlay.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _resolve_profile_name(profile: str | None) -> str | None:
+    """Pick the active profile. Precedence: explicit arg > CLI flag stash
+    > ``GRIMORE_PROFILE`` env var."""
+    if profile:
+        return profile
+    if _ACTIVE_PROFILE:
+        return _ACTIVE_PROFILE
+    env = os.environ.get("GRIMORE_PROFILE", "").strip()
+    return env or None
+
+
+def load_config(config_path: str = "grimore.toml", *, profile: str | None = None) -> Config:
     """
     Loads configuration from a TOML file.
     Falls back to default values if the file is missing or partially defined.
+
+    If a profile is selected (via the ``profile`` argument, the CLI flag,
+    or the ``GRIMORE_PROFILE`` env var), the matching
+    ``[profiles.<name>]`` block is deep-merged over the top-level
+    sections before dataclass hydration. An unknown profile raises
+    ``ValueError`` with the list of known names so the user sees a clear
+    message rather than a silent fallback to defaults.
     """
     path = Path(config_path)
+    profile_name = _resolve_profile_name(profile)
+
     if not path.exists():
+        if profile_name:
+            raise ValueError(
+                f"Cannot apply profile {profile_name!r}: no {config_path} found."
+            )
         return Config()
 
     with open(path, "rb") as f:
         data = tomllib.load(f)
+
+    if profile_name:
+        profiles = data.get("profiles") or {}
+        if profile_name not in profiles:
+            known = ", ".join(sorted(profiles)) or "(none defined)"
+            raise ValueError(
+                f"Unknown profile {profile_name!r}. Known profiles: {known}."
+            )
+        overlay = profiles[profile_name] or {}
+        data = _deep_merge(data, overlay)
 
     return Config(
         vault=VaultConfig(**_filter_known(VaultConfig, data.get("vault", {}), "vault")),
@@ -336,6 +422,7 @@ def load_config(config_path: str = "grimore.toml") -> Config:
         chronicler=ChroniclerConfig(**_filter_known(ChroniclerConfig, data.get("chronicler", {}), "chronicler")),
         daemon=DaemonConfig(**_filter_known(DaemonConfig, data.get("daemon", {}), "daemon")),
         shell=ShellConfig(**_filter_known(ShellConfig, data.get("shell", {}), "shell")),
+        active_profile=profile_name,
     )
 
 

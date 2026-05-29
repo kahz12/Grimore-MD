@@ -29,6 +29,7 @@ from grimore.operations import (
     _do_daemon_status,
     _do_distill,
     _do_eval,
+    _do_graph_export,
     _do_migrate_embeddings,
     _do_mirror_dismiss,
     _do_mirror_list,
@@ -41,7 +42,7 @@ from grimore.output.git_guard import GitGuard
 from grimore.output.link_injector import LinkInjector
 from grimore.session import Session
 from grimore.utils import ui
-from grimore.utils.config import is_ignored_path, load_config
+from grimore.utils.config import load_config, set_active_profile
 from grimore.utils.logger import get_logger, setup_logger
 from grimore.utils.preflight import PreflightChecker, PreflightReport
 from grimore.utils.security import SecurityGuard
@@ -49,7 +50,7 @@ from grimore.utils.security import SecurityGuard
 
 # Define the Typer application with metadata for the help screen
 app = typer.Typer(
-    help="🔮 [bold medium_purple3]Grimore v2.1[/] — Automated Knowledge Engine",
+    help="🔮 [bold medium_purple3]Grimore v3.1[/] — Automated Knowledge Engine",
     rich_markup_mode="rich",
     no_args_is_help=True,
     add_completion=False,
@@ -79,8 +80,17 @@ def _main(
         is_eager=True,
         help="Show the Grimore version and exit.",
     ),
+    profile: Optional[str] = typer.Option(
+        None,
+        "--profile",
+        "-P",
+        help="Activate a [profiles.<name>] block from grimore.toml. "
+             "Beats the GRIMORE_PROFILE environment variable.",
+    ),
 ) -> None:
     """🔮 Grimore — Automated Knowledge Engine."""
+    if profile:
+        set_active_profile(profile)
 
 
 def _mode_badge(is_dry_run: bool) -> Text:
@@ -822,15 +832,21 @@ def _render_status_dashboard(config) -> None:
     from grimore import __version__
 
     ui.section("Vault")
-    console.print(ui.kv_table([
+    profile_name = getattr(config, "active_profile", None)
+    rows = [
         ("Version",      Text(__version__, style="grimore.muted")),
+    ]
+    if profile_name:
+        rows.append(("Profile", Text(profile_name, style="grimore.accent")))
+    rows.extend([
         ("Path",         Text(config.vault.path, style="grimore.accent")),
         ("Notes",        ui.coverage_bar(tagged_notes, total_notes)),
         ("Chunks",       Text(str(total_embeddings), style="grimore.accent")),
         ("Cache",        Text(f"{cached_embeddings} vectors", style="grimore.accent")),
         ("Mode",         _mode_badge(config.output.dry_run)),
         ("Auto-commit",  Text("yes" if config.output.auto_commit else "no", style="grimore.accent")),
-    ]))
+    ])
+    console.print(ui.kv_table(rows))
 
     ui.section("Cognition")
     backend_name = getattr(config.cognition, "llm_backend", "ollama") or "ollama"
@@ -1326,6 +1342,51 @@ def mirror_resolve_cmd(
     ui.command_header("mirror resolve", str(contradiction_id))
     try:
         _do_mirror_resolve(session, contradiction_id)
+    finally:
+        session.close()
+
+
+graph_app = typer.Typer(
+    help="🕸️  Export the vault's note graph (wikilinks + suggestions + contradictions).",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+app.add_typer(graph_app, name="graph", rich_help_panel="Knowledge ops")
+
+
+@graph_app.command("export")
+def graph_export_cmd(
+    output: Path = typer.Argument(..., help="Where to write the export."),
+    fmt: str = typer.Option(
+        "json", "--format", "-f",
+        help="Output format: json | dot | obsidian-canvas.",
+    ),
+    suggested: bool = typer.Option(
+        True, "--suggested/--no-suggested",
+        help="Include Connector-suggested edges (slower; requires embeddings).",
+    ),
+    suggested_top: int = typer.Option(
+        3, "--suggested-top",
+        help="Top-K semantic neighbours per note when --suggested is on.",
+    ),
+    suggested_threshold: float = typer.Option(
+        0.7, "--suggested-threshold",
+        help="Drop suggested edges with cosine below this score.",
+    ),
+):
+    """🕸️ Write the vault's note graph in the chosen format."""
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    try:
+        _do_graph_export(
+            session,
+            output=output,
+            fmt=fmt,
+            include_suggested=suggested,
+            suggested_top=suggested_top,
+            suggested_threshold=suggested_threshold,
+        )
     finally:
         session.close()
 

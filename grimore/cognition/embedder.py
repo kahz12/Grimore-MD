@@ -8,7 +8,7 @@ import os
 import struct
 from typing import Iterable, List, Optional, Protocol
 
-from grimore.cognition.chunker import Chunk, chunk_markdown, chunk_sections
+from grimore.cognition.chunker import chunk_markdown, chunk_sections
 from grimore.ingest.adapters.base import ExtractedSection
 from grimore.utils.http import build_session
 from grimore.utils.logger import get_logger

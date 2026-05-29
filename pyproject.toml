@@ -1,6 +1,6 @@
 [project]
 name = "grimore"
-version = "2.1.0"
+version = "3.1.0"
 description = "Automated Knowledge Engine for your Markdown Vault"
 readme = "README.md"
 requires-python = ">=3.11"

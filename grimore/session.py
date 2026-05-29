@@ -9,6 +9,9 @@ cost on the embedder + router.
 """
 from __future__ import annotations
 
+import json
+import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -79,6 +82,75 @@ class Session:
         self.last_question = None
         self.last_answer = None
         self.question_log = []
+
+    @staticmethod
+    def slugify(text: str, *, max_words: int = 6) -> str:
+        """Turn a question into a filesystem-safe slug.
+
+        Lowercases, keeps `[a-z0-9]` runs only, joins with ``-``, caps
+        to the first ``max_words`` words. Empty input falls back to
+        ``"thread"`` so callers never write a bare ``.jsonl`` filename.
+        """
+        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        if not words:
+            return "thread"
+        return "-".join(words[:max_words])
+
+    def save_turns(self, path: Path) -> Path:
+        """Write the rolling :attr:`turns` to ``path`` as JSONL.
+
+        Each line is a single turn JSON object enriched with a wall-clock
+        ``ts`` field so listings can sort by recency without stat'ing the
+        file's mtime. Atomic rename: write to ``path.tmp`` then replace,
+        so a crash mid-write can't leave a half-flushed thread on disk.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        now = time.time()
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            for turn in self.turns:
+                row = {
+                    "ts": now,
+                    "q": turn.get("q", ""),
+                    "a": turn.get("a", ""),
+                    "sources": list(turn.get("sources") or []),
+                }
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp.replace(path)
+        return path
+
+    def load_turns(self, path: Path) -> int:
+        """Load JSONL turns from ``path`` into :attr:`turns`.
+
+        Replaces (does not extend) the current turns, then re-applies the
+        :attr:`MAX_TURNS` window. Also primes ``last_question`` /
+        ``last_answer`` from the final loaded turn so ``/again`` and
+        ``/why`` work immediately after a resume. Returns the number of
+        turns actually loaded after the cap is applied.
+        """
+        path = Path(path)
+        loaded: list[dict] = []
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                loaded.append({
+                    "q": row.get("q", ""),
+                    "a": row.get("a", ""),
+                    "sources": list(row.get("sources") or []),
+                })
+        self.turns = loaded[-self.MAX_TURNS:] if loaded else []
+        if self.turns:
+            last = self.turns[-1]
+            self.last_question = last["q"]
+            self.last_answer = {
+                "answer": last["a"],
+                "sources": list(last["sources"]),
+            }
+        return len(self.turns)
 
     @property
     def db(self) -> Database:

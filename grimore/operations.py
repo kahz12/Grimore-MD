@@ -947,3 +947,62 @@ def _do_distill(
                 ("  • ", "grimore.muted"),
                 (f"[[{src}]]", "grimore.accent"),
             ))
+
+
+# ── Knowledge-graph export ────────────────────────────────────────────────
+
+
+def _do_graph_export(
+    session: Session,
+    *,
+    output: Path,
+    fmt: str,
+    include_suggested: bool = True,
+    suggested_top: int = 3,
+    suggested_threshold: float = 0.7,
+) -> dict:
+    """Body of ``grimore graph export``.
+
+    Builds the graph (nodes + edges) then routes through the format
+    writer. Returns the ``graph.stats()`` dict so callers (tests, the
+    shell) can assert on counts without re-reading the file.
+    """
+    from grimore.cognition.graph import build_graph, write_graph, SUPPORTED_FORMATS
+
+    fmt_lc = (fmt or "").lower()
+    if fmt_lc in ("canvas",):
+        fmt_lc = "obsidian-canvas"
+    if fmt_lc not in SUPPORTED_FORMATS:
+        console.print(ui.error_panel(
+            f"Unsupported format: [bold]{fmt}[/].\n"
+            f"Choose one of: [cyan]{', '.join(SUPPORTED_FORMATS)}[/].",
+            title="Graph export",
+        ))
+        raise typer.Exit(code=1)
+
+    ui.command_header(
+        "graph export",
+        f"→ {output} · format={fmt_lc} · suggested={'on' if include_suggested else 'off'}",
+    )
+    graph = build_graph(
+        session,
+        include_suggested=include_suggested,
+        suggested_top=suggested_top,
+        suggested_threshold=suggested_threshold,
+    )
+    write_graph(graph, output, fmt_lc)
+
+    stats = graph.stats()
+    rows = [
+        ("Nodes",  Text(str(stats["nodes"]), style="grimore.success")),
+        ("Edges",  Text(str(stats["edges"]), style="grimore.success")),
+    ]
+    for kind in ("wikilink", "suggested", "contradicts"):
+        rows.append((
+            f"  {kind}",
+            Text(str(stats["by_kind"].get(kind, 0)), style="grimore.accent"),
+        ))
+    rows.append(("Output", Text(str(output), style="grimore.primary")))
+    console.print()
+    console.print(ui.success_panel(ui.kv_table(rows), title="Graph exported"))
+    return stats

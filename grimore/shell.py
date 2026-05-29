@@ -38,7 +38,11 @@ from grimore.session import NoteAttachment, Session
 from grimore.utils import ui
 from grimore.utils.config import is_ignored_path
 from grimore.utils.logger import get_logger
-from grimore.utils.paths import shell_history_path, sidecar_path_for
+from grimore.utils.paths import (
+    resolve_threads_dir,
+    shell_history_path,
+    sidecar_path_for,
+)
 from grimore.utils.security import SecurityGuard
 
 console = ui.console
@@ -142,6 +146,9 @@ class GrimoreShell:
             "save": self._cmd_save,
             "history": self._cmd_history,
             "forget": self._cmd_forget,
+            "thread": self._cmd_thread,
+            "resume": self._cmd_resume,
+            "threads": self._cmd_threads,
         }
         # Built lazily on first @-mention; reset by /refresh so a vault
         # scan from another terminal becomes visible.
@@ -1115,6 +1122,149 @@ class GrimoreShell:
         else:
             console.print(Text("Nothing to forget yet.", style="grimore.muted"))
 
+    # ── conversation persistence ───────────────────────────────────────
+
+    def _threads_root(self) -> Path:
+        """Resolve the threads directory from config, creating it on demand."""
+        return resolve_threads_dir(self.session.config.shell.threads_dir)
+
+    def _resolve_thread_slug(self, name: str | None) -> str:
+        """Pick a slug for a thread save.
+
+        With no argument, derive one from the first turn's question. With
+        an argument, normalise it through :meth:`Session.slugify` so a
+        user-typed name still produces a safe filename.
+        """
+        if name:
+            return Session.slugify(name)
+        if self.session.turns:
+            return Session.slugify(self.session.turns[0].get("q", ""))
+        return Session.slugify("")
+
+    def _cmd_thread(self, argv: Sequence[str]) -> None:
+        """``/thread <save|resume|list> [args]`` — manage saved conversations.
+
+        Conversations are stored as one JSONL file per thread under the
+        configured ``shell.threads_dir`` (defaults to
+        ``~/.grimore/threads``). Threads survive shell restarts so
+        long-running research sessions can be picked up later.
+        """
+        parser = _NonExitingArgParser(prog="thread", add_help=True)
+        parser.add_argument("action", choices=["save", "resume", "list"])
+        parser.add_argument("name", nargs="?", default=None)
+        args = parser.parse_args(argv)
+        if args.action == "save":
+            self._thread_save(args.name)
+        elif args.action == "resume":
+            if not args.name:
+                console.print(Text("thread resume: a thread name is required.",
+                                   style="grimore.danger"))
+                ui.tip("Run [cyan]/threads[/] to list saved threads.")
+                return
+            self._thread_resume(args.name)
+        else:
+            self._thread_list()
+
+    def _cmd_resume(self, argv: Sequence[str]) -> None:
+        """``/resume <name>`` — alias for ``/thread resume <name>``."""
+        parser = _NonExitingArgParser(prog="resume", add_help=True)
+        parser.add_argument("name")
+        args = parser.parse_args(argv)
+        self._thread_resume(args.name)
+
+    def _cmd_threads(self, argv: Sequence[str]) -> None:
+        """``/threads`` — alias for ``/thread list``."""
+        if argv:
+            console.print(Text("threads: takes no arguments.",
+                               style="grimore.danger"))
+            ui.tip("Use [cyan]/thread save <name>[/] or [cyan]/resume <name>[/].")
+            return
+        self._thread_list()
+
+    def _thread_save(self, name: str | None) -> None:
+        if not self.session.turns:
+            console.print(Text("Nothing to save — no questions asked yet.",
+                               style="grimore.muted"))
+            return
+        slug = self._resolve_thread_slug(name)
+        target = self._threads_root() / f"{slug}.jsonl"
+        self.session.save_turns(target)
+        console.print(Text.assemble(
+            ("Thread saved as ", "grimore.success"),
+            (slug, "grimore.primary"),
+            (f" ({len(self.session.turns)} turn(s)).", "grimore.success"),
+        ))
+        ui.tip(f"Resume later with [cyan]/resume {slug}[/].")
+
+    def _thread_resume(self, name: str) -> None:
+        slug = Session.slugify(name)
+        target = self._threads_root() / f"{slug}.jsonl"
+        if not target.exists():
+            console.print(Text.assemble(
+                ("resume: no thread named ", "grimore.danger"),
+                (slug, "grimore.primary"),
+                (".", "grimore.danger"),
+            ))
+            ui.tip("Run [cyan]/threads[/] to list saved threads.")
+            return
+        loaded = self.session.load_turns(target)
+        if not loaded:
+            console.print(Text(f"resume: thread {slug!r} was empty.",
+                               style="grimore.muted"))
+            return
+        ui.section(f"Resumed thread — {slug}")
+        for i, turn in enumerate(self.session.turns, start=1):
+            console.print(Text.assemble(
+                (f"  Q{i}. ", "grimore.muted"),
+                (turn.get("q", ""), "grimore.primary"),
+            ))
+        ui.tip("Follow-ups now use this thread's history.")
+
+    def _thread_list(self) -> None:
+        root = self._threads_root()
+        files = sorted(root.glob("*.jsonl"))
+        if not files:
+            console.print(Text("No saved threads yet.", style="grimore.muted"))
+            ui.tip("Save the current conversation with [cyan]/thread save[/].")
+            return
+        ui.section(f"Saved threads ({len(files)})")
+        # Sort by mtime, most-recent first — matches how a user thinks
+        # about resuming their last research session.
+        for path in sorted(files, key=lambda p: p.stat().st_mtime, reverse=True):
+            slug = path.stem
+            mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+            preview = self._thread_first_question(path)
+            console.print(Text.assemble(
+                ("  • ", "grimore.muted"),
+                (slug, "grimore.accent"),
+                (f"  {mtime}", "grimore.muted"),
+            ))
+            if preview:
+                console.print(Text.assemble(
+                    ("      ", ""),
+                    (preview, "grimore.primary"),
+                ))
+
+    @staticmethod
+    def _thread_first_question(path: Path) -> str:
+        """Best-effort first-question preview for ``/thread list``.
+
+        Reads only the first line; corrupt threads (manually edited,
+        truncated mid-write) yield an empty preview rather than crashing
+        the listing.
+        """
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                first = f.readline().strip()
+            if not first:
+                return ""
+            import json
+            row = json.loads(first)
+            q = (row.get("q") or "").strip()
+            return q[:80] + ("…" if len(q) > 80 else "")
+        except (OSError, ValueError):
+            return ""
+
     # ── @-mention plumbing ─────────────────────────────────────────────
 
     def _extract_mentions(self, line: str) -> tuple[str, list[NoteAttachment]]:
@@ -1329,6 +1479,19 @@ class GrimoreShell:
             "  Clear conversation memory so the next ask starts a fresh\n"
             "  thread. Leaves pins and the on-disk history file intact."
         ),
+        "thread": (
+            "/thread save [name]\n"
+            "  Persist the current conversation as a JSONL thread under\n"
+            "  shell.threads_dir. Without a name, the slug is derived\n"
+            "  from the first question.\n"
+            "/thread resume <name>\n"
+            "  Load a saved thread into this session — follow-ups then\n"
+            "  use its history. Also available as /resume <name>.\n"
+            "/thread list\n"
+            "  List saved threads (most-recent first). Also /threads."
+        ),
+        "resume": "/resume <name>\n  Alias for /thread resume <name>.",
+        "threads": "/threads\n  Alias for /thread list.",
         "help": "/help [command]\n  Show this list, or details for one command.",
         "exit": "/exit | /quit\n  Leave the shell.",
         "quit": "/exit | /quit\n  Leave the shell.",

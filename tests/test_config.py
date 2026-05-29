@@ -4,8 +4,12 @@ import os
 import pytest
 
 from grimore.utils.config import (
+    _deep_merge,
     _load_project_env,
     _set_cognition_string,
+    get_active_profile,
+    load_config,
+    set_active_profile,
     update_cognition_models,
 )
 
@@ -150,3 +154,134 @@ class TestUpdateCognitionModels:
         text = path.read_text(encoding="utf-8")
         assert 'model_llm_local = "zc"' in text
         assert 'model_embeddings_local = "ze"' in text
+
+
+# ── multi-vault profiles ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def reset_profile_state(monkeypatch):
+    """Ensure each profile test starts with a clean module-level stash + env."""
+    monkeypatch.delenv("GRIMORE_PROFILE", raising=False)
+    previous = get_active_profile()
+    set_active_profile(None)
+    yield
+    set_active_profile(previous)
+
+
+class TestDeepMerge:
+    def test_overlay_replaces_scalar(self):
+        assert _deep_merge({"a": 1}, {"a": 2}) == {"a": 2}
+
+    def test_overlay_adds_keys(self):
+        assert _deep_merge({"a": 1}, {"b": 2}) == {"a": 1, "b": 2}
+
+    def test_overlay_merges_nested_dicts(self):
+        merged = _deep_merge(
+            {"vault": {"path": "/base", "ignored_dirs": [".git"]}},
+            {"vault": {"path": "/over"}},
+        )
+        # path overridden, ignored_dirs inherited.
+        assert merged == {"vault": {"path": "/over", "ignored_dirs": [".git"]}}
+
+    def test_lists_are_replaced_not_concatenated(self):
+        # Profile setting formats = ["md"] means "only Markdown", not
+        # "Markdown also" — explicit choice in the plan.
+        merged = _deep_merge({"vault": {"formats": ["md", "pdf"]}},
+                             {"vault": {"formats": ["md"]}})
+        assert merged == {"vault": {"formats": ["md"]}}
+
+
+_PROFILE_TOML = """
+[vault]
+path = "./default-vault"
+ignored_dirs = [".obsidian"]
+
+[cognition]
+model_llm_local = "qwen2.5:3b"
+
+[profiles.work]
+[profiles.work.vault]
+path = "/home/me/work-notes"
+display_name = "Work"
+
+[profiles.work.cognition]
+model_llm_local = "qwen2.5:14b"
+
+[profiles.personal]
+[profiles.personal.vault]
+path = "/home/me/notes"
+"""
+
+
+class TestProfiles:
+    def test_no_profile_returns_defaults(self, tmp_path, reset_profile_state):
+        path = tmp_path / "grimore.toml"
+        path.write_text(_PROFILE_TOML, encoding="utf-8")
+        cfg = load_config(str(path))
+        assert cfg.vault.path == "./default-vault"
+        assert cfg.cognition.model_llm_local == "qwen2.5:3b"
+        assert cfg.active_profile is None
+
+    def test_profile_arg_deep_merges_over_defaults(self, tmp_path, reset_profile_state):
+        path = tmp_path / "grimore.toml"
+        path.write_text(_PROFILE_TOML, encoding="utf-8")
+        cfg = load_config(str(path), profile="work")
+        # Overridden by profile.
+        assert cfg.vault.path == "/home/me/work-notes"
+        assert cfg.vault.display_name == "Work"
+        assert cfg.cognition.model_llm_local == "qwen2.5:14b"
+        # Inherited from defaults.
+        assert cfg.vault.ignored_dirs == [".obsidian"]
+        assert cfg.active_profile == "work"
+
+    def test_profile_env_var_picked_up(self, tmp_path, reset_profile_state, monkeypatch):
+        path = tmp_path / "grimore.toml"
+        path.write_text(_PROFILE_TOML, encoding="utf-8")
+        monkeypatch.setenv("GRIMORE_PROFILE", "personal")
+        cfg = load_config(str(path))
+        assert cfg.vault.path == "/home/me/notes"
+        assert cfg.active_profile == "personal"
+
+    def test_cli_flag_beats_env_var(self, tmp_path, reset_profile_state, monkeypatch):
+        path = tmp_path / "grimore.toml"
+        path.write_text(_PROFILE_TOML, encoding="utf-8")
+        monkeypatch.setenv("GRIMORE_PROFILE", "personal")
+        set_active_profile("work")
+        cfg = load_config(str(path))
+        assert cfg.vault.path == "/home/me/work-notes"
+        assert cfg.active_profile == "work"
+
+    def test_explicit_arg_beats_cli_flag(self, tmp_path, reset_profile_state):
+        path = tmp_path / "grimore.toml"
+        path.write_text(_PROFILE_TOML, encoding="utf-8")
+        set_active_profile("work")
+        cfg = load_config(str(path), profile="personal")
+        assert cfg.vault.path == "/home/me/notes"
+        assert cfg.active_profile == "personal"
+
+    def test_unknown_profile_raises_clean_error(self, tmp_path, reset_profile_state):
+        path = tmp_path / "grimore.toml"
+        path.write_text(_PROFILE_TOML, encoding="utf-8")
+        with pytest.raises(ValueError, match="Unknown profile"):
+            load_config(str(path), profile="ghost")
+
+    def test_missing_config_with_profile_raises(self, tmp_path, reset_profile_state):
+        missing = tmp_path / "nope.toml"
+        with pytest.raises(ValueError, match="Cannot apply profile"):
+            load_config(str(missing), profile="work")
+
+    def test_missing_config_without_profile_returns_defaults(self, tmp_path, reset_profile_state):
+        missing = tmp_path / "nope.toml"
+        cfg = load_config(str(missing))
+        assert cfg.vault.path == "./vault"
+        assert cfg.active_profile is None
+
+    def test_profile_with_empty_section_does_not_crash(self, tmp_path, reset_profile_state):
+        path = tmp_path / "grimore.toml"
+        # Profile declared but empty — should yield base defaults marked
+        # with the profile name.
+        path.write_text("[profiles.bare]\n", encoding="utf-8")
+        cfg = load_config(str(path), profile="bare")
+        assert cfg.active_profile == "bare"
+        assert cfg.vault.path == "./vault"

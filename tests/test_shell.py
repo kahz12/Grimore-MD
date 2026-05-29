@@ -19,6 +19,7 @@ from grimore.utils.config import (
     MaintenanceConfig,
     MemoryConfig,
     OutputConfig,
+    ShellConfig,
     VaultConfig,
 )
 
@@ -36,6 +37,7 @@ def shell_config(tmp_path):
         memory=MemoryConfig(db_path=str(tmp_path / "grimore.db")),
         output=OutputConfig(auto_commit=False, dry_run=True),
         maintenance=MaintenanceConfig(),
+        shell=ShellConfig(threads_dir=str(tmp_path / "threads")),
     )
 
 
@@ -696,3 +698,114 @@ def test_at_mention_outside_vault_is_rejected(tmp_path, shell_config, patched_se
     # file may have been forwarded.
     titles = [t for t, _ in (captured["extras"] or [])]
     assert "escape" not in titles
+
+
+# ── conversation persistence ─────────────────────────────────────────────
+
+
+def test_session_slugify_basic_and_empty():
+    assert Session.slugify("What is the WPA2 protocol?") == "what-is-the-wpa2-protocol"
+    # Word cap applies.
+    assert Session.slugify("one two three four five six seven") == \
+        "one-two-three-four-five-six"
+    # Empty / punctuation-only falls back to a safe sentinel.
+    assert Session.slugify("") == "thread"
+    assert Session.slugify("???") == "thread"
+
+
+def test_thread_save_writes_jsonl_and_resume_round_trips(shell_config, patched_services, tmp_path):
+    """A 2-turn conversation persists and reloads with the same Q/A pairs."""
+    session = Session(shell_config)
+    session.record_turn("first question", "first answer", ["Note A"])
+    session.record_turn("second question", "second answer", ["Note B"])
+    shell = GrimoreShell(session)
+    shell.dispatch("/thread save research")
+
+    target = tmp_path / "threads" / "research.jsonl"
+    assert target.exists()
+    lines = target.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+
+    # Fresh Session, resume the saved thread.
+    fresh = Session(shell_config)
+    GrimoreShell(fresh).dispatch("/resume research")
+    qs = [t["q"] for t in fresh.turns]
+    assert qs == ["first question", "second question"]
+    assert fresh.last_question == "second question"
+    assert fresh.last_answer["answer"] == "second answer"
+
+
+def test_thread_save_with_no_name_derives_slug_from_first_question(
+    shell_config, patched_services, tmp_path
+):
+    session = Session(shell_config)
+    session.record_turn("How do flying buttresses work?", "ans", [])
+    GrimoreShell(session).dispatch("/thread save")
+    expected = tmp_path / "threads" / "how-do-flying-buttresses-work.jsonl"
+    assert expected.exists()
+
+
+def test_thread_save_refuses_when_no_turns(shell_config, patched_services, capsys):
+    session = Session(shell_config)
+    GrimoreShell(session).dispatch("/thread save anything")
+    out = capsys.readouterr().out
+    assert "Nothing to save" in out
+
+
+def test_thread_resume_unknown_name_prints_error(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/resume nonexistent")
+    out = capsys.readouterr().out
+    assert "no thread named" in out
+    assert "nonexistent" in out
+
+
+def test_thread_resume_requires_name(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/thread resume")
+    out = capsys.readouterr().out
+    assert "thread name is required" in out
+
+
+def test_threads_list_empty_then_populated(shell_config, patched_services, capsys):
+    shell = GrimoreShell(Session(shell_config))
+    shell.dispatch("/threads")
+    assert "No saved threads" in capsys.readouterr().out
+
+    # Save one and list again.
+    shell.session.record_turn("warm-up question", "answer", [])
+    shell.dispatch("/thread save warm")
+    capsys.readouterr()
+    shell.dispatch("/threads")
+    out = capsys.readouterr().out
+    assert "Saved threads" in out
+    assert "warm" in out
+    # First-question preview should be present in the listing.
+    assert "warm-up question" in out
+
+
+def test_load_turns_caps_at_max_turns(shell_config, patched_services, tmp_path):
+    """A thread JSONL with more rows than MAX_TURNS yields only the tail."""
+    session = Session(shell_config)
+    threads_dir = tmp_path / "threads"
+    threads_dir.mkdir(parents=True, exist_ok=True)
+    # Hand-write 5 turns; loader must keep just the last MAX_TURNS (3).
+    target = threads_dir / "long.jsonl"
+    import json
+    with target.open("w", encoding="utf-8") as f:
+        for i in range(5):
+            f.write(json.dumps({"q": f"q{i}", "a": f"a{i}", "sources": []}) + "\n")
+    n = session.load_turns(target)
+    assert n == Session.MAX_TURNS
+    assert [t["q"] for t in session.turns] == ["q2", "q3", "q4"]
+
+
+def test_save_turns_atomic_no_partial_file(shell_config, patched_services, tmp_path):
+    """A failed write must not leave the target half-written."""
+    session = Session(shell_config)
+    session.record_turn("q", "a", [])
+    target = tmp_path / "threads" / "atomic.jsonl"
+    session.save_turns(target)
+    # The .tmp scratch file must not survive past the rename.
+    assert not target.with_suffix(target.suffix + ".tmp").exists()
+    assert target.exists()

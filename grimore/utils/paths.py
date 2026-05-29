@@ -83,6 +83,20 @@ def sidecar_path_for(
     return sidecar_root / rel.parent / f"{rel.name}.md"
 
 
+def resolve_threads_dir(threads_dir: str | Path) -> Path:
+    """Resolve the user-configured threads directory to an absolute path.
+
+    Relative paths anchor under ``Path.home()`` (so the default
+    ``.grimore/threads`` lives at ``~/.grimore/threads``); absolute paths
+    are honoured as given. The directory is created on demand with
+    permissive defaults — callers that need 0700 should chmod after.
+    """
+    raw = Path(threads_dir).expanduser()
+    path = raw if raw.is_absolute() else Path.home() / raw
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def shell_history_path(vault_root: Path | str) -> Path:
     """Per-vault prompt-toolkit history file.
 
