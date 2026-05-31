@@ -203,13 +203,23 @@ class TestNotes:
 
 
 class TestAuth:
+    # A non-loopback peer; TestClient lets us spoof the transport address
+    # via the `client` kwarg (sets scope["client"]).
+    REMOTE = ("192.168.1.50", 51000)
+    LOCAL = ("127.0.0.1", 51000)
+
+    def _client(self, session, *, peer, token="secret-token"):
+        return TestClient(build_app(session, api_token=token), client=peer)
+
+    # — remote callers must present the token on every /api/* route —
+
     def test_post_without_token_rejected_when_token_set(self, session):
-        client = TestClient(build_app(session, api_token="secret-token"))
+        client = self._client(session, peer=self.REMOTE)
         r = client.post("/api/ask", json={"question": "q?"})
         assert r.status_code == 401
 
     def test_post_with_wrong_token_rejected(self, session):
-        client = TestClient(build_app(session, api_token="secret-token"))
+        client = self._client(session, peer=self.REMOTE)
         r = client.post(
             "/api/ask",
             json={"question": "q?"},
@@ -218,7 +228,7 @@ class TestAuth:
         assert r.status_code == 401
 
     def test_post_with_correct_token_accepted(self, session):
-        client = TestClient(build_app(session, api_token="secret-token"))
+        client = self._client(session, peer=self.REMOTE)
         r = client.post(
             "/api/ask",
             json={"question": "q?"},
@@ -226,12 +236,44 @@ class TestAuth:
         )
         assert r.status_code == 200
 
-    def test_get_endpoints_remain_open_under_auth(self, session):
-        client = TestClient(build_app(session, api_token="secret-token"))
-        # GET /api/health, /api/categories, /api/notes/N stay open so
-        # the loopback browser flow doesn't have to thread the token.
+    def test_remote_get_note_requires_token(self, session):
+        # H1 regression: the data-bearing GET must NOT be reachable from a
+        # remote host without the bearer. This was the exfiltration path.
+        client = self._client(session, peer=self.REMOTE)
+        assert client.get("/api/notes/7").status_code == 401
+        assert client.get("/api/health").status_code == 401
+        assert client.get("/api/categories").status_code == 401
+
+    def test_remote_get_note_with_token_accepted(self, session):
+        client = self._client(session, peer=self.REMOTE)
+        hdr = {"Authorization": "Bearer secret-token"}
+        assert client.get("/api/notes/7", headers=hdr).status_code == 200
+        assert client.get("/api/health", headers=hdr).status_code == 200
+
+    # — loopback callers stay open (local browser UI sends no token) —
+
+    def test_loopback_get_open_without_token(self, session):
+        client = self._client(session, peer=self.LOCAL)
         assert client.get("/api/health").status_code == 200
         assert client.get("/api/categories").status_code == 200
+        assert client.get("/api/notes/7").status_code == 200
+
+    def test_loopback_post_open_without_token(self, session):
+        # The local browser's ask/search work without threading a token.
+        client = self._client(session, peer=self.LOCAL)
+        assert client.post("/api/ask", json={"question": "q?"}).status_code == 200
+
+    def test_ui_shell_open_to_remote_without_token(self, session):
+        # The static UI shell carries no vault data, so it stays open even
+        # to remote callers — only /api/* is gated.
+        client = self._client(session, peer=self.REMOTE)
+        assert client.get("/").status_code == 200
+
+    def test_no_token_leaves_everything_open(self, session):
+        # Default loopback deployment: no token configured → no gate.
+        client = TestClient(build_app(session), client=self.REMOTE)
+        assert client.get("/api/notes/7").status_code == 200
+        assert client.post("/api/ask", json={"question": "q?"}).status_code == 200
 
 
 class TestCORS:

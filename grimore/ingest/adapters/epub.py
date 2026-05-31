@@ -37,6 +37,7 @@ from grimore.ingest.adapters.base import (
 )
 from grimore.ingest.adapters.html import _PARSER as _HTML_PARSER, _NOISE_TAGS
 from grimore.ingest.adapters.registry import register
+from grimore.ingest.adapters.safexml import safe_parse_xml
 from grimore.utils.hashing import calculate_content_hash, sha256_file
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
@@ -57,10 +58,9 @@ def _locate_opf(zf: zipfile.ZipFile) -> str:
     """Return the in-archive path of the OPF manifest."""
     try:
         with zf.open(_CONTAINER_PATH) as fh:
-            tree = ET.parse(fh)
+            root = safe_parse_xml(fh, what=_CONTAINER_PATH)
     except (KeyError, ET.ParseError) as e:
         raise ValueError(f"epub missing or unreadable {_CONTAINER_PATH}: {e}") from e
-    root = tree.getroot()
     rootfile = root.find(".//container:rootfile", _NS)
     if rootfile is None or not rootfile.get("full-path"):
         raise ValueError("epub container.xml has no rootfile path")
@@ -75,11 +75,10 @@ def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> tuple[dict[str, str], list
     """
     try:
         with zf.open(opf_path) as fh:
-            tree = ET.parse(fh)
+            root = safe_parse_xml(fh, what=opf_path)
     except (KeyError, ET.ParseError) as e:
         raise ValueError(f"unreadable opf {opf_path}: {e}") from e
 
-    root = tree.getroot()
     metadata: dict[str, str] = {}
 
     def grab(local: str, key: str) -> None:

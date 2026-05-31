@@ -1571,7 +1571,15 @@ def serve(
     ))
 
     try:
-        uvicorn.run(app_, host=host, port=port, log_config=None)
+        # proxy_headers=False so the ASGI scope's client address is always
+        # the raw transport peer, never rewritten from an X-Forwarded-For
+        # header. The token middleware's loopback exemption depends on that
+        # peer being trustworthy — Grimore is served directly, not behind a
+        # reverse proxy, so honouring forwarding headers would only let a
+        # remote caller spoof a loopback origin.
+        uvicorn.run(
+            app_, host=host, port=port, log_config=None, proxy_headers=False,
+        )
     finally:
         session.close()
 

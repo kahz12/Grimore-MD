@@ -31,6 +31,7 @@ from grimore.ingest.adapters.base import (
     ExtractedSection,
 )
 from grimore.ingest.adapters.registry import register
+from grimore.ingest.adapters.safexml import safe_parse_xml
 from grimore.utils.hashing import calculate_content_hash, sha256_file
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
@@ -88,11 +89,10 @@ def _parse_core_props(zf: zipfile.ZipFile) -> dict[str, str]:
     """Return Dublin Core metadata from ``docProps/core.xml`` (or {})."""
     try:
         with zf.open("docProps/core.xml") as fh:
-            tree = ET.parse(fh)
+            root = safe_parse_xml(fh, what="docProps/core.xml")
     except (KeyError, ET.ParseError):
         return {}
 
-    root = tree.getroot()
     out: dict[str, str] = {}
 
     def grab(local: str, ns_key: str, out_key: str) -> None:
@@ -116,11 +116,11 @@ def _parse_body(zf: zipfile.ZipFile) -> tuple[list[ExtractedSection], Optional[s
     """
     try:
         with zf.open("word/document.xml") as fh:
-            tree = ET.parse(fh)
+            root = safe_parse_xml(fh, what="word/document.xml")
     except (KeyError, ET.ParseError) as e:
         raise ValueError(f"cannot read word/document.xml: {e}") from e
 
-    body = tree.getroot().find("w:body", _NS)
+    body = root.find("w:body", _NS)
     if body is None:
         return [], None
 

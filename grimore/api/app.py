@@ -8,16 +8,22 @@ Security defaults:
 
 * Bind loopback only — the CLI's ``serve`` command enforces this
   before reaching ASGI.
-* When ``api_token`` is set, every POST requires
-  ``Authorization: Bearer <token>``. GETs and the UI stay open so the
-  loopback browser flow is friction-free.
+* When ``api_token`` is set, every ``/api/*`` request from a
+  non-loopback client requires ``Authorization: Bearer <token>`` — GET
+  included, so note bodies can't be read without the token. Loopback
+  clients (the local browser UI, which sends no token) stay open, as do
+  the ``/`` UI shell and static assets. Enforced centrally in
+  ``_TokenAuthMiddleware`` so no route can forget the check; the token
+  comparison is constant-time.
 * CORS off by default. ``cors_origin`` (single origin, no wildcards)
   is the only escape valve. Plays well with the typical "serve on
   loopback, point a browser at it" flow.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +41,7 @@ from starlette.responses import (
 )
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from grimore.session import Session
 from grimore.utils.logger import get_logger
@@ -54,30 +61,103 @@ _API_VERSION = "2.4.0"
 # ── auth ──────────────────────────────────────────────────────────────
 
 
-def _check_auth(request: Request, api_token: Optional[str]) -> Optional[Response]:
-    """Return a 401 ``Response`` if the request lacks a valid bearer.
+def _client_is_loopback(scope: Scope) -> bool:
+    """Whether the peer that opened this connection is loopback.
 
-    None means "auth passed (or not required)". Called from each POST
-    handler so we don't gate GETs / the UI.
+    Reads the real transport peer from ``scope['client']`` (uvicorn sets
+    it to the actual socket address). We deliberately ignore
+    ``X-Forwarded-For`` / ``Forwarded`` headers — trusting a
+    client-supplied header here would re-open the very hole this gate
+    closes. Unknown or non-IP peers fail closed (treated as remote).
     """
-    if not api_token:
-        return None
-    header = request.headers.get("authorization", "")
-    if not header.startswith("Bearer "):
-        return JSONResponse({"error": "missing bearer token"}, status_code=401)
-    presented = header[len("Bearer "):].strip()
-    if presented != api_token:
-        return JSONResponse({"error": "invalid token"}, status_code=401)
-    return None
+    client = scope.get("client")
+    if not client:
+        return False
+    try:
+        ip = ipaddress.ip_address(client[0])
+    except (ValueError, IndexError, TypeError):
+        return False
+    if ip.is_loopback:
+        return True
+    # IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) when bound dual-stack.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return bool(mapped is not None and mapped.is_loopback)
+
+
+def _request_has_valid_bearer(scope: Scope, api_token: str) -> bool:
+    """Constant-time check of the ``Authorization: Bearer`` header."""
+    for key, value in scope.get("headers") or []:
+        if key == b"authorization":
+            try:
+                header = value.decode("latin-1")
+            except (UnicodeDecodeError, AttributeError):
+                return False
+            if not header.startswith("Bearer "):
+                return False
+            presented = header[len("Bearer "):].strip()
+            return secrets.compare_digest(presented, api_token)
+    return False
+
+
+async def _send_401(send: Send, message: str) -> None:
+    body = json.dumps({"error": message}).encode("utf-8")
+    await send({
+        "type": "http.response.start",
+        "status": 401,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
+class _TokenAuthMiddleware:
+    """Gate every ``/api/*`` route behind the bearer token.
+
+    Closes the broken-access-control hole (audit H1): the previous
+    per-handler check ran only on POSTs, leaving the GET note / category
+    / health routes — i.e. the actual data — open to any host that could
+    reach the port. Enforcing it here, in one place, means a route added
+    later can't forget the check. Loopback callers are exempt so the
+    local browser UI (which sends no token) keeps working; remote callers
+    need the token for *all* methods, GET included.
+
+    Only attached when a token is configured, so the no-token loopback
+    deployment is byte-for-byte unchanged.
+    """
+
+    def __init__(self, app: ASGIApp, *, api_token: str) -> None:
+        self.app = app
+        self.api_token = api_token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        # Non-/api/ paths (UI shell, static assets) stay open. OPTIONS is
+        # an unauthenticated CORS preflight carrying no credentials.
+        if (
+            not path.startswith("/api/")
+            or method == "OPTIONS"
+            or _client_is_loopback(scope)
+            or _request_has_valid_bearer(scope, self.api_token)
+        ):
+            await self.app(scope, receive, send)
+            return
+        await _send_401(send, "valid bearer token required")
 
 
 # ── handlers ──────────────────────────────────────────────────────────
 
 
-def _build_routes(session: Session, *, api_token: Optional[str]) -> list:
+def _build_routes(session: Session) -> list:
     """Wire each Starlette route to a closure that captures the warm
-    Session and the configured token. Defined inline so test setups can
-    swap a MagicMock Session per app build.
+    Session. Defined inline so test setups can swap a MagicMock Session
+    per app build. Auth is handled upstream by ``_TokenAuthMiddleware``,
+    not in these handlers.
     """
 
     async def health(request: Request) -> Response:
@@ -90,10 +170,6 @@ def _build_routes(session: Session, *, api_token: Optional[str]) -> list:
         })
 
     async def ask(request: Request) -> Response:
-        unauthorized = _check_auth(request, api_token)
-        if unauthorized is not None:
-            return unauthorized
-
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -131,10 +207,6 @@ def _build_routes(session: Session, *, api_token: Optional[str]) -> list:
         })
 
     async def search(request: Request) -> Response:
-        unauthorized = _check_auth(request, api_token)
-        if unauthorized is not None:
-            return unauthorized
-
         try:
             body = await request.json()
         except json.JSONDecodeError:
@@ -174,7 +246,8 @@ def _build_routes(session: Session, *, api_token: Optional[str]) -> list:
         return JSONResponse({"hits": rows})
 
     async def get_note(request: Request) -> Response:
-        # GETs are always open — they're read-only against vault metadata.
+        # When a token is set, _TokenAuthMiddleware has already required
+        # it for non-loopback callers before we reach this handler.
         try:
             note_id = int(request.path_params["note_id"])
         except (ValueError, KeyError):
@@ -239,6 +312,9 @@ def build_app(
     ``starlette.testclient.TestClient``. The session is captured by
     closure so requests reuse the warm embedder + router.
     """
+    # Order matters: CORS is listed first so it's the outermost layer and
+    # answers preflight OPTIONS before auth runs; the token gate sits just
+    # inside it, in front of the routes.
     middleware: list[Middleware] = []
     if cors_origin:
         middleware.append(Middleware(
@@ -248,9 +324,11 @@ def build_app(
             allow_headers=["authorization", "content-type"],
             allow_credentials=False,
         ))
+    if api_token:
+        middleware.append(Middleware(_TokenAuthMiddleware, api_token=api_token))
 
     return Starlette(
         debug=False,
-        routes=_build_routes(session, api_token=api_token),
+        routes=_build_routes(session),
         middleware=middleware,
     )

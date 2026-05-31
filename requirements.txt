@@ -16,5 +16,6 @@ numpy
 beautifulsoup4
 pypdf
 striprtf
+defusedxml
 pytest
 pytest-mock
