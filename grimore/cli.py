@@ -1504,8 +1504,9 @@ def serve(
     ),
     api_token: Optional[str] = typer.Option(
         None, "--api-token",
-        help="Bearer token required on every POST. Read from env "
-             "GRIMORE_API_TOKEN if unset. Required for any non-loopback bind.",
+        help="Bearer token required on every non-loopback request (all "
+             "methods). Read from env GRIMORE_API_TOKEN if unset. Required "
+             "for any non-loopback bind.",
         envvar="GRIMORE_API_TOKEN",
     ),
     cors_origin: Optional[str] = typer.Option(

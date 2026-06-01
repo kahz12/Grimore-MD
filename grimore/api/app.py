@@ -85,17 +85,21 @@ def _client_is_loopback(scope: Scope) -> bool:
 
 
 def _request_has_valid_bearer(scope: Scope, api_token: str) -> bool:
-    """Constant-time check of the ``Authorization: Bearer`` header."""
+    """Constant-time check of the ``Authorization: Bearer`` header.
+
+    The comparison is done on raw bytes, never decoded text:
+    ``secrets.compare_digest`` rejects non-ASCII ``str`` with a
+    ``TypeError``, so a header carrying high bytes (a malformed or
+    probing token) would otherwise raise and surface as a 500 instead of
+    a clean 401. Bytes side-step that — a bad token simply fails to match.
+    """
+    token = api_token.encode("utf-8")
     for key, value in scope.get("headers") or []:
         if key == b"authorization":
-            try:
-                header = value.decode("latin-1")
-            except (UnicodeDecodeError, AttributeError):
+            if not isinstance(value, (bytes, bytearray)) or not value.startswith(b"Bearer "):
                 return False
-            if not header.startswith("Bearer "):
-                return False
-            presented = header[len("Bearer "):].strip()
-            return secrets.compare_digest(presented, api_token)
+            presented = bytes(value[len(b"Bearer "):]).strip()
+            return secrets.compare_digest(presented, token)
     return False
 
 

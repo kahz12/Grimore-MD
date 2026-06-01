@@ -18,7 +18,7 @@ httpx = pytest.importorskip("httpx")
 
 from starlette.testclient import TestClient  # noqa: E402
 
-from grimore.api.app import build_app  # noqa: E402
+from grimore.api.app import build_app, _request_has_valid_bearer  # noqa: E402
 
 
 # ── fixtures ──────────────────────────────────────────────────────────
@@ -243,6 +243,20 @@ class TestAuth:
         assert client.get("/api/notes/7").status_code == 401
         assert client.get("/api/health").status_code == 401
         assert client.get("/api/categories").status_code == 401
+
+    def test_non_ascii_bearer_does_not_crash(self):
+        # A bearer carrying high bytes (>= 0x80) arrives raw in the ASGI
+        # scope — an httpx client can't even send it, so we exercise the
+        # check directly. secrets.compare_digest raises TypeError on
+        # non-ASCII *str*; the fix compares raw *bytes*, so a malformed
+        # token returns False (→ 401) instead of raising (→ 500).
+        scope = {"headers": [(b"authorization", b"Bearer \xff\xfe-nope")]}
+        assert _request_has_valid_bearer(scope, "secret-token") is False
+
+    def test_bytes_bearer_matches_token(self):
+        # Positive control: the raw-bytes path still accepts a good token.
+        scope = {"headers": [(b"authorization", b"Bearer secret-token")]}
+        assert _request_has_valid_bearer(scope, "secret-token") is True
 
     def test_remote_get_note_with_token_accepted(self, session):
         client = self._client(session, peer=self.REMOTE)
