@@ -139,6 +139,31 @@ class SecurityGuard:
             SecurityGuard._host_cache[cache_key] = (url, time.monotonic())
         return url
 
+    # Default ceiling on a request-supplied ``top_k`` across the HTTP API
+    # and the MCP server. A large value inflates retrieval + context
+    # assembly work — an amplification lever for an (even authenticated)
+    # caller — while the cap stays well above any realistic retrieval
+    # depth. See audit L2.
+    MAX_TOP_K = 50
+
+    @staticmethod
+    def coerce_top_k(raw, default: int, maximum: int = MAX_TOP_K) -> int:
+        """Coerce a request-supplied ``top_k`` to a bounded integer.
+
+        Returns an int clamped to ``1..maximum``. ``None`` or ``""`` (an
+        absent or blank field) falls back to ``default``. A non-numeric
+        value raises ``ValueError`` so the caller can map it to a clean
+        ``400`` / invalid-params response instead of letting a bare
+        ``int(...)`` surface as a 500. See audit L2.
+        """
+        if raw is None or raw == "":
+            return max(1, min(int(default), maximum))
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("top_k must be an integer")
+        return max(1, min(value, maximum))
+
     @staticmethod
     def wrap_untrusted(text: str, label: str = "note") -> str:
         """

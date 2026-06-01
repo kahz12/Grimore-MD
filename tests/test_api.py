@@ -115,6 +115,18 @@ class TestAsk:
         assert kwargs["top_k"] == 12
         assert kwargs["history"] == hist
 
+    def test_ask_clamps_oversized_top_k(self, client, session):
+        # A huge top_k is clamped to the ceiling rather than passed through
+        # to inflate retrieval work (audit L2).
+        r = client.post("/api/ask", json={"question": "q?", "top_k": 9999})
+        assert r.status_code == 200
+        assert session.oracle.ask.call_args.kwargs["top_k"] == 50
+
+    def test_ask_rejects_non_numeric_top_k(self, client):
+        # Non-numeric top_k is a clean 400, not an uncaught ValueError → 500.
+        r = client.post("/api/ask", json={"question": "q?", "top_k": "lots"})
+        assert r.status_code == 400
+
     def test_ask_rejects_empty_question(self, client):
         r = client.post("/api/ask", json={"question": "   "})
         assert r.status_code == 400
@@ -161,6 +173,16 @@ class TestSearch:
         client.post("/api/search", json={"query": "x"})
         session.oracle.connector.find_similar_notes.assert_called_once()
         session.oracle.connector.find_hybrid.assert_not_called()
+
+    def test_search_clamps_oversized_top_k(self, client, session):
+        session.oracle.connector.find_hybrid.return_value = []
+        r = client.post("/api/search", json={"query": "x", "top_k": 9999})
+        assert r.status_code == 200
+        assert session.oracle.connector.find_hybrid.call_args.kwargs["top_k"] == 50
+
+    def test_search_rejects_non_numeric_top_k(self, client):
+        r = client.post("/api/search", json={"query": "x", "top_k": "lots"})
+        assert r.status_code == 400
 
     def test_search_rejects_empty_query(self, client):
         r = client.post("/api/search", json={"query": ""})

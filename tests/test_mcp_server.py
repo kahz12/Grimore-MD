@@ -172,6 +172,18 @@ class TestAskTool:
         _call(srv, "grimore_ask", {"question": "q?", "top_k": 12})
         srv.session.oracle.ask.assert_called_once_with("q?", top_k=12)
 
+    def test_top_k_is_clamped_to_schema_maximum(self):
+        # The advertised input-schema maximum is 25; an over-large value is
+        # clamped instead of being passed through (audit L2).
+        srv = _server(_stub_session())
+        _call(srv, "grimore_ask", {"question": "q?", "top_k": 9999})
+        srv.session.oracle.ask.assert_called_once_with("q?", top_k=25)
+
+    def test_non_numeric_top_k_returns_invalid_params(self):
+        srv = _server(_stub_session())
+        resp = _call(srv, "grimore_ask", {"question": "q?", "top_k": "lots"})
+        assert resp["error"]["code"] == -32602
+
     def test_missing_question_returns_invalid_params(self):
         srv = _server(_stub_session())
         resp = _call(srv, "grimore_ask", {})
@@ -209,6 +221,20 @@ class TestSearchTool:
     def test_empty_query_returns_invalid_params(self):
         srv = _server(_stub_session())
         resp = _call(srv, "grimore_search", {"query": ""})
+        assert resp["error"]["code"] == -32602
+
+    def test_top_k_is_clamped_to_schema_maximum(self):
+        # Search advertises a maximum of 50; a huge value is clamped before
+        # it reaches the connector (audit L2).
+        sess = _stub_session(hits=[])
+        srv = _server(sess)
+        _call(srv, "grimore_search", {"query": "x", "top_k": 9999})
+        kwargs = sess.oracle.connector.find_hybrid.call_args.kwargs
+        assert kwargs["top_k"] == 50
+
+    def test_non_numeric_top_k_returns_invalid_params(self):
+        srv = _server(_stub_session())
+        resp = _call(srv, "grimore_search", {"query": "x", "top_k": "lots"})
         assert resp["error"]["code"] == -32602
 
 
@@ -270,6 +296,22 @@ class TestConnectTool:
         srv = _server(_stub_session(chunk_vectors=[]))
         resp = _call(srv, "grimore_connect", {"note_id": 1})
         assert _content_payload(resp) == {"hits": []}
+
+    def test_top_k_is_clamped_to_schema_maximum(self):
+        # Connect advertises a maximum of 25 (audit L2).
+        sess = _stub_session(
+            chunk_vectors=[[1.0, 0.0, 0.0, 0.0]],
+            hits=[],
+        )
+        srv = _server(sess)
+        _call(srv, "grimore_connect", {"note_id": 3, "top_k": 9999})
+        kwargs = sess.oracle.connector.find_similar_notes.call_args.kwargs
+        assert kwargs["top_k"] == 25
+
+    def test_non_numeric_top_k_returns_invalid_params(self):
+        srv = _server(_stub_session())
+        resp = _call(srv, "grimore_connect", {"note_id": 3, "top_k": "lots"})
+        assert resp["error"]["code"] == -32602
 
     def test_missing_note_id_returns_invalid_params(self):
         srv = _server(_stub_session())

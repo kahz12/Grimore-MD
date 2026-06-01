@@ -45,6 +45,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from grimore.session import Session
 from grimore.utils.logger import get_logger
+from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
@@ -184,7 +185,10 @@ def _build_routes(session: Session) -> list:
             return JSONResponse(
                 {"error": "question is required"}, status_code=400,
             )
-        top_k = int(body.get("top_k", 5) or 5)
+        try:
+            top_k = SecurityGuard.coerce_top_k(body.get("top_k"), default=5)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         history = body.get("history") or None
         stream = bool(body.get("stream"))
 
@@ -219,7 +223,10 @@ def _build_routes(session: Session) -> list:
         query = (body or {}).get("query", "")
         if not isinstance(query, str) or not query.strip():
             return JSONResponse({"error": "query is required"}, status_code=400)
-        top_k = int(body.get("top_k", 10) or 10)
+        try:
+            top_k = SecurityGuard.coerce_top_k(body.get("top_k"), default=10)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
         query_vector = session.embedder.embed(query)
         use_hybrid = (

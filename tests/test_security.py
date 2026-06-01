@@ -64,6 +64,35 @@ class TestSanitizePrompt:
         assert SecurityGuard.sanitize_prompt(plain) == plain
 
 
+class TestCoerceTopK:
+    def test_passes_through_in_range(self):
+        assert SecurityGuard.coerce_top_k(7, default=5) == 7
+
+    def test_none_falls_back_to_default(self):
+        assert SecurityGuard.coerce_top_k(None, default=5) == 5
+
+    def test_blank_string_falls_back_to_default(self):
+        assert SecurityGuard.coerce_top_k("", default=10) == 10
+
+    def test_numeric_string_is_coerced(self):
+        assert SecurityGuard.coerce_top_k("8", default=5) == 8
+
+    def test_clamps_above_maximum(self):
+        assert SecurityGuard.coerce_top_k(9999, default=5) == SecurityGuard.MAX_TOP_K
+
+    def test_clamps_below_one(self):
+        assert SecurityGuard.coerce_top_k(0, default=5) == 1
+        assert SecurityGuard.coerce_top_k(-4, default=5) == 1
+
+    def test_custom_maximum_is_honoured(self):
+        assert SecurityGuard.coerce_top_k(100, default=5, maximum=25) == 25
+
+    def test_non_numeric_raises_value_error(self):
+        for bad in ("abc", [1, 2], {"a": 1}):
+            with pytest.raises(ValueError, match="top_k must be an integer"):
+                SecurityGuard.coerce_top_k(bad, default=5)
+
+
 class TestValidateLLMHost:
     def test_localhost_accepted(self):
         url = SecurityGuard.validate_llm_host("http://localhost:11434")

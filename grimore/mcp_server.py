@@ -32,6 +32,7 @@ from typing import IO, Any, Callable, Optional
 
 from grimore.session import Session
 from grimore.utils.logger import get_logger
+from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
@@ -214,7 +215,10 @@ class MCPServer:
         question = args.get("question", "")
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question is required and must be a non-empty string")
-        top_k = int(args.get("top_k", 5) or 5)
+        # ValueError on a non-numeric value propagates to the dispatcher,
+        # which maps it to _INVALID_PARAMS. maximum mirrors the advertised
+        # input-schema bound so the handler actually enforces it (audit L2).
+        top_k = SecurityGuard.coerce_top_k(args.get("top_k"), default=5, maximum=25)
         result = self.session.oracle.ask(question, top_k=top_k)
         return {
             "answer": result.get("answer", ""),
@@ -226,7 +230,7 @@ class MCPServer:
         query = args.get("query", "")
         if not isinstance(query, str) or not query.strip():
             raise ValueError("query is required and must be a non-empty string")
-        top_k = int(args.get("top_k", 10) or 10)
+        top_k = SecurityGuard.coerce_top_k(args.get("top_k"), default=10, maximum=50)
         query_vector = self.session.embedder.embed(query)
         use_hybrid = (
             getattr(self.session.config.cognition, "hybrid_search", True)
@@ -307,7 +311,7 @@ class MCPServer:
         if note_id is None:
             raise ValueError("note_id is required")
         note_id = int(note_id)
-        top_k = int(args.get("top_k", 5) or 5)
+        top_k = SecurityGuard.coerce_top_k(args.get("top_k"), default=5, maximum=25)
 
         # Pull the note's average embedding as the query vector: average
         # all its chunks so we score against the whole note's "topic"
