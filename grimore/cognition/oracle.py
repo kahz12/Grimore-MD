@@ -82,6 +82,7 @@ class Oracle:
         budget. Same wrap_untrusted defence applies.
         """
         logger.info("oracle_query", question=question)
+        history = self._normalize_history(history)
         retrieval_query = self._rewrite_query(question, history)
         full_context, sources = self._build_context(
             retrieval_query, top_k, extra_sources=extra_sources
@@ -147,6 +148,37 @@ class Oracle:
     # ── conversation memory ──────────────────────────────────────────────
 
     _HISTORY_MAX_CHARS = 2_000
+
+    @staticmethod
+    def _normalize_history(history) -> list[dict]:
+        """Coerce request-supplied ``history`` into a safe list of turns.
+
+        ``history`` arrives from the HTTP API / MCP caller (or the shell's
+        own turn log) and is interpolated into both the retrieval-rewrite
+        prompt and the system prompt. Unlike retrieved note content and
+        ``extra_sources`` it previously skipped the injection guard, so a
+        caller could smuggle role markers / chat-template tokens through it
+        (audit L3); a non-list value would also crash the ``history[-3:]``
+        iteration with an ``AttributeError`` → 500.
+
+        Returns a list of ``{"q", "a"}`` dicts with both fields run through
+        :meth:`SecurityGuard.sanitize_prompt`. Anything that isn't a list of
+        dicts is dropped, so a malformed value degrades to "no history"
+        rather than raising.
+        """
+        if not isinstance(history, list):
+            return []
+        turns: list[dict] = []
+        for turn in history:
+            if not isinstance(turn, dict):
+                continue
+            q = turn.get("q")
+            a = turn.get("a")
+            q = SecurityGuard.sanitize_prompt(q) if isinstance(q, str) else ""
+            a = SecurityGuard.sanitize_prompt(a) if isinstance(a, str) else ""
+            if q or a:
+                turns.append({"q": q, "a": a})
+        return turns
 
     def _rewrite_query(self, question: str, history) -> str:
         """Condense a follow-up + recent turns into one standalone retrieval
@@ -316,6 +348,7 @@ class Oracle:
         for callers like ``--export`` that depend on a structured payload.
         """
         logger.info("oracle_query_stream", question=question)
+        history = self._normalize_history(history)
         retrieval_query = self._rewrite_query(question, history)
         full_context, sources = self._build_context(retrieval_query, top_k, extra_sources=extra_sources)
         if full_context is None:
