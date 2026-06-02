@@ -39,11 +39,15 @@ class Embedder:
     def __init__(self, config, cache: Optional[EmbeddingCache] = None):
         self.config = config
         raw_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        allow_remote = config.cognition.allow_remote
         self.ollama_host = SecurityGuard.validate_llm_host(
-            raw_host, allow_remote=config.cognition.allow_remote
+            raw_host, allow_remote=allow_remote
         )
         self.model = config.cognition.model_embeddings_local
-        self.session = build_session()
+        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        self.session = build_session(
+            pins=SecurityGuard.loopback_pins(raw_host, allow_remote=allow_remote)
+        )
         self.cache = cache
 
     def _cache_key(self, text: str) -> str:

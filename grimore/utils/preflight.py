@@ -98,7 +98,15 @@ class PreflightChecker:
 
     def __init__(self, config, *, session=None, ollama_host: Optional[str] = None):
         self.config = config
-        self.session = session or build_session(total_retries=1, backoff=0.1)
+        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        self.session = session or build_session(
+            total_retries=1,
+            backoff=0.1,
+            pins=SecurityGuard.loopback_pins(
+                os.getenv("OLLAMA_HOST", "http://localhost:11434"),
+                allow_remote=config.cognition.allow_remote,
+            ),
+        )
         self.ollama_host = ollama_host or self._resolve_ollama_host()
 
     def _resolve_ollama_host(self) -> str:

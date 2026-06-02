@@ -139,6 +139,57 @@ class SecurityGuard:
             SecurityGuard._host_cache[cache_key] = (url, time.monotonic())
         return url
 
+    @staticmethod
+    def loopback_pins(url: str, allow_remote: bool = False) -> dict[str, list[str]]:
+        """Build a ``{hostname: [loopback IP, ...]}`` pin map for an HTTP
+        loopback backend, closing the DNS-rebinding TOCTOU window in
+        :func:`validate_llm_host` (audit I1).
+
+        ``validate_llm_host`` resolves the host and checks it is loopback,
+        but the HTTP client re-resolves the hostname independently at connect
+        time — a name that resolved to loopback during the check could be
+        rebound before the connection. Pinning the connection to the exact
+        addresses we validated removes that gap.
+
+        Returns ``{}`` (no pinning) when it doesn't apply or isn't safe:
+
+        * ``allow_remote`` — a remote host is reached over ``https`` whose
+          certificate already binds the connection to the intended peer, so a
+          rebind can't redirect it; and we deliberately skip the cache there.
+        * a non-``http`` scheme — pinning to an IP literal would break TLS
+          SNI / certificate validation.
+        * a host that is already an IP literal — there is no name to rebind.
+        * a host that does not resolve, or resolves to any non-loopback
+          address — fail safe to "no pin" (and let ``validate_llm_host`` be
+          the gate that rejects it).
+
+        Fail-safe by construction: every failure path returns ``{}``, so this
+        can never *manufacture* a pin to an address that wasn't validated.
+        """
+        if allow_remote:
+            return {}
+        parsed = urlparse(url)
+        if parsed.scheme != "http" or not parsed.hostname:
+            return {}
+        host = parsed.hostname
+        try:
+            ipaddress.ip_address(host)
+            return {}  # already an IP literal — nothing to rebind
+        except ValueError:
+            pass
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return {}
+        addrs = {ipaddress.ip_address(info[4][0]) for info in infos}
+        if not addrs or not all(addr.is_loopback for addr in addrs):
+            return {}
+        # IPv4 loopback first: local LLM servers (Ollama, llama.cpp) default
+        # to 127.0.0.1, but keep every validated loopback address so the
+        # adapter can fall back across families if only one is listening.
+        ips = sorted((str(addr) for addr in addrs), key=lambda s: ":" in s)
+        return {host: ips}
+
     # Default ceiling on a request-supplied ``top_k`` across the HTTP API
     # and the MCP server. A large value inflates retrieval + context
     # assembly work — an amplification lever for an (even authenticated)

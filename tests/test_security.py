@@ -178,6 +178,73 @@ class TestValidateLLMHostCache:
         assert ("https://1.1.1.1:11434", True) not in SecurityGuard._host_cache
 
 
+class TestLoopbackPins:
+    """I1: pin a loopback HTTP backend to its validated address so the HTTP
+    client can't re-resolve the name to a rebound IP between check and use."""
+
+    def test_remote_disables_pinning(self):
+        assert SecurityGuard.loopback_pins("http://localhost:11434", allow_remote=True) == {}
+
+    def test_https_is_not_pinned(self):
+        # Pinning an IP would break SNI/cert; TLS already binds the peer.
+        assert SecurityGuard.loopback_pins("https://localhost:11434") == {}
+
+    def test_ip_literal_is_not_pinned(self):
+        # No hostname to rebind, so there is nothing to pin.
+        assert SecurityGuard.loopback_pins("http://127.0.0.1:11434") == {}
+        assert SecurityGuard.loopback_pins("http://[::1]:11434") == {}
+
+    def test_loopback_name_is_pinned(self):
+        pins = SecurityGuard.loopback_pins("http://localhost:11434")
+        assert "localhost" in pins
+        assert "127.0.0.1" in pins["localhost"]
+        # Every pinned address is loopback.
+        import ipaddress
+        assert all(ipaddress.ip_address(ip).is_loopback for ip in pins["localhost"])
+
+    def test_ipv4_loopback_is_ordered_first(self, monkeypatch):
+        import grimore.utils.security as sec
+        monkeypatch.setattr(
+            sec.socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (0, 0, 0, "", ("::1", 0, 0, 0)),
+                (0, 0, 0, "", ("127.0.0.1", 0)),
+            ],
+        )
+        pins = SecurityGuard.loopback_pins("http://my-llm.local:11434")
+        assert pins == {"my-llm.local": ["127.0.0.1", "::1"]}
+
+    def test_non_loopback_is_not_pinned(self, monkeypatch):
+        import grimore.utils.security as sec
+        monkeypatch.setattr(
+            sec.socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("8.8.8.8", 0))]
+        )
+        assert SecurityGuard.loopback_pins("http://evil.example:11434") == {}
+
+    def test_mixed_loopback_and_public_is_not_pinned(self, monkeypatch):
+        # If ANY resolved address is non-loopback, refuse to pin (fail safe).
+        import grimore.utils.security as sec
+        monkeypatch.setattr(
+            sec.socket,
+            "getaddrinfo",
+            lambda *a, **k: [
+                (0, 0, 0, "", ("127.0.0.1", 0)),
+                (0, 0, 0, "", ("8.8.8.8", 0)),
+            ],
+        )
+        assert SecurityGuard.loopback_pins("http://rebind.example:11434") == {}
+
+    def test_unresolvable_is_not_pinned(self, monkeypatch):
+        import grimore.utils.security as sec
+
+        def boom(*a, **k):
+            raise sec.socket.gaierror("name does not resolve")
+
+        monkeypatch.setattr(sec.socket, "getaddrinfo", boom)
+        assert SecurityGuard.loopback_pins("http://nx.example:11434") == {}
+
+
 class TestWrapUntrusted:
     def test_wraps_with_label(self):
         out = SecurityGuard.wrap_untrusted("hi", label="source")

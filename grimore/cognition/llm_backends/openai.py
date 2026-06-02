@@ -60,15 +60,19 @@ class OpenAICompatibleBackend:
             or os.getenv("OPENAI_BASE_URL")
             or "http://localhost:8080"
         )
+        allow_remote = config.cognition.allow_remote
         # SecurityGuard returns the URL untouched on success; mirror the
         # Ollama backend in storing the validated form.
         self.base_url = SecurityGuard.validate_llm_host(
-            base, allow_remote=config.cognition.allow_remote
+            base, allow_remote=allow_remote
         ).rstrip("/")
         self._api_key_env = getattr(
             config.cognition, "llm_api_key_env", "GRIMORE_LLM_API_KEY"
         )
-        self.session = build_session()
+        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        self.session = build_session(
+            pins=SecurityGuard.loopback_pins(base, allow_remote=allow_remote)
+        )
 
     def _headers(self) -> dict:
         """Build per-call headers, picking up the bearer token if set."""
