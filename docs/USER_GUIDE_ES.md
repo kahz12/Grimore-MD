@@ -1126,9 +1126,12 @@ grimore_generated: true    # escrito por las salidas de `distill`; las protege d
 ## 10. Privacidad y seguridad
 
 **Local por construcción.** Con `cognition.allow_remote = false` (el
-predeterminado), toda llamada a Ollama es rechazada salvo que el endpoint
-resuelva a una dirección loopback. Cambia el flag solo si estás enrutando
-a sabiendas a una máquina LAN de confianza.
+predeterminado), toda llamada al LLM es rechazada salvo que el endpoint
+resuelva a una dirección loopback — y la conexión se fija (pin) a esa IP
+validada (el hostname original viaja en la cabecera `Host`), de modo que un
+nombre que pasa la comprobación no puede reasignarse (rebind) a otra
+dirección antes de que la petición llegue. Cambia el flag solo si estás
+enrutando a sabiendas a una máquina de confianza por `https`.
 
 **Salida por nota.** `privacy: never_process` excluye una nota de la
 cognición por completo (ver §9).
@@ -1140,8 +1143,18 @@ igual procede — Grimore no descarta silenciosamente tu trabajo, pero te
 enteras).
 
 **Endurecimiento contra prompt-injection.** Los marcadores de rol
-(`### System:` y similares) incrustados dentro del contenido de las
-notas se neutralizan antes de llegar al LLM.
+(`### System:` y similares) y los tokens de plantilla de chat se
+neutralizan antes de llegar al LLM — aplicado tanto al contenido de notas
+recuperado como a cualquier historial de conversación que pase un cliente
+(el campo `history` de la API HTTP), de modo que ninguno puede colar
+instrucciones al modelo.
+
+**Parseo de documentos endurecido.** Los archivos EPUB/DOCX/ODT son XML por
+dentro; Grimore parsea esos miembros con defensas contra expansión de
+entidades y entidades externas (un parser basado en `defusedxml`, con un
+pre-rechazo por bytes de `DOCTYPE`/`ENTITY` como respaldo). Un documento
+malicioso tipo «billion-laughs» soltado en una bóveda vigilada se rechaza,
+en lugar de agotar la memoria.
 
 **Git Guard.** Cada mutación va precedida de un auto-commit. `git reflog`
 es tu deshacer.
@@ -1205,6 +1218,15 @@ Las respuestas en streaming usan Server-Sent Events en
 `POST /api/ask` cuando el cuerpo lleva `stream: true`. CORS está
 desactivado por defecto; pasa `--cors-origin <origen>` para habilitar
 exactamente un origen.
+
+Cuando se define un token, este protege **todas** las rutas `/api/*` —
+incluidos los GET, no solo los POST al LLM — para cualquier cliente
+no-loopback; los clientes loopback siguen abiertos para que la UI web local
+funcione sin token. El par (peer) se lee de la propia conexión, así que un
+`X-Forwarded-For` falsificado no puede saltarse la comprobación, y el token
+se compara en tiempo constante. Un `top_k` en el cuerpo de la petición se
+acota a un techo razonable (y un valor no numérico se rechaza con `400`) en
+lugar de amplificar el trabajo de recuperación.
 
 El extra `serve` es obligatorio: `pip install 'grimore[serve]'`. En
 Linux/Windows arrastra FastAPI como ruta de upgrade; la

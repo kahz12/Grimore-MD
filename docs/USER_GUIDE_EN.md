@@ -1065,9 +1065,12 @@ grimore_generated: true    # written by `distill` outputs; protects them from re
 ## 10. Privacy & safety
 
 **Local by construction.** With `cognition.allow_remote = false` (the
-default), every Ollama call is rejected unless the endpoint resolves to a
-loopback address. Flip the flag only if you're knowingly routing to a
-trusted LAN box.
+default), every LLM call is rejected unless the endpoint resolves to a
+loopback address — and the connection is then pinned to that validated IP
+(the original hostname rides along in the `Host` header), so a name that
+passes the check can't be rebound to a different address before the request
+lands. Flip the flag only if you're knowingly routing to a trusted box over
+`https`.
 
 **Per-note opt-out.** `privacy: never_process` excludes a note from
 cognition entirely (see §9).
@@ -1078,7 +1081,16 @@ structured log (the call still proceeds — Grimore won't silently drop your
 work, but you'll know).
 
 **Prompt-injection hardening.** Role markers (`### System:` and similar)
-embedded inside note content are neutralised before reaching the LLM.
+and chat-template tokens are neutralised before reaching the LLM — applied
+both to retrieved note content and to any conversation history a client
+passes in (the HTTP API's `history` field), so neither can smuggle
+instructions past the model.
+
+**Hardened document parsing.** EPUB/DOCX/ODT files are XML under the hood;
+Grimore parses those members with entity-expansion and external-entity
+defences (a `defusedxml`-backed parser, with a raw-bytes `DOCTYPE`/`ENTITY`
+pre-reject as a fallback). A malicious "billion-laughs" document dropped into
+a watched vault is refused, not allowed to exhaust memory.
 
 **Git Guard.** Every mutation is preceded by an auto-commit. `git reflog`
 is your undo.
@@ -1136,6 +1148,14 @@ GRIMORE_API_TOKEN="$(openssl rand -hex 32)" \
 Streaming answers use Server-Sent Events on `POST /api/ask` when the
 body has `stream: true`. CORS is off by default; pass
 `--cors-origin <origin>` to enable exactly one origin.
+
+When a token is set it gates **every** `/api/*` route — GET included, not
+just the LLM POSTs — for any non-loopback caller; loopback clients stay open
+so the local browser UI works without a token. The peer is read from the
+connection itself, so a forged `X-Forwarded-For` can't bypass the check, and
+the token is compared in constant time. A `top_k` in the request body is
+clamped to a sane ceiling (and a non-numeric value is rejected with `400`)
+rather than amplifying retrieval work.
 
 The `serve` extra is required: `pip install 'grimore[serve]'`. On
 Linux/Windows that pulls FastAPI as the upgrade path; the shipped
