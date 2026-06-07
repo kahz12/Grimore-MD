@@ -195,9 +195,13 @@ class TestConversationMemory:
 
 class TestRerank:
     def _connector(self, return_value):
+        # Bypass __init__, wire just the LLM reranker over a mocked router —
+        # the public dispatcher (_rerank) is what production calls.
+        from grimore.cognition.reranker import LLMReranker
         c = Connector.__new__(Connector)
         c.router = MagicMock()
         c.router.complete.return_value = return_value
+        c._reranker = LLMReranker(c.router)
         return c
 
     def test_reorders_by_llm_score(self):
@@ -205,14 +209,14 @@ class TestRerank:
         c = self._connector({"scores": [
             {"index": 3, "score": 9}, {"index": 0, "score": 7}, {"index": 1, "score": 2},
         ]})
-        out = c._llm_rerank("q", cands, pool=5)
+        out = c._rerank("q", cands, 5)
         assert [d["note_id"] for d in out][:2] == [3, 0]
 
     def test_failure_preserves_order(self):
         cands = [{"note_id": i, "text": f"p{i}", "score": 1.0} for i in range(4)]
         for bad in (None, {"nope": 1}, {"scores": "garbage"}):
             c = self._connector(bad)
-            assert [d["note_id"] for d in c._llm_rerank("q", cands, 4)] == [0, 1, 2, 3]
+            assert [d["note_id"] for d in c._rerank("q", cands, 4)] == [0, 1, 2, 3]
 
 
 # ── version ─────────────────────────────────────────────────────────────────

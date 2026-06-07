@@ -12,6 +12,10 @@ from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Upper bound on the number of OR-ed terms in an FTS5 MATCH expression, so a
+# pathological (e.g. multi-kilobyte) query can't build an unbounded query tree.
+_FTS_MAX_TERMS = 50
+
 
 def _escape_like(text: str) -> str:
     """
@@ -467,8 +471,18 @@ class Database:
         """
         if not self.fts_available or not query or not query.strip():
             return []
-        # FTS5 match string: quote to avoid operator parsing on user input.
-        match = '"' + query.replace('"', '""') + '"'
+        # FTS5 match string. Tokenise on whitespace and OR the terms so we get
+        # bag-of-words BM25 recall — a document that contains the query words
+        # in any order/position matches, instead of only the exact phrase a
+        # single quoted string would demand. Each token is individually
+        # double-quoted (with internal ``"`` doubled) so FTS5 operators or
+        # punctuation in user input can't be parsed as query syntax — same
+        # injection safety as before, wider recall. Capped so a pathological
+        # query can't build a giant MATCH expression.
+        tokens = [t for t in query.split() if t][:_FTS_MAX_TERMS]
+        if not tokens:
+            return []
+        match = " OR ".join('"' + t.replace('"', '""') + '"' for t in tokens)
         with self._get_connection() as conn:
             try:
                 rows = conn.execute(
@@ -486,12 +500,6 @@ class Database:
                 logger.warning("fts_query_failed", error=str(e))
                 return []
         return [(r[0], r[1], r[2], float(r[3])) for r in rows]
-
-    def get_note_by_path(self, path: str):
-        """Retrieves a note record by its file path."""
-        with self._get_connection() as conn:
-            cursor = conn.execute("SELECT * FROM notes WHERE path = ?", (path,))
-            return cursor.fetchone()
 
     def get_content_hash_by_path(self, path: str) -> Optional[str]:
         """
@@ -664,15 +672,6 @@ class Database:
             )
             conn.commit()
 
-    def set_sidecar_path(self, note_id: int, sidecar_path: Optional[str]) -> None:
-        """Record (or clear with ``None``) the sidecar ``.md`` for a note."""
-        with self._get_connection() as conn:
-            conn.execute(
-                "UPDATE notes SET sidecar_path = ? WHERE id = ?",
-                (sidecar_path, note_id),
-            )
-            conn.commit()
-
     # ── Categories ─────────────────────────────────────────────────────────
 
     def set_note_category(self, note_id: int, category: Optional[str]) -> None:
@@ -796,34 +795,91 @@ class Database:
         except sqlite3.OperationalError as e:  # pragma: no cover - defensive
             logger.warning("vec_insert_failed", rowid=rowid, error=str(e))
 
+    def _delete_embeddings_for_note(self, conn, note_id: int) -> None:
+        """Delete a note's embeddings (and their vec mirror) on an existing
+        connection, *without* committing.
+
+        The FTS index follows automatically via the ``embeddings_ad`` AFTER
+        DELETE trigger, but ``embeddings_vec`` is kept in sync by explicit
+        dual-write (it has no trigger), so its rows must be cleared here too.
+        Callers that forget this leave orphaned vectors that still occupy
+        KNN slots in :py:meth:`vec_search` and silently shrink results.
+        The vec rows are deleted first, while the source rows they select
+        from still exist.
+        """
+        if self._vec_available and self._vec_dim is not None:
+            conn.execute(
+                "DELETE FROM embeddings_vec WHERE rowid IN "
+                "(SELECT id FROM embeddings WHERE note_id = ?)",
+                (note_id,),
+            )
+        conn.execute("DELETE FROM embeddings WHERE note_id = ?", (note_id,))
+
     def delete_note_embeddings(self, note_id: int):
-        """Deletes all embeddings associated with a note (usually before re-indexing)."""
+        """Delete all embeddings (and their vec mirror) for a note.
+
+        Used before a full re-index and by the prune path. The vec mirror is
+        cleared alongside the source rows — see
+        :py:meth:`_delete_embeddings_for_note`.
+        """
         with self._get_connection() as conn:
-            if self._vec_available and self._vec_dim is not None:
-                # Drop the mirrored vec rows first so we don't leave orphans.
-                conn.execute(
-                    "DELETE FROM embeddings_vec WHERE rowid IN "
-                    "(SELECT id FROM embeddings WHERE note_id = ?)",
-                    (note_id,),
-                )
-            conn.execute("DELETE FROM embeddings WHERE note_id = ?", (note_id,))
+            self._delete_embeddings_for_note(conn, note_id)
             conn.commit()
+
+    def get_chunk_records(
+        self, note_id: int
+    ) -> dict[int, tuple[Optional[str], Optional[int], Optional[str]]]:
+        """Return ``{chunk_index: (chunk_hash, page, heading)}`` for a note.
+
+        The incremental re-embed path uses the hash to detect changed
+        *content* and the ``(page, heading)`` anchors to detect when a
+        chunk's *position* moved — a pagination reflow earlier in the
+        document — even though its text (and therefore its hash) is
+        unchanged. Rows that pre-date the chunk_hash migration carry
+        ``None`` for the hash and are treated as always-stale.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT chunk_index, chunk_hash, page, heading "
+                "FROM embeddings WHERE note_id = ?",
+                (note_id,),
+            ).fetchall()
+        return {int(r[0]): (r[1], r[2], r[3]) for r in rows}
 
     def get_chunk_hashes(self, note_id: int) -> dict[int, Optional[str]]:
         """Return ``{chunk_index: chunk_hash}`` for a note's stored chunks.
 
-        Used by the incremental re-embed path to detect which chunks
-        actually changed since the last scan. Rows that pre-date the
-        chunk_hash migration carry ``None`` here — the caller treats
-        those as always-stale, which back-fills the column on first
-        re-scan without an explicit migration pass.
+        Thin view over :py:meth:`get_chunk_records` for callers that only
+        need the content fingerprint. Rows that pre-date the chunk_hash
+        migration carry ``None`` here — the caller treats those as
+        always-stale, which back-fills the column on first re-scan without
+        an explicit migration pass.
+        """
+        return {idx: rec[0] for idx, rec in self.get_chunk_records(note_id).items()}
+
+    def update_chunk_anchors(
+        self,
+        note_id: int,
+        chunk_index: int,
+        page: Optional[int],
+        heading: Optional[str],
+    ) -> None:
+        """Refresh a kept chunk's citation anchors without re-embedding.
+
+        The chunk_hash is computed over text only, so a chunk whose text is
+        unchanged keeps its embedding across scans. But if an edit earlier in
+        the document reflowed pagination, its stored ``page`` / ``heading`` can
+        go stale and a citation like ``[[Title#p.42]]`` points at the wrong
+        place. This updates just those two columns — the vector is untouched,
+        so the vec / FTS mirrors need no sync.
         """
         with self._get_connection() as conn:
-            rows = conn.execute(
-                "SELECT chunk_index, chunk_hash FROM embeddings WHERE note_id = ?",
-                (note_id,),
-            ).fetchall()
-        return {int(r[0]): r[1] for r in rows}
+            conn.execute(
+                "UPDATE embeddings SET page = ?, heading = ? "
+                "WHERE note_id = ? AND chunk_index = ?",
+                (page, heading, note_id, chunk_index),
+            )
+            conn.commit()
 
     def delete_chunks(self, note_id: int, chunk_indices: Iterable[int]) -> int:
         """Drop a subset of a note's chunks by ``chunk_index``.
@@ -932,24 +988,6 @@ class Database:
             conn.execute("DROP TABLE IF EXISTS embeddings_vec")
             conn.commit()
         self._vec_dim = None
-
-    def rebuild_vec_table(self) -> int:
-        """Drop and rebuild ``embeddings_vec`` from the current ``embeddings``.
-
-        Used after a model swap when the dim changes — the existing
-        virtual table can't be altered in place. Returns the row count
-        that was reinserted. No-op when sqlite-vec isn't loaded.
-        """
-        if not self._vec_available:
-            return 0
-        self.drop_vec_table()
-        with self._get_connection() as conn:
-            self._migrate_vec_table(conn)
-            conn.commit()
-        # _migrate_vec_table already backfilled when it found pre-existing rows.
-        with self._get_connection() as conn:
-            row = conn.execute("SELECT COUNT(*) FROM embeddings_vec").fetchone()
-        return int(row[0]) if row else 0
 
     # ── Embedding-model migration ────────────────────────────────────────
 
@@ -1093,9 +1131,9 @@ class Database:
         """Atomically replace ``embeddings`` with the shadow contents.
 
         Single transaction so a crash mid-swap leaves the original table
-        intact. The vec table is dropped here (it was sized for the old
-        dim) and rebuilt lazily on the next insert / explicit
-        ``rebuild_vec_table`` call.
+        intact. The vec table (sized for the old vectors' rowids + dim) is
+        dropped and rebuilt only *after* the swap commits, so a rolled-back
+        swap leaves the existing vec index valid rather than missing.
 
         Returns the migration row in its new ``complete`` state.
         """
@@ -1108,10 +1146,6 @@ class Database:
             )
 
         with self._get_connection() as conn:
-            # Drop the vec table first — it's keyed on rowid + dim, both of
-            # which become wrong after the swap. The rebuild happens after.
-            if self._vec_available:
-                conn.execute("DROP TABLE IF EXISTS embeddings_vec")
             conn.execute("BEGIN")
             try:
                 conn.execute("DELETE FROM embeddings")
@@ -1142,7 +1176,10 @@ class Database:
                 conn.execute("INSERT INTO embeddings_fts(embeddings_fts) VALUES ('rebuild')")
                 conn.commit()
         if self._vec_available:
-            self._vec_dim = None
+            # Sized for the old vectors, so drop and rebuild from the
+            # swapped-in embeddings. Only reached after COMMIT above, so a
+            # rolled-back swap never leaves the vec index torn down.
+            self.drop_vec_table()
             with self._get_connection() as conn:
                 self._migrate_vec_table(conn)
                 conn.commit()
@@ -1373,7 +1410,9 @@ class Database:
         with self._get_connection() as conn:
             for note_id, _ in stale:
                 conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
-                conn.execute("DELETE FROM embeddings WHERE note_id = ?", (note_id,))
+                # Use the shared helper so the embeddings_vec mirror is cleared
+                # too — a raw ``DELETE FROM embeddings`` would orphan vec rows.
+                self._delete_embeddings_for_note(conn, note_id)
                 conn.execute("DELETE FROM freshness WHERE note_path = (SELECT path FROM notes WHERE id = ?)", (note_id,))
                 conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
             conn.commit()
@@ -1562,18 +1601,6 @@ class Database:
                 """
             ).fetchall()
         return [(r[0], r[1]) for r in rows]
-
-    def get_claim_by_id(self, claim_id: int):
-        """``(id, note_path, claim_text, char_start, char_end)`` or None."""
-        with self._get_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT id, note_path, claim_text, char_start, char_end
-                FROM claims WHERE id = ?
-                """,
-                (claim_id,),
-            ).fetchone()
-        return tuple(row) if row else None
 
     def get_all_claims_with_vectors(self) -> list[tuple[int, str, str, bytes]]:
         """``[(claim_id, note_path, claim_text, embedding_blob), …]``.

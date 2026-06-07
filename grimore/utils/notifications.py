@@ -46,12 +46,3 @@ class Notifier:
                 f"{count} new notes have been analyzed and tagged.",
                 "low"
             )
-
-    def notify_connections_found(self, count: int):
-        """Sends a notification when new semantic connections are discovered."""
-        if count > 0:
-            self.notify(
-                "Grimore: New Connections",
-                f"The Oracle has discovered {count} common threads in your vault.",
-                "default"
-            )

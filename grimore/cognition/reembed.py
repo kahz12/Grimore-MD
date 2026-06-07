@@ -70,7 +70,7 @@ def reembed_note(
     over the full chunk text because that's what gets sent to Ollama.
     """
     chunk_list = list(chunks)
-    existing = db.get_chunk_hashes(note_id)
+    existing = db.get_chunk_records(note_id)   # {idx: (hash, page, heading)}
     model = embedder.model
 
     # Plan each candidate: keep vs re-embed, by index.
@@ -78,8 +78,9 @@ def reembed_note(
     for idx, c in enumerate(chunk_list):
         h = Embedder.chunk_hash(c.text, model)
         prior = existing.get(idx)
+        prior_hash = prior[0] if prior is not None else None
         # Legacy NULL hashes count as stale — re-embed once to back-fill.
-        is_stale = prior is None or prior != h
+        is_stale = prior_hash is None or prior_hash != h
         plan.append((idx, c, h, is_stale))
 
     # Indices to drop: anything past the new length (note shrank) plus
@@ -91,34 +92,55 @@ def reembed_note(
 
     kept = 0
     embedded = 0
+    reanchored = 0
+    stale_items: list[tuple[int, Chunk, str]] = []
     for idx, c, h, stale in plan:
         if not stale:
             kept += 1
+            # Text (and so the embedding) is unchanged, but an edit earlier in
+            # the document may have shifted this chunk's page/heading. Refresh
+            # the stored anchors cheaply — no re-embed — so citations stay
+            # correct even when only pagination moved.
+            prior = existing.get(idx)
+            if prior is not None and (prior[1], prior[2]) != (c.page, c.heading):
+                db.update_chunk_anchors(note_id, idx, c.page, c.heading)
+                reanchored += 1
             continue
-        vector = embedder.embed(c.text)
-        if vector is None:
-            # Embed failure: skip — the next scan will retry. We've already
-            # deleted any prior row for this index, so nothing inconsistent
-            # is left behind.
-            continue
-        db.store_embedding(
-            note_id,
-            idx,
-            c.text[:text_truncation],
-            embedder.serialize_vector(vector),
-            page=c.page,
-            heading=c.heading,
-            chunk_hash=h,
-        )
-        embedded += 1
+        stale_items.append((idx, c, h))
+
+    # Embed every changed chunk in as few round-trips as possible. Prefer the
+    # embedder's batch API (one request for the whole note) and fall back to
+    # per-chunk embed() for minimal stand-ins that only implement embed().
+    if stale_items:
+        texts = [c.text for _, c, _ in stale_items]
+        _embed_batch = getattr(embedder, "embed_batch", None)
+        vectors = _embed_batch(texts) if callable(_embed_batch) \
+            else [embedder.embed(t) for t in texts]
+        for (idx, c, h), vector in zip(stale_items, vectors):
+            if vector is None:
+                # Embed failure: skip — the next scan will retry. We've already
+                # deleted any prior row for this index, so nothing inconsistent
+                # is left behind.
+                continue
+            db.store_embedding(
+                note_id,
+                idx,
+                c.text[:text_truncation],
+                embedder.serialize_vector(vector),
+                page=c.page,
+                heading=c.heading,
+                chunk_hash=h,
+            )
+            embedded += 1
 
     stored = kept + embedded
-    if removed or embedded:
+    if removed or embedded or reanchored:
         logger.info(
             "reembed_note_done",
             note_id=note_id,
             kept=kept,
             embedded=embedded,
             removed=removed,
+            reanchored=reanchored,
         )
     return ReembedResult(kept=kept, embedded=embedded, removed=removed, stored=stored)

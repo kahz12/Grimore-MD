@@ -50,6 +50,19 @@ class _SpyEmbedder:
         return Embedder.serialize_vector(vec)
 
 
+class _BatchSpyEmbedder(_SpyEmbedder):
+    """Spy that also implements embed_batch, recording each batch call so a
+    test can assert reembed_note takes the one-round-trip path."""
+
+    def __init__(self, model: str = "fake-model"):
+        super().__init__(model)
+        self.batch_calls: list[list[str]] = []
+
+    def embed_batch(self, texts):
+        self.batch_calls.append(list(texts))
+        return [self.embed(t) for t in texts]
+
+
 def _make_db(tmp_path: Path) -> Database:
     return Database(str(tmp_path / "incremental.db"))
 
@@ -124,6 +137,20 @@ class TestDbHelpers:
         db.store_embedding(note_id, 0, "a", b"\x00" * 4, chunk_hash="h0")
         assert db.delete_chunks(note_id, []) == 0
         assert db.get_chunk_hashes(note_id) == {0: "h0"}
+
+    def test_get_chunk_records_returns_hash_and_anchors(self, tmp_path):
+        db = _make_db(tmp_path)
+        note_id = _seed_note(db)
+        db.store_embedding(
+            note_id, 0, "a", b"\x00" * 4, page=1, heading="Intro", chunk_hash="h0"
+        )
+        db.store_embedding(note_id, 1, "b", b"\x00" * 4, chunk_hash="h1")
+        assert db.get_chunk_records(note_id) == {
+            0: ("h0", 1, "Intro"),
+            1: ("h1", None, None),
+        }
+        # get_chunk_hashes stays a thin view over the same rows.
+        assert db.get_chunk_hashes(note_id) == {0: "h0", 1: "h1"}
 
 
 # ── reembed_note ─────────────────────────────────────────────────────────
@@ -294,3 +321,61 @@ class TestReembedNote:
         assert ids_before[2] == ids_after[2]
         # The edited chunk got a new id (it was deleted then re-inserted).
         assert ids_before[1] != ids_after[1]
+
+    def test_moved_anchor_is_reanchored_not_reembedded(self, tmp_path):
+        """A chunk whose text is unchanged but whose page/heading moved (a
+        pagination reflow earlier in the doc) refreshes its stored anchors
+        without paying for a re-embed — otherwise a citation like
+        ``[[Title#p.42]]`` points at the wrong page."""
+        db = _make_db(tmp_path)
+        note_id = _seed_note(db)
+        emb = _SpyEmbedder()
+        reembed_note(db, emb, note_id, [Chunk(text="abc", page=1, heading="Intro")])
+        emb.calls.clear()
+
+        result = reembed_note(
+            db, emb, note_id, [Chunk(text="abc", page=7, heading="Later")]
+        )
+        assert emb.calls == []          # text unchanged → embedding reused
+        assert result.kept == 1
+        assert result.embedded == 0
+        with sqlite3.connect(db.db_path) as conn:
+            row = conn.execute(
+                "SELECT page, heading FROM embeddings "
+                "WHERE note_id = ? AND chunk_index = 0",
+                (note_id,),
+            ).fetchone()
+        assert row == (7, "Later")      # anchor refreshed in place
+
+    def test_unchanged_anchor_skips_the_update(self, tmp_path):
+        """No anchor change → no spurious UPDATE on the kept row."""
+        db = _make_db(tmp_path)
+        note_id = _seed_note(db)
+        emb = _SpyEmbedder()
+        reembed_note(db, emb, note_id, [Chunk(text="abc", page=3, heading="H")])
+
+        spy = MagicMock(wraps=db.update_chunk_anchors)
+        db.update_chunk_anchors = spy
+        reembed_note(db, emb, note_id, [Chunk(text="abc", page=3, heading="H")])
+        spy.assert_not_called()
+
+    def test_changed_chunks_embed_in_one_batch(self, tmp_path):
+        """All stale chunks are embedded in a single batch call (not N serial
+        round-trips) when the embedder exposes embed_batch."""
+        db = _make_db(tmp_path)
+        note_id = _seed_note(db)
+        emb = _BatchSpyEmbedder()
+        result = reembed_note(db, emb, note_id, self._chunks("p1", "p2", "p3"))
+        assert result.embedded == 3
+        assert emb.batch_calls == [["p1", "p2", "p3"]]   # one batch, all chunks
+
+    def test_batch_only_covers_stale_chunks(self, tmp_path):
+        """Kept chunks aren't re-embedded — the batch holds only what changed."""
+        db = _make_db(tmp_path)
+        note_id = _seed_note(db)
+        emb = _BatchSpyEmbedder()
+        reembed_note(db, emb, note_id, self._chunks("p1", "p2", "p3"))
+        emb.batch_calls.clear()
+        result = reembed_note(db, emb, note_id, self._chunks("p1", "p2-edited", "p3"))
+        assert result.embedded == 1
+        assert emb.batch_calls == [["p2-edited"]]

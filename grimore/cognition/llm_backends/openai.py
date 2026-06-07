@@ -155,13 +155,17 @@ class OpenAICompatibleBackend:
                 for raw in resp.iter_lines(decode_unicode=True):
                     if not raw:
                         continue
-                    if not raw.startswith(_SSE_PREFIX):
-                        # Some servers emit raw JSON without the ``data:``
-                        # prefix; tolerate it. The done sentinel is the
-                        # canonical SSE shape, so missing prefix isn't fatal.
-                        line = raw
-                    else:
+                    # Strip the SSE ``data:`` framing. OpenAI uses ``data: ``
+                    # (with a space) but the SSE spec allows ``data:`` with no
+                    # space, so accept both; servers that emit raw JSON with no
+                    # prefix at all are tolerated too (the done sentinel is the
+                    # canonical shape, so a missing prefix isn't fatal).
+                    if raw.startswith(_SSE_PREFIX):
                         line = raw[len(_SSE_PREFIX):]
+                    elif raw.startswith("data:"):
+                        line = raw[len("data:"):].lstrip()
+                    else:
+                        line = raw
                     if line.strip() == _SSE_DONE:
                         break
                     try:

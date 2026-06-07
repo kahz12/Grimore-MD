@@ -91,6 +91,30 @@ class TestFTSSearch:
         hits = db.fts_search('foo"bar')
         assert isinstance(hits, list)
 
+    def test_multiword_query_matches_words_out_of_order(self, db):
+        # Bag-of-words recall: the query words are all in the document but in a
+        # different order and not adjacent. The old single-quoted-phrase MATCH
+        # demanded the exact phrase and missed this; OR-ing the tokens restores
+        # normal BM25 recall (regression guard for the phrase-only bug).
+        _seed(db, [
+            ("A", "the ribbed vault and the pointed arch of the cathedral", [1.0, 0.0]),
+            ("B", "an unrelated note about kale", [0.0, 1.0]),
+        ])
+        hits = db.fts_search("pointed arch ribbed vault")
+        assert len(hits) == 1
+        _eid, _nid, text, _score = hits[0]
+        assert "ribbed vault" in text
+
+    def test_operators_in_query_are_neutralised(self, db):
+        # FTS5 operators / special chars in user input are quoted per-token, so
+        # they're treated as literal words and can't be parsed as MATCH syntax
+        # (no crash, no injection).
+        _seed(db, [("A", "alpha beta gamma", [1.0, 0.0])])
+        for q in ("alpha OR beta", "alpha NEAR beta", "alpha*", "(alpha", "alpha AND"):
+            assert isinstance(db.fts_search(q), list)
+        # The real words still match through the operator noise.
+        assert len(db.fts_search("alpha OR beta")) == 1
+
 
 class TestHybridFusion:
     def test_vector_only_when_bm25_empty(self, db):

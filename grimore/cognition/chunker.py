@@ -223,10 +223,6 @@ def chunk_semantic(
       for the whole ``text`` rather than producing a degenerate split.
       Retrieval recall is more important than chunker fidelity when
       the model is flaky.
-
-    Sentences below ~10 chars (single words, OCR artefacts) are merged
-    into their predecessor so a noisy decimal/abbreviation doesn't
-    fragment a paragraph.
     """
     if not text or not text.strip():
         return []
@@ -244,13 +240,20 @@ def chunk_semantic(
             return [only]
         return _sliding_window(only, max_chars, overlap)
 
-    embeddings: list[list[float]] = []
-    for sent in sentences:
-        vec = embedder.embed(sent)
-        if vec is None:
-            logger.warning("semantic_chunker_embed_failed", fallback="markdown")
-            return chunk_markdown(text, max_chars, overlap)
-        embeddings.append(list(vec))
+    # Embed every sentence up front. Prefer the embedder's batch API so the
+    # whole sentence list is one round-trip instead of N; fall back to the
+    # per-sentence call for minimal embedder stand-ins that only implement
+    # embed(). Resolved by duck-typing rather than import because embedder.py
+    # imports this module — a hard import here would be circular.
+    _embed_batch = getattr(embedder, "embed_batch", None)
+    if callable(_embed_batch):
+        vectors = _embed_batch(sentences)
+    else:
+        vectors = [embedder.embed(s) for s in sentences]
+    if any(v is None for v in vectors):
+        logger.warning("semantic_chunker_embed_failed", fallback="markdown")
+        return chunk_markdown(text, max_chars, overlap)
+    embeddings = [list(v) for v in vectors]
 
     chunks: list[str] = []
     cur_sents: list[str] = [sentences[0]]

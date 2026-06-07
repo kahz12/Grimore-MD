@@ -72,6 +72,19 @@ class _FailingEmbedder:
         return None
 
 
+class _BatchFakeEmbedder(_FakeEmbedder):
+    """_FakeEmbedder that also exposes embed_batch, recording each batch call
+    so a test can assert the chunker takes the one-round-trip path."""
+
+    def __init__(self, topic_map):
+        super().__init__(topic_map)
+        self.batch_calls: list[list[str]] = []
+
+    def embed_batch(self, texts):
+        self.batch_calls.append(list(texts))
+        return [self.embed(t) for t in texts]
+
+
 # ── split_sentences ─────────────────────────────────────────────────────
 
 
@@ -120,6 +133,27 @@ class TestChunkSemantic:
         assert len(chunks) == 2
         assert "Gothic" in chunks[0] and "buttresses" in chunks[0]
         assert "Bananas" in chunks[1] and "yellow" in chunks[1]
+
+    def test_uses_embed_batch_in_one_call_when_available(self):
+        text = (
+            "Gothic cathedrals used pointed arches. "
+            "Ribbed vaults distributed weight. "
+            "Bananas are a tropical fruit. "
+            "Most are yellow when ripe."
+        )
+        topic_map = {
+            "gothic": [1.0, 0.0], "arches": [1.0, 0.0], "vaults": [1.0, 0.0],
+            "bananas": [0.0, 1.0], "yellow": [0.0, 1.0],
+        }
+        plain = chunk_semantic(text, _FakeEmbedder(topic_map),
+                               max_chars=10_000, threshold=0.5)
+        batched_emb = _BatchFakeEmbedder(topic_map)
+        batched = chunk_semantic(text, batched_emb, max_chars=10_000, threshold=0.5)
+        # One batch call covering every sentence — not N per-sentence requests.
+        assert len(batched_emb.batch_calls) == 1
+        assert len(batched_emb.batch_calls[0]) == len(split_sentences(text))
+        # Identical boundaries to the per-sentence path.
+        assert batched == plain
 
     def test_single_topic_stays_one_chunk(self):
         text = (

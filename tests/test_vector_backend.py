@@ -216,6 +216,25 @@ class TestVecEndToEnd:
         assert db.vec_search(v, 5) == []
 
     @needs_vec
+    def test_prune_clears_the_vec_mirror(self, tmp_path):
+        """Pruning a note whose file disappeared must drop its vec rows too,
+        not just the ``embeddings`` rows — otherwise orphaned vectors keep
+        occupying KNN slots in vec_search and silently shrink results."""
+        db = Database(str(tmp_path / "prune.db"))
+        gone = db.upsert_note(path="/gone.md", title="Gone", content_hash="x")
+        kept = db.upsert_note(path="/kept.md", title="Kept", content_hash="y")
+        v = _unit([0.5, 0.5, 0.5, 0.5])
+        db.store_embedding(gone, 0, "g0", _vec_blob(v), chunk_hash="g0")
+        db.store_embedding(kept, 0, "k0", _vec_blob(v), chunk_hash="k0")
+        assert len(db.vec_search(v, 5)) == 2
+
+        # /gone.md is no longer on disk; only /kept.md survives the scan.
+        assert db.prune_missing_notes(["/kept.md"]) == 1
+
+        hits = db.vec_search(v, 5)
+        assert [nid for _eid, nid, _txt, _score in hits] == [kept]
+
+    @needs_vec
     def test_backfill_on_upgrade_path(self, tmp_path):
         """A pre-existing vault (built before sqlite-vec was installed)
         gets the vec table built and populated on the next Database

@@ -124,6 +124,12 @@ class Connector:
         if _np is not None and n > k:
             arr = _np.asarray(scores, dtype=_np.float32)
             part = _np.argpartition(-arr, k - 1)[:k]
+            # argpartition returns the k picks in arbitrary order, so sort them
+            # by ascending index first; the stable argsort by descending score
+            # then resolves score ties by original index — exactly matching the
+            # Python ``sorted(..., reverse=True)`` fallback (Python's sort is
+            # stable, so reverse keeps equal keys in ascending-index order).
+            part.sort()
             return part[_np.argsort(-arr[part], kind="stable")].tolist()
         return sorted(range(n), key=lambda i: scores[i], reverse=True)[:k]
 
@@ -363,29 +369,4 @@ class Connector:
             pool=len(head),
             scored=sum(1 for s in scores if s != float("-inf")),
         )
-        return [head[i] for i in order] + tail
-
-    def _llm_rerank(
-        self, query_text: str, candidates: list[dict], pool: int
-    ) -> list[dict]:
-        """Back-compat shim: always uses the LLM reranker against ``self.router``.
-
-        Pre-2.4 callers (and a couple of unit tests) used this method
-        directly. The new general dispatch is :py:meth:`_rerank`, but
-        this name is preserved so callers that hard-coded the LLM path
-        keep their semantics — a fresh :class:`LLMReranker` is built
-        per call so the test helpers that bypass ``__init__`` and set
-        only ``.router`` continue to work unchanged.
-        """
-        from grimore.cognition.reranker import LLMReranker
-        head = candidates[: max(pool, 0)]
-        tail = candidates[max(pool, 0):]
-        if len(head) < 2:
-            return candidates
-        reranker = LLMReranker(self.router)
-        scores = reranker.score(query_text, [(c.get("text") or "") for c in head])
-        if not scores or len(scores) != len(head):
-            return candidates
-        order = sorted(range(len(head)), key=lambda i: scores[i], reverse=True)
-        logger.info("rerank_applied", engine="LLMReranker", pool=len(head))
         return [head[i] for i in order] + tail

@@ -274,6 +274,22 @@ class TestOpenAICompatibleBackend:
         b.session.post.return_value = resp
         assert "".join(b.complete_streaming("q")) == "X"
 
+    def test_streaming_tolerates_spaceless_data_prefix(self):
+        # The SSE spec permits ``data:`` with no space after the colon; the
+        # backend must strip either form (regression guard — the spaceless
+        # variant used to fail the prefix check and get dropped as junk).
+        b = _openai(llm_base_url="http://localhost:8080")
+        resp = MagicMock()
+        resp.__enter__.return_value = resp
+        resp.__exit__.return_value = False
+        resp.iter_lines.return_value = iter([
+            'data:{"choices":[{"delta":{"content":"Hel"}}]}',
+            'data:{"choices":[{"delta":{"content":"lo"}}]}',
+            'data:[DONE]',
+        ])
+        b.session.post.return_value = resp
+        assert "".join(b.complete_streaming("q")) == "Hello"
+
     def test_streaming_returns_empty_on_error(self):
         b = _openai(llm_base_url="http://localhost:8080")
         b.session.post.side_effect = RuntimeError("boom")

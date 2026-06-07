@@ -29,8 +29,6 @@ grimore.pid
 grimore.log
 backups/
 test_vault/
-docs/new_work.md
-docs/SECURITY_AUDIT_2026-05-30.md
 
 # Tooling caches
 .pytest_cache/

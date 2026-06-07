@@ -25,6 +25,11 @@ logger = get_logger(__name__)
 # from extremely large chunks. Roughly ~8k tokens worst case.
 EMBED_MAX_CHARS = 32_000
 
+# Max texts per /api/embed request. Bounds per-request work + memory; the
+# misses are streamed in sub-batches of this size. A sub-batch that fails
+# (e.g. an Ollama too old to expose /api/embed) falls back to serial embed().
+_EMBED_BATCH_SIZE = 32
+
 
 class EmbeddingCache(Protocol):
     """Protocol for an optional persistence layer to store and retrieve vectors."""
@@ -114,14 +119,89 @@ class Embedder:
             vector = self.normalize(raw)
             
             # Store result in cache
-            if key is not None:
-                try:
-                    self.cache.store_cached_embedding(key, self.serialize_vector(vector))
-                except Exception as e:
-                    logger.warning("embed_cache_write_failed", error=str(e))
+            self._cache_store(text, vector)
             return vector
         except Exception as e:
             logger.error("embedding_failed", error=str(e))
+            return None
+
+    def _cache_store(self, text: str, vector: list[float]) -> None:
+        """Write one normalized vector to the cache (no-op without a cache)."""
+        if self.cache is None:
+            return
+        try:
+            self.cache.store_cached_embedding(
+                self._cache_key(text), self.serialize_vector(vector)
+            )
+        except Exception as e:
+            logger.warning("embed_cache_write_failed", error=str(e))
+
+    def embed_batch(self, texts: list[str]) -> list[Optional[list[float]]]:
+        """Embed many texts with as few round-trips as possible.
+
+        Returns vectors aligned to ``texts`` (``None`` for blank entries or
+        failed embeds), so callers can ``zip`` the result straight back onto
+        their inputs. Cache hits are served locally; the remaining misses go
+        to Ollama's batch endpoint (``/api/embed`` with an ``input`` array)
+        in bounded sub-batches. This replaces the per-item ``embed()`` loop
+        the chunker and re-embed paths used to run — a 100-sentence document
+        drops from 100 sequential requests to a handful.
+
+        A sub-batch that the server can't satisfy (e.g. an Ollama too old to
+        expose ``/api/embed``) transparently falls back to serial ``embed()``
+        for that slice, so behaviour is never worse than the old path.
+        """
+        results: list[Optional[list[float]]] = [None] * len(texts)
+        pending_idx: list[int] = []
+        pending_txt: list[str] = []
+        for i, text in enumerate(texts):
+            if not isinstance(text, str) or not text.strip():
+                continue
+            t = text[:EMBED_MAX_CHARS] if len(text) > EMBED_MAX_CHARS else text
+            if self.cache is not None:
+                cached = self.cache.get_cached_embedding(self._cache_key(t))
+                if cached is not None:
+                    results[i] = self.deserialize_vector(cached)
+                    continue
+            pending_idx.append(i)
+            pending_txt.append(t)
+
+        for start in range(0, len(pending_txt), _EMBED_BATCH_SIZE):
+            sub_idx = pending_idx[start:start + _EMBED_BATCH_SIZE]
+            sub_txt = pending_txt[start:start + _EMBED_BATCH_SIZE]
+            raw_vecs = self._embed_many_remote(sub_txt)
+            if raw_vecs is None:
+                # Endpoint unavailable / errored → serial fallback (still caches).
+                for i, t in zip(sub_idx, sub_txt):
+                    results[i] = self.embed(t)
+                continue
+            for i, t, raw in zip(sub_idx, sub_txt, raw_vecs):
+                if not raw:
+                    continue
+                vector = self.normalize(raw)
+                results[i] = vector
+                self._cache_store(t, vector)
+        return results
+
+    def _embed_many_remote(
+        self, texts: list[str]
+    ) -> Optional[list[Optional[list[float]]]]:
+        """One POST to Ollama's batch endpoint. Returns *raw* (un-normalized)
+        vectors aligned to ``texts``, or ``None`` when the endpoint is missing
+        or errors so the caller can fall back to serial ``embed()``."""
+        try:
+            url = f"{self.ollama_host}/api/embed"
+            payload = {"model": self.model, "input": texts}
+            response = self.session.post(
+                url, json=payload, timeout=self.config.cognition.embed_timeout_s
+            )
+            response.raise_for_status()
+            embeddings = response.json().get("embeddings")
+            if not isinstance(embeddings, list) or len(embeddings) != len(texts):
+                return None
+            return embeddings
+        except Exception as e:
+            logger.warning("embed_batch_unavailable", error=str(e))
             return None
 
     def embed_chunks(self, text: str) -> list[tuple[str, list[float]]]:
