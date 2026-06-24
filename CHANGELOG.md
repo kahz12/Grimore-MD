@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleared all `ruff` findings (E402 import placement in `daemon.py` /
   `preflight.py`, explicit `strict=` on every `zip()`, an unused loop
   variable), and aligned the CI test job's dependencies with the suite.
+- A migration test asserted on `click.exceptions.Exit`; recent `typer` no
+  longer installs `click` as a top-level module, so the test now asserts
+  `typer.Exit` (the type the code actually raises).
 
 ## [3.1.0] - 2026-06-24
 

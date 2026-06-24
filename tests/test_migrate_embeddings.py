@@ -299,8 +299,8 @@ class TestOrchestration:
         db = _seed_db(tmp_path)
         db.begin_embedding_migration("other-model")
         cfg = _make_config(tmp_path)
-        import click
-        with pytest.raises(click.exceptions.Exit):
+        import typer
+        with pytest.raises(typer.Exit):
             _do_migrate_embeddings(
                 cfg, db, target_model="new-model", write_config=False,
             )
