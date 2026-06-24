@@ -289,7 +289,7 @@ def chunk_semantic(
             cur_len = 1
         else:
             cur_sents.append(sent)
-            cur_sum = [a + b for a, b in zip(cur_sum, emb)]
+            cur_sum = [a + b for a, b in zip(cur_sum, emb, strict=True)]
             cur_len += 1
 
     _flush()
@@ -328,7 +328,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     """
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     ma = sum(x * x for x in a) ** 0.5
     mb = sum(y * y for y in b) ** 0.5
     if ma == 0 or mb == 0:

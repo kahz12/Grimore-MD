@@ -172,10 +172,10 @@ class Embedder:
             raw_vecs = self._embed_many_remote(sub_txt)
             if raw_vecs is None:
                 # Endpoint unavailable / errored → serial fallback (still caches).
-                for i, t in zip(sub_idx, sub_txt):
+                for i, t in zip(sub_idx, sub_txt, strict=True):
                     results[i] = self.embed(t)
                 continue
-            for i, t, raw in zip(sub_idx, sub_txt, raw_vecs):
+            for i, t, raw in zip(sub_idx, sub_txt, raw_vecs, strict=True):
                 if not raw:
                     continue
                 vector = self.normalize(raw)
@@ -299,12 +299,15 @@ class Embedder:
     @staticmethod
     def dot_product(v1: list[float], v2: list[float]) -> float:
         """Calculates dot product. Equivalent to cosine similarity for unit-normalized vectors."""
-        return sum(a * b for a, b in zip(v1, v2))
+        # strict=False: ragged dims (model swapped without re-scan) must
+        # truncate and score, not raise — see the retrieval fallback path.
+        return sum(a * b for a, b in zip(v1, v2, strict=False))
 
     @staticmethod
     def cosine_similarity(v1: list[float], v2: list[float]) -> float:
         """Calculates cosine similarity between two vectors (magnitude-aware)."""
-        dot = sum(a * b for a, b in zip(v1, v2))
+        # strict=False: tolerate ragged dims (see dot_product above).
+        dot = sum(a * b for a, b in zip(v1, v2, strict=False))
         m1 = sum(a * a for a in v1) ** 0.5
         m2 = sum(b * b for b in v2) ** 0.5
         if m1 == 0 or m2 == 0:

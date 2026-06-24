@@ -13,7 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - `requirements.txt` — it was an unpinned duplicate of the dependencies in
   `pyproject.toml`, which is the single source of truth. Install with
-  `pip install -e .` (add extras as needed, e.g. `pip install -e ".[serve,vec]"`).
+  `pip install -e .` (add extras as needed, e.g. `pip install -e ".[serve]"`).
+
+### Fixed
+- CI now passes: cleared all `ruff` findings (E402 import placement in
+  `daemon.py` / `preflight.py`, explicit `strict=` on every `zip()`, an unused
+  loop variable) and corrected the test job's dependency set so the optional
+  `sqlite-vec` backend no longer destabilizes the run on the GitHub runners.
 
 ## [3.1.0] - 2026-06-24
 

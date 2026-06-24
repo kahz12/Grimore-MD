@@ -39,11 +39,11 @@ jobs:
       - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
-          # serve + vec are pure-wheel extras that let the API and
-          # sqlite-vec tests actually run instead of auto-skipping.
-          # reranker (torch), ocr, and the e2e (live Ollama) suites stay
-          # opt-in and continue to auto-skip here.
-          pip install -e ".[serve,vec]"
-          pip install pytest pytest-mock
+          pip install -e .
+          # starlette + httpx let the HTTP API tests run (they import-skip
+          # without them). The vec (sqlite-vec), reranker (torch), ocr, and
+          # e2e (live Ollama) suites need native libs or external services,
+          # so they stay opt-in and auto-skip here.
+          pip install pytest pytest-mock starlette httpx
       - name: Run tests
         run: pytest -q

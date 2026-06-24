@@ -21,12 +21,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-_which = shutil.which
-
 from grimore.output.git_guard import GitGuard
 from grimore.utils.http import build_session
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
+
+_which = shutil.which
 
 logger = get_logger(__name__)
 

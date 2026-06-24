@@ -175,7 +175,7 @@ class Mirror:
             if progress:
                 progress("pairs", j, len(decoded))
             neighbors = self._top_k_neighbors(cid, npath, vec, decoded, top_k=top_k)
-            for n_cid, n_npath, n_ctext, score in neighbors:
+            for n_cid, n_npath, n_ctext, _score in neighbors:
                 a, b = (cid, n_cid) if cid < n_cid else (n_cid, cid)
                 if (a, b) in seen_pairs:
                     continue

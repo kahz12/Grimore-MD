@@ -9,7 +9,6 @@ import threading
 import time
 from pathlib import Path
 
-_os_getpid = _os.getpid
 from grimore.utils.config import Config
 from grimore.utils.event_log import DaemonEventLog
 from grimore.utils.hashing import sha256_file
@@ -36,6 +35,9 @@ from grimore.utils.system import (
     acquire_pid_lock,
     release_pid_lock,
 )
+
+# Bound once, below the imports, so the module body stays import-only up top.
+_os_getpid = _os.getpid
 
 logger = get_logger(__name__)
 

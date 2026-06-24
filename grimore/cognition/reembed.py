@@ -116,7 +116,7 @@ def reembed_note(
         _embed_batch = getattr(embedder, "embed_batch", None)
         vectors = _embed_batch(texts) if callable(_embed_batch) \
             else [embedder.embed(t) for t in texts]
-        for (idx, c, h), vector in zip(stale_items, vectors):
+        for (idx, c, h), vector in zip(stale_items, vectors, strict=True):
             if vector is None:
                 # Embed failure: skip — the next scan will retry. We've already
                 # deleted any prior row for this index, so nothing inconsistent
