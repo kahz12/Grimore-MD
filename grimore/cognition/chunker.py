@@ -64,7 +64,7 @@ def chunk_markdown(
 ) -> list[str]:
     """
     Splits markdown text into chunks.
-    
+
     Strategy:
     1. Split by blank-line paragraphs.
     2. Pack whole paragraphs into chunks until the character budget (max_chars) is met.

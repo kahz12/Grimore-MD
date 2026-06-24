@@ -73,8 +73,8 @@ class SecurityGuard:
     @staticmethod
     def sanitize_prompt(text: str) -> str:
         """
-        Neutralize role markers and chat-template tokens by inserting a 
-        zero-width space (\u200b). This prevents the LLM from interpreting 
+        Neutralize role markers and chat-template tokens by inserting a
+        zero-width space (\u200b). This prevents the LLM from interpreting
         user content as instructions (Prompt Injection).
         """
         return _ROLE_MARKER_RE.sub(
@@ -212,7 +212,7 @@ class SecurityGuard:
         try:
             value = int(raw)
         except (TypeError, ValueError):
-            raise ValueError("top_k must be an integer")
+            raise ValueError("top_k must be an integer") from None
         return max(1, min(value, maximum))
 
     @staticmethod

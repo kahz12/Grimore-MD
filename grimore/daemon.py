@@ -66,7 +66,7 @@ class GrimoreDaemon:
         self.security = SecurityGuard(config.vault.path)
         self.backup = BackupManager(config.memory.db_path)
         self.maintenance = MaintenanceRunner(self.db, config.maintenance)
-        
+
         # Initialize cognitive components
         self.router = LLMRouter(config)
         self.vault_tax = load_taxonomy_from_vault(Path(config.vault.path))
@@ -76,7 +76,7 @@ class GrimoreDaemon:
             self.db, self.embedder,
             vector_backend=getattr(config.cognition, "vector_backend", "auto"),
         )
-        
+
         self.vault_root = Path(config.vault.path).resolve()
         self.observer = None
         self._counter_lock = threading.Lock()
@@ -300,7 +300,7 @@ class GrimoreDaemon:
             # 5. Cognition: Tagging & Summary via LLM
             clean_content = self.security.sanitize_prompt(note.content)
             cognition_data = self.tagger.tag_note(clean_content)
-            
+
             # 6. Output: Update note frontmatter (inline for .md, sidecar
             # for every other format).
             metadata_updates = {

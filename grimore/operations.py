@@ -195,7 +195,9 @@ def _do_ask(
                 f"[bold]--export[/] must point inside the vault ({vault_root}).",
                 title="Invalid path",
             ))
-            raise typer.BadParameter("--export must resolve to a path inside the vault")
+            raise typer.BadParameter(
+                "--export must resolve to a path inside the vault"
+            ) from None
 
         import yaml
         frontmatter_payload = {

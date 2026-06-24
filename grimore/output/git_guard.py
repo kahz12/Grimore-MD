@@ -34,7 +34,7 @@ class GitGuard:
         try:
             # Check if there are changes in the specific file relative to the repo root
             relative_path = Path(file_path).absolute().relative_to(self.repo.working_dir)
-            
+
             if self.repo.is_dirty(path=relative_path):
                 # Stage and commit only this specific file
                 self.repo.index.add([str(relative_path)])
@@ -42,7 +42,7 @@ class GitGuard:
                 logger.info("git_commit_success", file=file_path, reason=reason)
             else:
                 logger.debug("git_no_changes_to_commit", file=file_path)
-                
+
         except Exception as e:
             logger.error("git_commit_failed", file=file_path, error=str(e))
 

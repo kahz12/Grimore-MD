@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "grimore"
 version = "3.1.0"
@@ -107,4 +111,23 @@ markers = [
     "vec: requires the sqlite-vec extension (auto-skips when unavailable).",
     "reranker: requires sentence-transformers (auto-skips when unavailable).",
     "serve: requires fastapi + uvicorn (auto-skips when unavailable).",
+]
+
+[tool.ruff]
+target-version = "py311"
+# We don't reflow the existing hand-tuned line layout, so the formatter's
+# default width is irrelevant; line-length only affects rules we opt into.
+line-length = 100
+
+[tool.ruff.lint]
+# Conservative, correctness-first rollout. Deliberately omitted for now to
+# avoid churning the existing layout — enable later with `ruff check --fix`:
+#   E1/E2/E3 (indentation / whitespace / blank-line cosmetics)
+#   E501     (line length — many lines are intentionally long)
+#   I        (import sorting)
+#   UP       (pyupgrade rewrites)
+select = ["E4", "E7", "E9", "F", "W", "B", "C4"]
+ignore = [
+    "E731",  # a couple of assigned lambdas are deliberate and readable
+    "B008",  # Typer takes `typer.Option(...)`/`Argument(...)` as default values
 ]

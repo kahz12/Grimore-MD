@@ -114,10 +114,10 @@ class Embedder:
             raw = response.json().get("embedding")
             if not raw:
                 return None
-            
+
             # Unit-normalize the vector to allow dot-product similarity
             vector = self.normalize(raw)
-            
+
             # Store result in cache
             self._cache_store(text, vector)
             return vector

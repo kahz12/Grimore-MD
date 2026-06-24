@@ -1272,7 +1272,7 @@ class Database:
 
     def upsert_tags(self, note_id: int, tag_names: list[str]) -> None:
         """
-        Syncs a note's tags with the database. 
+        Syncs a note's tags with the database.
         Ensures the 'tags' table has the tag names and updates 'note_tags' association.
         """
         with self._get_connection() as conn:

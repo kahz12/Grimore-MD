@@ -13,7 +13,7 @@ from typing import Callable
 def atomic_write(path: Path, writer: Callable[[object], None], *, mode: str = "wb") -> None:
     """
     Writes content to a file atomically.
-    
+
     1. Creates a temporary file in the same directory as the target.
     2. Calls the 'writer' function with the temp file object.
     3. Flushes and syncs the temp file to disk.

@@ -272,7 +272,7 @@ def scan(
 
             # Sanitize content before sending to LLM
             clean_content = security.sanitize_prompt(note.content)
-            
+
             # Step 2: Cognition (Tagging and Summarization)
             cognition_data = tagger.tag_note(clean_content)
 
@@ -476,7 +476,7 @@ def connect(
                 ))
                 for line in bullet_lines:
                     progress.console.print(line)
-                
+
                 # Inject the discovered links into the right markdown
                 # target: source for .md, sidecar for everything else.
                 injector.inject_for(
@@ -507,7 +507,7 @@ def ask(
 ):
     """
     🔮 Consult the Grimore Oracle about your vault's knowledge.
-    
+
     This is a Retrieval-Augmented Generation (RAG) system. It searches for relevant
     note fragments, provides them as context to the LLM, and generates an answer
     with citations to your own notes.
@@ -564,8 +564,8 @@ def daemon(
 ):
     """
     🧿 Manage the Grimore daemon (foreground / background / status).
-    
-    The daemon watches for file changes in real-time and automatically 
+
+    The daemon watches for file changes in real-time and automatically
     processes them after a debounce period.
     """
     from grimore.utils.system import is_running, start_daemon_background, stop_daemon
@@ -730,7 +730,7 @@ def prune(
 ):
     """
     🧹 Remove DB entries for notes that no longer exist on disk.
-    
+
     Ensures the database remains synchronized with the actual file system
     by removing orphan records and cleaning up unused tags.
     """
@@ -976,7 +976,7 @@ def category_add(
         created = vault_tax.categories.add(path)
     except ValueError as e:
         console.print(ui.error_panel(str(e), title="Invalid path"))
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=2) from None
 
     if not created:
         console.print(ui.info_panel(
@@ -1536,7 +1536,7 @@ def serve(
             "Install the extra: [cyan]pip install 'grimore[serve]'[/].",
             title="serve unavailable",
         ))
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     try:
         import uvicorn  # noqa: F401  (validated here so the error lands before the panel)
     except ImportError:
@@ -1545,7 +1545,7 @@ def serve(
             "Install the extra: [cyan]pip install 'grimore[serve]'[/].",
             title="serve unavailable",
         ))
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
 
     is_loopback = host in ("127.0.0.1", "localhost", "::1")
     if not is_loopback and not allow_lan:

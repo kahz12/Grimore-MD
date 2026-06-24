@@ -146,11 +146,11 @@ class VaultObserver:
         )
         self.observer.schedule(self.handler, self.vault_path, recursive=True)
         self.observer.start()
-        
+
         # Processor thread handles the debounce logic
         self.processor_thread = Thread(target=self._process_queue, daemon=True)
         self.processor_thread.start()
-        
+
         logger.info(
             "observer_started",
             path=self.vault_path,
@@ -188,7 +188,7 @@ class VaultObserver:
                         self.pending_changes[path] = timestamp
                     except Empty:
                         break
-                
+
                 # Check for debounced events
                 now = time.time()
                 to_process = []
@@ -196,11 +196,11 @@ class VaultObserver:
                     if now - last_time >= self.debounce_seconds:
                         to_process.append(path)
                         del self.pending_changes[path]
-                
+
                 for path in to_process:
                     logger.info("debounce_expired", path=str(path))
                     self.callback(path)
-                
+
                 time.sleep(1)
             except Exception as e:
                 logger.error("observer_processor_error", error=str(e))
