@@ -16,10 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pip install -e .` (add extras as needed, e.g. `pip install -e ".[serve]"`).
 
 ### Fixed
-- CI now passes: cleared all `ruff` findings (E402 import placement in
-  `daemon.py` / `preflight.py`, explicit `strict=` on every `zip()`, an unused
-  loop variable) and corrected the test job's dependency set so the optional
-  `sqlite-vec` backend no longer destabilizes the run on the GitHub runners.
+- Note and sidecar writes raised "a bytes-like object is required, not 'str'"
+  on installs that resolved python-frontmatter 1.3.0, whose `dump()` no longer
+  encodes when handed a binary file handle. `FrontmatterWriter` now serializes
+  with `dumps()` and encodes explicitly, so writes work across frontmatter
+  versions.
+- Cleared all `ruff` findings (E402 import placement in `daemon.py` /
+  `preflight.py`, explicit `strict=` on every `zip()`, an unused loop
+  variable), and aligned the CI test job's dependencies with the suite.
 
 ## [3.1.0] - 2026-06-24
 

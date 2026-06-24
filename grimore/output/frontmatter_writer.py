@@ -105,7 +105,14 @@ class FrontmatterWriter:
         try:
             post = frontmatter.load(file_path)
             post.metadata.update(metadata_updates)
-            atomic_write(file_path, lambda fh: frontmatter.dump(post, fh), mode="wb")
+            # Encode explicitly rather than relying on frontmatter.dump()'s
+            # handling of a binary handle — that differs across versions
+            # (1.1.0 encodes; 1.3.0 writes str, which fails on a "wb" file).
+            atomic_write(
+                file_path,
+                lambda fh: fh.write(frontmatter.dumps(post).encode("utf-8")),
+                mode="wb",
+            )
             logger.info("metadata_updated", path=str(file_path))
         except Exception as e:
             logger.error(
@@ -178,7 +185,11 @@ class FrontmatterWriter:
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         post = frontmatter.Post(body, **merged)
         try:
-            atomic_write(sidecar_path, lambda fh: frontmatter.dump(post, fh), mode="wb")
+            atomic_write(
+                sidecar_path,
+                lambda fh: fh.write(frontmatter.dumps(post).encode("utf-8")),
+                mode="wb",
+            )
             logger.info(
                 "sidecar_written", source=str(note.path), sidecar=str(sidecar_path),
             )
