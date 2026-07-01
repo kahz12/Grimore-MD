@@ -548,8 +548,13 @@ def _do_eval(
     golden_path: Path,
     *,
     top_k: int = 5,
+    retrieval_k: int = 10,
+    retrieval_only: bool = False,
+    baseline: bool = False,
     judge: bool = True,
     export: Optional[Path] = None,
+    history: Optional[Path] = None,
+    compare: Optional[Path] = None,
 ) -> dict:
     """Body of ``grimore eval``: load the YAML golden set, run every case
     through the Oracle, render the Rich summary, optionally dump JSON.
@@ -558,8 +563,21 @@ def _do_eval(
     a future CI integration) can assert on aggregate numbers without
     re-parsing the rendered output. Never raises on a per-case failure —
     the harness already converts those into zero-recall turns.
+
+    ``retrieval_only`` skips answer generation (no LLM ask) and scores
+    ranking metrics alone — fast and deterministic for CI. It also forces
+    the judge off, since there's no answer to rate.
+
+    ``baseline`` runs the suite twice — hybrid (RRF) vs dense-only — and
+    renders the per-metric delta to quantify what fusion buys. The return
+    shape then carries ``comparison``/``hybrid``/``baseline`` instead of a
+    single summary.
     """
-    from grimore.cognition.eval import load_golden, run_eval, export_report
+    from grimore.cognition.eval import (
+        load_golden, run_eval, run_baseline, export_report,
+        render_comparison, comparison_summary, export_comparison,
+        run_provenance, append_history, load_run, compare_runs, render_regression,
+    )
 
     if not golden_path.exists():
         console.print(ui.error_panel(
@@ -569,6 +587,9 @@ def _do_eval(
         ))
         raise typer.Exit(code=1)
 
+    if retrieval_only:
+        judge = False  # nothing to judge without a generated answer
+
     cases = load_golden(golden_path)
     if not cases:
         console.print(ui.warn_panel(
@@ -577,7 +598,14 @@ def _do_eval(
         ))
         return {"top_k": top_k, "n": 0, "aggregate": {}, "turns": []}
 
-    ui.command_header("eval", f"→ {golden_path} · top-k={top_k} · judge={'on' if judge else 'off'}")
+    mode = "retrieval-only" if retrieval_only else "full"
+    if baseline:
+        mode += " · baseline(RRF vs dense)"
+    ui.command_header(
+        "eval",
+        f"→ {golden_path} · {mode} · top-k={top_k} · retrieval-k={retrieval_k} "
+        f"· judge={'on' if judge else 'off'}",
+    )
     total_turns = sum(1 + len(c.follow_ups) for c in cases)
     console.print(ui.info_panel(
         f"Evaluating [bold]{len(cases)}[/] case(s) ({total_turns} turn(s)) "
@@ -585,8 +613,37 @@ def _do_eval(
         title="Eval",
     ))
 
-    report = run_eval(session, cases, top_k=top_k, judge=judge)
+    if baseline:
+        if not getattr(session.db, "fts_available", False):
+            console.print(ui.warn_panel(
+                "FTS5 is unavailable, so hybrid retrieval falls back to "
+                "dense-only — the baseline delta will be ~0.",
+                title="Baseline",
+            ))
+        hybrid, base = run_baseline(
+            session, cases, top_k=top_k, retrieval_k=retrieval_k,
+            generate=not retrieval_only, judge=judge,
+        )
+        render_comparison(hybrid, base, console)
+        result = {
+            "comparison": comparison_summary(hybrid, base),
+            "hybrid": hybrid.summary(),
+            "baseline": base.summary(),
+        }
+        if export is not None:
+            export_comparison(result, export)
+            console.print(ui.success_panel(
+                f"Baseline comparison written to [bold cyan]{export}[/].",
+                title="Exported",
+            ))
+        return result
+
+    report = run_eval(
+        session, cases, top_k=top_k, retrieval_k=retrieval_k,
+        generate=not retrieval_only, judge=judge,
+    )
     report.render(console)
+    summary = report.summary()
 
     if export is not None:
         export_report(report, export)
@@ -595,7 +652,40 @@ def _do_eval(
             title="Exported",
         ))
 
-    return report.summary()
+    # Append a one-line record to the history ledger for trend tracking.
+    if history is not None:
+        provenance = run_provenance(session, golden_path)
+        append_history(
+            history, summary, provenance,
+            run_meta={"mode": mode, "top_k": top_k, "retrieval_k": retrieval_k},
+        )
+        dirty = " [yellow](working tree dirty)[/]" if provenance.get("git_dirty") else ""
+        console.print(ui.success_panel(
+            f"Logged run to [bold cyan]{history}[/] "
+            f"(sha={provenance.get('git_sha') or '—'}, config={provenance['config_hash']}){dirty}.",
+            title="History",
+        ))
+
+    # Diff against a previous --export and flag regressions (CI gate).
+    if compare is not None:
+        if not Path(compare).exists():
+            console.print(ui.error_panel(
+                f"Compare baseline not found: [bold]{compare}[/].",
+                title="Compare input missing",
+            ))
+            raise typer.Exit(code=1)
+        comparison = compare_runs(summary, load_run(compare))
+        render_regression(comparison, console)
+        summary = {**summary, "comparison": comparison}
+        if comparison["n_regressions"]:
+            console.print(ui.error_panel(
+                f"[bold]{comparison['n_regressions']}[/] regression(s) vs "
+                f"[cyan]{compare}[/].",
+                title="Regression",
+            ))
+            raise typer.Exit(code=1)
+
+    return summary
 
 
 # ── Chronicler ───────────────────────────────────────────────────────────

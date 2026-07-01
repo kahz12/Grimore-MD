@@ -69,7 +69,8 @@ class Oracle:
         with open(prompt_path, "r", encoding="utf-8") as f:
             return f.read()
 
-    def ask(self, question: str, top_k: int = 5, extra_sources=None, history=None) -> dict:
+    def ask(self, question: str, top_k: int = 5, extra_sources=None, history=None,
+            retrieval_k: "int | None" = None) -> dict:
         """
         Main RAG entry point:
         1. Generates an embedding for the user's question.
@@ -84,13 +85,14 @@ class Oracle:
         logger.info("oracle_query", question=question)
         history = self._normalize_history(history)
         retrieval_query = self._rewrite_query(question, history)
-        full_context, sources = self._build_context(
-            retrieval_query, top_k, extra_sources=extra_sources
+        full_context, sources, retrieved = self._build_context(
+            retrieval_query, top_k, extra_sources=extra_sources, retrieval_k=retrieval_k
         )
         if full_context is None:
             return {
                 "answer": "Your vault seems empty of relevant whispers on this subject.",
                 "sources": [],
+                "retrieved": retrieved,
                 "dropped_citations": 0,
             }
 
@@ -104,7 +106,8 @@ class Oracle:
 
         if not response or not isinstance(response, dict):
             logger.warning("oracle_no_response")
-            return {"answer": "The Oracle is silent.", "sources": sources, "dropped_citations": 0}
+            return {"answer": "The Oracle is silent.", "sources": sources,
+                    "retrieved": retrieved, "dropped_citations": 0}
 
         answer, dropped = self.verify_citations(
             response.get("answer", "The Oracle is silent."), sources
@@ -112,8 +115,33 @@ class Oracle:
         return {
             "answer": answer,
             "sources": sources,
+            "retrieved": retrieved,
             "dropped_citations": dropped,
         }
+
+    def retrieve(self, question: str, top_k: int = 10, history=None) -> list[dict]:
+        """Retrieval-only path: rank the top-``top_k`` sources for a question
+        *without* generating an answer.
+
+        Runs the exact retrieval pipeline ``ask`` uses — history-aware query
+        rewrite, embedding, hybrid/dense search, optional rerank — and returns
+        the rank-ordered, note-deduped list (same shape as the ``retrieved``
+        key on :meth:`ask`). Skipping the answer LLM makes this fast and, for a
+        single-turn question, deterministic given the index; the only
+        non-determinism is the follow-up query rewrite, which mirrors ``ask``
+        so retrieval metrics stay apples-to-apples with the full pipeline.
+
+        Used by the eval harness's ``--retrieval-only`` mode to measure Hit@k /
+        MRR cheaply on every change without paying for (or being perturbed by)
+        generation.
+        """
+        logger.info("oracle_retrieve", question=question)
+        history = self._normalize_history(history)
+        retrieval_query = self._rewrite_query(question, history)
+        # ``top_k`` here is the ranking depth; the discarded context is built
+        # at the same depth, which is fine — we only want ``retrieved``.
+        _, _, retrieved = self._build_context(retrieval_query, top_k)
+        return retrieved
 
     @staticmethod
     def verify_citations(text: str, sources) -> tuple[str, int]:
@@ -240,10 +268,11 @@ class Oracle:
         )
         return block[: self._HISTORY_MAX_CHARS]
 
-    def _build_context(self, question: str, top_k: int, extra_sources=None):
-        """Run retrieval + context-cap and return (full_context, sources).
+    def _build_context(self, question: str, top_k: int, extra_sources=None,
+                       retrieval_k: "int | None" = None):
+        """Run retrieval + context-cap and return (full_context, sources, retrieved).
 
-        Returns ``(None, [])`` when retrieval finds nothing usable, so the
+        Returns ``(None, [], retrieved)`` when no context is usable, so the
         caller can short-circuit without a second branch. Pulled out of
         ``ask()`` so ``ask_stream()`` can reuse the exact same retrieval
         logic — keeping JSON and streaming paths in lockstep.
@@ -253,7 +282,15 @@ class Oracle:
         to the candidate list with the same wrap_untrusted defence applied
         so they get priority on the char budget without bypassing the
         prompt-injection guard.
+
+        ``retrieval_k`` decouples the *ranking* depth from the *context*
+        depth. When set (and larger than ``top_k``) the connector returns a
+        deeper pool so the ``retrieved`` ranking list can score, say, MRR@10
+        — but only the first ``top_k`` chunks ever feed the generation
+        context, so the answer the model sees is unchanged. ``None`` ⇒ the
+        legacy behaviour where ranking depth == context depth == ``top_k``.
         """
+        n_retrieve = max(top_k, retrieval_k) if retrieval_k else top_k
         query_vector = self.embedder.embed(question)
         use_hybrid = (
             getattr(self.config.cognition, "hybrid_search", True)
@@ -263,18 +300,28 @@ class Oracle:
             similar = self.connector.find_hybrid(
                 query_text=question,
                 query_vector=query_vector,
-                top_k=top_k,
+                top_k=n_retrieve,
                 rrf_k=getattr(self.config.cognition, "rrf_k", 60),
                 rerank=getattr(self.config.cognition, "rerank", False),
                 rerank_pool=getattr(self.config.cognition, "rerank_pool", 20),
             )
         elif query_vector:
-            similar = self.connector.find_similar_notes(query_vector, top_k=top_k)
+            similar = self.connector.find_similar_notes(query_vector, top_k=n_retrieve)
         else:
             similar = []
 
         if not similar and not extra_sources:
-            return None, []
+            return None, [], []
+
+        # Ranked, note-deduped retrieval order. Captured here because the
+        # ``set()`` dedup and the char-budget cap below both destroy rank
+        # order before ``ask`` returns — this list is the *only* place the
+        # true retrieval rank survives. Eval ranking metrics (Hit@k / MRR)
+        # read it back via the ``retrieved`` key. Pinned ``extra_sources``
+        # are deliberately excluded: they're user-supplied, not retrieved,
+        # so folding them in would corrupt the ranking signal.
+        retrieved: list[dict] = []
+        _seen_notes: set[int] = set()
 
         candidate_parts: list[tuple[str, str]] = []
 
@@ -288,10 +335,24 @@ class Oracle:
                 (title, f"--- Source: [[{title}]] (pinned) ---\n{safe_text}")
             )
 
-        for item in similar:
+        for rank_pos, item in enumerate(similar):
             title = self.db.get_note_title(item['note_id'])
             if not title:
                 logger.warning("orphan_embedding", note_id=item['note_id'])
+                continue
+            note_id = item['note_id']
+            if note_id not in _seen_notes:
+                _seen_notes.add(note_id)
+                retrieved.append({
+                    "title": title,
+                    "note_id": note_id,
+                    "score": item.get("score"),
+                    "rank": len(retrieved) + 1,
+                })
+            # Only the first ``top_k`` retrieved chunks feed the generation
+            # context; anything deeper exists purely so ``retrieved`` can span
+            # the ranking pool (e.g. MRR@10 behind a top-5 answer).
+            if rank_pos >= top_k:
                 continue
             page, heading = self.db.get_chunk_anchors(item['note_id'], item['text'])
             label = _format_source_label(title, page, heading)
@@ -326,9 +387,12 @@ class Oracle:
             )
 
         if not accepted_parts:
-            return None, []
+            # Retrieval found notes but the char cap dropped every one — a
+            # distinct failure mode from "nothing retrieved". Hand back the
+            # ranked list so eval can tell the two apart.
+            return None, [], retrieved
 
-        return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources))
+        return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources)), retrieved
 
     def ask_stream(self, question: str, top_k: int = 5, extra_sources=None, history=None) -> Iterator[dict]:
         """Streaming variant of :meth:`ask`.
@@ -350,9 +414,9 @@ class Oracle:
         logger.info("oracle_query_stream", question=question)
         history = self._normalize_history(history)
         retrieval_query = self._rewrite_query(question, history)
-        full_context, sources = self._build_context(retrieval_query, top_k, extra_sources=extra_sources)
+        full_context, sources, retrieved = self._build_context(retrieval_query, top_k, extra_sources=extra_sources)
         if full_context is None:
-            yield {"type": "done", "sources": [], "dropped_citations": 0}
+            yield {"type": "done", "sources": [], "retrieved": retrieved, "dropped_citations": 0}
             return
 
         # Drop the JSON-output rule and example block from the template so
@@ -389,4 +453,4 @@ class Oracle:
         # Tokens are already on screen, so we can't unlink in place; surface a
         # count instead so the caller can warn the user about ungrounded links.
         _, dropped = self.verify_citations("".join(chunks), sources)
-        yield {"type": "done", "sources": sources, "dropped_citations": dropped}
+        yield {"type": "done", "sources": sources, "retrieved": retrieved, "dropped_citations": dropped}

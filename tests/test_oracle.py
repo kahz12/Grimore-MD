@@ -71,6 +71,74 @@ def test_small_context_keeps_every_source():
     assert len(result["sources"]) == 3
 
 
+def test_ask_exposes_ranked_retrieval_order():
+    """ask() must surface retrieval *rank* via ``retrieved`` — ``sources`` is
+    flattened through ``set()`` and can't carry order, so ranking metrics that
+    read it would be noise."""
+    o = _make_oracle()
+    _capture_system_prompt(o)
+    # Deliberate rank order; note 7 appears twice (two chunks) to prove the
+    # per-note dedup keeps its first (best) rank.
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 7, "text": "alpha", "score": 0.9},
+        {"note_id": 3, "text": "beta", "score": 0.8},
+        {"note_id": 7, "text": "alpha-2", "score": 0.7},
+        {"note_id": 1, "text": "gamma", "score": 0.6},
+    ]
+
+    result = o.ask("hi", top_k=4)
+
+    retrieved = result["retrieved"]
+    assert [r["title"] for r in retrieved] == ["Note 7", "Note 3", "Note 1"]
+    assert [r["rank"] for r in retrieved] == [1, 2, 3]
+    assert retrieved[0]["score"] == 0.9
+    # Same membership survives in the (unordered) citation list.
+    assert set(result["sources"]) == {"Note 7", "Note 3", "Note 1"}
+
+
+def test_retrieval_k_deepens_ranking_but_not_context():
+    """retrieval_k widens the ranked pool (for MRR@k) without changing the
+    answer's context, which still sees only the top_k chunks."""
+    o = _make_oracle()
+    seen = _capture_system_prompt(o)
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 1, "text": "one", "score": 0.9},
+        {"note_id": 2, "text": "two", "score": 0.8},
+        {"note_id": 3, "text": "three", "score": 0.7},
+        {"note_id": 4, "text": "four", "score": 0.6},
+    ]
+
+    result = o.ask("hi", top_k=2, retrieval_k=4)
+
+    # The connector is asked for the deeper pool.
+    assert o.connector.find_similar_notes.call_args.kwargs["top_k"] == 4
+    # Ranking sees all four...
+    assert [r["title"] for r in result["retrieved"]] == [
+        "Note 1", "Note 2", "Note 3", "Note 4",
+    ]
+    # ...but only the top-2 feed the answer context / citations.
+    assert set(result["sources"]) == {"Note 1", "Note 2"}
+    ctx = seen["system"].split("TEMPLATE: ", 1)[1]
+    assert "Note 1" in ctx and "Note 2" in ctx
+    assert "Note 3" not in ctx and "Note 4" not in ctx
+
+
+def test_retrieve_ranks_without_calling_the_answer_llm():
+    """retrieve() returns the ranked list and never hits the generation LLM."""
+    o = _make_oracle()
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 5, "text": "x", "score": 0.9},
+        {"note_id": 6, "text": "y", "score": 0.8},
+    ]
+
+    retrieved = o.retrieve("hi", top_k=10)
+
+    assert [r["title"] for r in retrieved] == ["Note 5", "Note 6"]
+    assert [r["rank"] for r in retrieved] == [1, 2]
+    assert o.connector.find_similar_notes.call_args.kwargs["top_k"] == 10
+    o.router.complete.assert_not_called()
+
+
 def test_oversized_first_source_is_skipped_then_smaller_ones_kept():
     """A single huge top-ranked source must not starve the rest of the context."""
     o = _make_oracle()

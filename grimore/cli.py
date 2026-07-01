@@ -530,7 +530,19 @@ def eval(
         Path("eval/grimore_golden.yaml"), "--golden", "-g",
         help="Path to the golden YAML (see eval/grimore_golden.yaml for the schema).",
     ),
-    top_k: int = typer.Option(5, "--top-k", "-k", help="Context fragments to retrieve per ask."),
+    top_k: int = typer.Option(5, "--top-k", "-k", help="Context fragments fed to the answer per ask."),
+    retrieval_k: int = typer.Option(
+        10, "--retrieval-k",
+        help="Depth of the ranked pool scored for Hit@k / MRR, independent of --top-k.",
+    ),
+    retrieval_only: bool = typer.Option(
+        False, "--retrieval-only",
+        help="Score ranking only — skip answer generation. Fast, deterministic, CI-friendly.",
+    ),
+    baseline: bool = typer.Option(
+        False, "--baseline",
+        help="Run twice — hybrid (RRF) vs dense-only — and show the per-metric delta.",
+    ),
     judge: bool = typer.Option(
         True, "--judge/--no-judge",
         help="Use the local LLM to rate answer relevance. Off when Ollama is busy or offline.",
@@ -538,14 +550,26 @@ def eval(
     export: Optional[Path] = typer.Option(
         None, "--export", help="Write the full report as JSON to this path.",
     ),
+    history: Optional[Path] = typer.Option(
+        None, "--history",
+        help="Append a one-line run record to this JSONL ledger for trend tracking.",
+    ),
+    compare: Optional[Path] = typer.Option(
+        None, "--compare",
+        help="Diff against a previous --export run; exits non-zero on any regression.",
+    ),
     json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format."),
 ):
     """
     📊 Evaluate retrieval + answer quality against a golden YAML.
 
-    Reports recall@k, MRR, citation faithfulness, keyword recall, an
-    LLM-as-judge relevance score, and p50/p95 latency. Read-only (no vault
-    writes). Skip the judge with --no-judge for fast offline runs.
+    Reports Hit@1/Hit@3, MRR, recall@k, citation faithfulness, keyword recall,
+    an LLM-as-judge relevance score, and p50/p95 latency. Read-only (no vault
+    writes). Skip the judge with --no-judge for fast offline runs, or use
+    --retrieval-only to score ranking alone (no answer LLM) on every change.
+    Add --baseline to quantify the hybrid-fusion (RRF) uplift over dense-only.
+    Track trends with --history <ledger.jsonl> and gate CI with
+    --compare <previous.json> (non-zero exit on regression).
     """
     setup_logger(json_format=json_logs)
     config = load_config()
@@ -554,7 +578,11 @@ def eval(
     _preflight_or_exit(config, check_git=False)
 
     session = Session(config)
-    _do_eval(session, golden, top_k=top_k, judge=judge, export=export)
+    _do_eval(
+        session, golden, top_k=top_k, retrieval_k=retrieval_k,
+        retrieval_only=retrieval_only, baseline=baseline, judge=judge,
+        export=export, history=history, compare=compare,
+    )
 
 
 @app.command(rich_help_panel="Daemon")

@@ -1,30 +1,98 @@
-# Grimore eval golden set — Phase 0.1
+# Grimore eval golden set — v1
 #
-# This is the BASELINE golden set used by `grimore eval` to measure
-# retrieval + answer quality after every retrieval-related change. Keep it
-# small (so iteration is fast) and diverse (so the metrics actually move
-# when retrieval quality moves).
+# The BASELINE golden set used by `grimore eval` to measure retrieval + answer
+# quality after every retrieval-related change. Grounded in the shipped
+# reference vault (`./test_vault`, see grimore.toml) so it is runnable as-is:
+# scan that vault, then `grimore eval`.
 #
-# Conventions for editing this file:
-# * Each `id` is short, kebab-case, and stable across edits — eval reports
-#   key off it, so a renamed id breaks history comparisons.
-# * `expected_sources` are BARE note titles (no `#anchor` suffix). They are
-#   what `grimore search <query>` would print in the "title" column after a
-#   `grimore scan`. Anchors on the retrieved side are stripped before
-#   matching, so a retrieved `[[Gothic Architecture#p.3]]` still satisfies
-#   an `expected_sources: ["Gothic Architecture"]` entry.
-# * `expected_keywords` are substring-matched into the answer, case
-#   insensitively. Pick terms the answer must mention — not phrasing tricks.
-# * `follow_ups` walk Session.record_turn between turns, so the rewrite +
-#   history features in Oracle.ask are exercised (and scored) too.
+# ── How to add / edit questions (read before touching this file) ────────────
+# * `id` — short, kebab-case, STABLE. Reports key off it, so renaming an id
+#   breaks history comparisons. Never reuse an id for a different question.
+# * `category` — the stratum, so metrics break down by query type. Conventions
+#   here: `single-hop` (one note answers it), `multi-hop` (needs synthesis /
+#   several facts), `negative` (answer is NOT in the vault). Follow-ups inherit
+#   their parent's category. Add new categories freely — they aggregate
+#   automatically.
+# * `expected_sources` — note titles, matched TOKEN-NORMALISED (accent/emoji/
+#   case-insensitive; every token of your entry must appear in the note's
+#   title). So keep them SHORT and DISTINCTIVE: write `Roman Empire`, not the
+#   full decorated H1. A note's title is its frontmatter `title:`, else its
+#   first `# H1`, else its filename stem. Run `grimore search "<query>"` to see
+#   the titles the system prints, and pick a distinctive fragment.
+# * `expected_keywords` — substrings the ANSWER must contain, matched
+#   case-insensitively. Pick terms a correct answer can't avoid (proper nouns
+#   are safest). Ask in the note's language so the answer's language matches
+#   your keywords (the Spanish notes below use Spanish questions + keywords).
+# * `follow_ups` — chained through the same session, exercising the
+#   conversation rewrite + history. Score like any other turn.
+# * `negative: true` — a question with no answer in the vault. Omit
+#   `expected_sources` (the loader rejects a negative that lists any). Scored by
+#   whether the Oracle abstains, not by ranking.
 #
 # Phase 2 (cross-encoder reranker, semantic chunker) MUST use a separate
-# held-out file (`eval/grimore_golden_v2.yaml`) — this one trained the
-# defaults, so testing on it would be train-on-test.
+# held-out file (`eval/grimore_golden_v2.yaml`) — this one tunes the defaults,
+# so testing on it would be train-on-test.
 version: 1
 questions:
+  # ── single-hop: one note directly answers the question ──────────────────
+  - id: gothic-origin
+    question: "Where and when did Gothic architecture originate?"
+    category: single-hop
+    expected_sources: ["gothic_architecture"]
+    expected_keywords: ["france", "12th"]
+
+  - id: ai-hype-cycles
+    question: "How is the history of AI described — what cyclical pattern did it follow?"
+    category: single-hop
+    expected_sources: ["Artificial Intelligence"]
+    expected_keywords: ["winter", "spring"]
+
+  - id: apple-main-component
+    question: "What is an apple mostly composed of by weight?"
+    category: single-hop
+    expected_sources: ["Apples Malus"]
+    expected_keywords: ["water"]
+
+  - id: kotlin-intro
+    question: "What is Kotlin, who created it, and what safety guarantee is it known for?"
+    category: single-hop
+    expected_sources: ["Kotlin Fundamentals"]
+    expected_keywords: ["jetbrains", "null"]
+
+  - id: social-engineering-definition
+    question: "What is social engineering in information security?"
+    category: single-hop
+    expected_sources: ["Social Engineering"]
+    expected_keywords: ["human", "manipulat"]
+
+  - id: socrates-focus
+    question: "¿Hacia qué dirigió Sócrates la investigación filosófica?"
+    category: single-hop
+    expected_sources: ["Sócrates"]
+    expected_keywords: ["virtud", "moral"]
+
+  - id: astronomia-objeto
+    question: "¿Qué estudia la astronomía?"
+    category: single-hop
+    expected_sources: ["Astronomía"]
+    expected_keywords: ["cuerpos celestes"]
+
+  - id: arquitectura-monolito
+    question: "¿Qué caracteriza a un monolito tradicional en la arquitectura de software?"
+    category: single-hop
+    expected_sources: ["Arquitectura de Software"]
+    expected_keywords: ["monolito"]
+
+  - id: ranas-orden
+    question: "¿A qué orden taxonómico pertenecen las ranas?"
+    category: single-hop
+    expected_sources: ["Ranas"]
+    expected_keywords: ["anura"]
+
+  # ── multi-hop: needs synthesis across facts, plus conversational turns ───
   - id: gothic-trilogy
     question: "What three structural innovations defined Gothic cathedrals?"
+    category: multi-hop
     expected_sources: ["gothic_architecture"]
     expected_keywords: ["pointed arch", "ribbed vault", "flying buttress"]
     follow_ups:
@@ -33,22 +101,32 @@ questions:
         expected_sources: ["gothic_architecture"]
         expected_keywords: ["flying buttress"]
 
-  - id: wpa2-basics
-    question: "What is the WPA2 protocol about?"
-    expected_sources: ["nota2"]
-    expected_keywords: ["cryptography", "wpa2"]
+  - id: roman-republic-fall
+    question: "How did Rome transition from the Republic to the Empire?"
+    category: multi-hop
+    expected_sources: ["Roman Empire"]
+    expected_keywords: ["republic"]
+    follow_ups:
+      - id: roman-warlords-followup
+        question: "Which early warlord generals concentrated military power in that period?"
+        expected_sources: ["Roman Empire"]
+        expected_keywords: ["marius", "sulla"]
 
-  - id: nihilism-and-tech
-    question: "How does technology relate to nihilism, according to the vault?"
-    expected_sources: ["nihilismo_tech"]
-    expected_keywords: ["heidegger", "technology"]
+  # ── negative: answer is deliberately NOT in the vault → expect abstention ─
+  - id: negative-sourdough
+    question: "What's the recipe for a sourdough bread starter?"
+    category: negative
+    negative: true
+    expected_keywords: []
 
-  - id: gothic-origin
-    question: "Where and when did Gothic architecture originate?"
-    expected_sources: ["gothic_architecture"]
-    expected_keywords: ["france", "12th"]
+  - id: negative-bitcoin-price
+    question: "What is today's Bitcoin price?"
+    category: negative
+    negative: true
+    expected_keywords: []
 
-  - id: existentialism-philosophy
-    question: "What does the existentialism note discuss?"
-    expected_sources: ["nota1"]
-    expected_keywords: ["existential"]
+  - id: negative-change-tire
+    question: "How do I change a flat car tire step by step?"
+    category: negative
+    negative: true
+    expected_keywords: []
