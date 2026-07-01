@@ -26,13 +26,19 @@ Metrics computed per case (and aggregated over the suite):
 * ``faithfulness``    — ``1 - dropped_citations / total_citations``; 1.0 means
                         every ``[[wikilink]]`` the model emitted was grounded
                         in a retrieved source.
-* ``keyword_recall``  — fraction of ``expected_keywords`` substring-present
-                        in the answer (case-insensitive).
+* ``keyword_recall``  — fraction of ``expected_keywords`` present in the
+                        answer, matched accent-folded and word-boundary
+                        anchored (see :func:`_keyword_pattern`).
 * ``answer_relevance``— LLM-as-judge: the local model rates the answer 0-10
                         against the question and we normalise to ``[0, 1]``.
                         Skipped per-case when the router returns None;
                         excluded from the aggregate when no case scored.
-* ``latency_s``       — wall-clock for the ``ask`` call.
+* ``latency_s``       — wall-clock for the ``ask`` call. The Oracle also
+                        reports a per-stage breakdown (rewrite/embed/retrieve/
+                        rerank/generate), aggregated into ``stage_latency`` so a
+                        slowdown can be pinned to a stage. (The connector
+                        additionally debug-logs the RRF rank inputs — each
+                        surviving doc's dense- and BM25-rank.)
 
 Cases are stratified by a ``category`` tag (single-hop, multi-hop, …) so the
 report breaks ranking down by query type and shows *where* retrieval struggles.
@@ -168,6 +174,11 @@ class TurnResult:
     outcome: str = "ok"
     expected_sources: list[str] = field(default_factory=list)
     missing_keywords: list[str] = field(default_factory=list)
+    # ── per-stage latency (embed/retrieve/rerank/generate/…) ──
+    # The Oracle's stage breakdown for this turn, so a latency regression can be
+    # pinned to a stage instead of just "slower". Empty when the Oracle didn't
+    # report timings (e.g. a hand-built TurnResult).
+    timings: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -198,6 +209,9 @@ class EvalReport:
             "latency_p50": _quantile([t.latency_s for t in self.turns], 0.50),
             "latency_p95": _quantile([t.latency_s for t in self.turns], 0.95),
         }
+        # Per-stage latency means (embed/retrieve/rerank/generate/…) so a
+        # slowdown can be pinned to a stage, not just the end-to-end number.
+        agg["stage_latency"] = _stage_latency_means(self.turns)
         judged = [t.answer_relevance for t in self.turns if t.answer_relevance is not None]
         agg["answer_relevance"] = _mean(judged) if judged else None
         agg["judged_n"] = len(judged)
@@ -302,6 +316,12 @@ class EvalReport:
             f"\nLatency p50/p95: [bold]{agg['latency_p50']:.1f}s[/] / "
             f"[bold]{agg['latency_p95']:.1f}s[/]   ·   n={summary['n']}"
         )
+        stages = agg.get("stage_latency") or {}
+        if stages:
+            parts = "  ".join(
+                f"{s.removesuffix('_s')} [bold]{v:.2f}s[/]" for s, v in stages.items()
+            )
+            body += f"\nStage means: {parts}"
         console.print(Panel(body, title="Aggregate", border_style="grimore.primary"))
 
         # Per-category ranking breakdown — where retrieval actually struggles.
@@ -405,6 +425,21 @@ def _parse_case(node: dict, path: Path, *, parent_category: str = "uncategorized
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
+def _fold(text: str) -> str:
+    """NFKD accent-fold to ASCII, then lowercase — structure and spacing kept.
+
+    Shared by title and keyword matching so both are accent-insensitive in the
+    same way: golden ``energia`` matches an answer's ``energía`` and vice versa
+    (LLM accenting is non-deterministic, so we can't rely on either side).
+    """
+    return (
+        unicodedata.normalize("NFKD", text or "")
+        .encode("ascii", "ignore")
+        .decode()
+        .lower()
+    )
+
+
 def _norm_tokens(title: str) -> frozenset[str]:
     """Normalise a note title to a set of comparison tokens.
 
@@ -418,8 +453,7 @@ def _norm_tokens(title: str) -> frozenset[str]:
     byte-identical to the golden entry.
     """
     bare = title.split("#", 1)[0]
-    folded = unicodedata.normalize("NFKD", bare).encode("ascii", "ignore").decode()
-    return frozenset(_TOKEN_RE.findall(folded.lower()))
+    return frozenset(_TOKEN_RE.findall(_fold(bare)))
 
 
 def _title_matches(expected: str, retrieved_title: str) -> bool:
@@ -504,12 +538,57 @@ def faithfulness(answer: str, dropped_citations: int) -> tuple[float, int]:
     return 1.0 - (dropped_citations / total), total
 
 
+def _keyword_pattern(keyword: str) -> Optional[re.Pattern[str]]:
+    """Compile a robust matcher for one expected keyword (``None`` if empty).
+
+    Matches against the accent-folded answer with:
+
+    * a **leading** word boundary, so ``art`` no longer spuriously matches
+      ``Sparta``/``start`` — the substring test's biggest false-positive source
+      on short keywords;
+    * **no trailing** boundary, so simple inflection still counts: ``frog``
+      matches ``frogs``, ``cell`` matches ``cells``;
+    * **separator-flexible** joins for multi-word keywords, so ``machine
+      learning`` also matches ``machine-learning`` and ``machine  learning``.
+    """
+    tokens = _TOKEN_RE.findall(_fold(keyword))
+    if not tokens:
+        return None
+    body = r"[\W_]+".join(re.escape(t) for t in tokens)
+    return re.compile(rf"\b{body}")
+
+
+def _keyword_hits(
+    answer: str, expected_keywords: list[str]
+) -> tuple[list[str], list[str]]:
+    """Partition expected keywords into ``(present, missing)`` for one answer.
+
+    Single source of truth for :func:`keyword_recall` and the Failures
+    section's ``missing_keywords`` — so reported recall and listed misses can
+    never disagree.
+    """
+    folded = _fold(answer)
+    present: list[str] = []
+    missing: list[str] = []
+    for kw in expected_keywords:
+        pat = _keyword_pattern(kw)
+        if pat is not None and pat.search(folded):
+            present.append(kw)
+        else:
+            missing.append(kw)
+    return present, missing
+
+
 def keyword_recall(answer: str, expected_keywords: list[str]) -> float:
+    """Fraction of ``expected_keywords`` that survive into the answer.
+
+    Empty expectation → 1.0 (nothing to satisfy). Matching is accent-folded and
+    word-boundary anchored — see :func:`_keyword_pattern`.
+    """
     if not expected_keywords:
         return 1.0
-    text = (answer or "").lower()
-    hits = sum(1 for kw in expected_keywords if kw.lower() in text)
-    return hits / len(expected_keywords)
+    present, _ = _keyword_hits(answer, expected_keywords)
+    return len(present) / len(expected_keywords)
 
 
 # Phrasings that indicate the Oracle declined to answer. The first two are
@@ -700,16 +779,21 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
             logger.warning("eval_ask_failed", case=case.id, error=str(e))
             result = {"answer": "", "sources": [], "retrieved": [], "dropped_citations": 0}
     else:
-        # Retrieval-only: rank sources without paying for an answer.
+        # Retrieval-only: rank sources without paying for an answer. Pass a
+        # timings dict so the stage breakdown survives even here (no generate).
+        stage_timings: dict[str, float] = {}
         try:
             retrieved = session.oracle.retrieve(
-                case.question, top_k=retrieval_k, **hist_kw,
+                case.question, top_k=retrieval_k, timings=stage_timings, **hist_kw,
             )
         except Exception as e:
             logger.warning("eval_retrieve_failed", case=case.id, error=str(e))
             retrieved = []
-        result = {"answer": "", "sources": [], "retrieved": retrieved, "dropped_citations": 0}
+        result = {"answer": "", "sources": [], "retrieved": retrieved,
+                  "dropped_citations": 0, "timings": stage_timings}
     latency = time.monotonic() - started
+    # Oracle-reported per-stage latency; may be absent on older/fake sessions.
+    timings = {k: float(v) for k, v in (result.get("timings") or {}).items()}
 
     answer = result.get("answer", "") or ""
     sources = result.get("sources", []) or []
@@ -720,27 +804,25 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
 
     if generate:
         faith, total_cit = faithfulness(answer, dropped)
+        # Present/missing come from one matcher so recall and the Failures
+        # section's ``missing_keywords`` can't disagree.
+        present_kw, missing_kw = _keyword_hits(answer, case.expected_keywords)
         # Keyword recall is N/A (not 1.0) when a case lists no keywords — a
         # vacuous 1.0 would inflate the aggregate.
         kw: Optional[float] = (
-            keyword_recall(answer, case.expected_keywords)
+            len(present_kw) / len(case.expected_keywords)
             if case.expected_keywords else None
         )
         rel = judge_relevance(session.router, case.question, answer) if judge else None
     else:
         # No answer → generation metrics are not applicable (not zero).
         faith, total_cit, kw, rel = None, 0, None, None
+        missing_kw = []
 
     # Negative cases score on whether the Oracle abstained (only meaningful
     # when an answer was actually generated).
     abstained = answer_abstained(answer) if (case.negative and generate) else None
 
-    # Which expected keywords didn't survive into the answer (for the Failures
-    # section). Only meaningful once an answer exists.
-    missing_kw = (
-        [k for k in case.expected_keywords if k.lower() not in answer.lower()]
-        if generate else []
-    )
     outcome = classify_outcome(
         negative=case.negative, generate=generate, ranked=ranked,
         expected_sources=case.expected_sources, top_k=top_k,
@@ -770,6 +852,7 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
         outcome=outcome,
         expected_sources=list(case.expected_sources),
         missing_keywords=missing_kw,
+        timings=timings,
     ))
 
     # Feed this turn into conversation memory before walking follow-ups.
@@ -1136,6 +1219,26 @@ def _present_mean(values: Iterable[Optional[float]]) -> Optional[float]:
     mode — so the aggregate reads ``—`` instead of a misleading 0.0."""
     vs = [v for v in values if v is not None]
     return float(statistics.fmean(vs)) if vs else None
+
+
+# Pipeline stages in execution order, for the latency breakdown. Reporting
+# order only — a stage absent from every turn's timings is dropped.
+_STAGE_ORDER = ("rewrite_s", "embed_s", "retrieve_s", "rerank_s", "generate_s")
+
+
+def _stage_latency_means(turns: list["TurnResult"]) -> dict[str, float]:
+    """Mean seconds per pipeline stage across turns that reported it.
+
+    Stages are averaged independently — a retrieval-only turn simply doesn't
+    contribute to ``generate_s`` — so mixed and single-mode runs both yield a
+    meaningful breakdown. Only stages observed at least once appear.
+    """
+    means: dict[str, float] = {}
+    for stage in _STAGE_ORDER:
+        vals = [t.timings[stage] for t in turns if stage in t.timings]
+        if vals:
+            means[stage] = _mean(vals)
+    return means
 
 
 def _failure_detail(t: "TurnResult") -> dict[str, Any]:

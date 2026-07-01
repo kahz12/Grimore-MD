@@ -192,6 +192,68 @@ class TestHybridFusion:
         conn = Connector(db, _StubEmbedder())
         assert conn.find_hybrid("anything", [1.0, 0.0, 0.0], top_k=5) == []
 
+    def test_returned_dicts_do_not_leak_embedding_id(self, db):
+        # embedding_id is retained internally for rank-input logging but must
+        # be stripped before the result reaches callers.
+        _seed(db, [
+            ("A", "needle keyword one", [1.0, 0.0, 0.0]),
+            ("B", "needle keyword two", [0.9, 0.1, 0.0]),
+        ])
+        conn = Connector(db, _StubEmbedder())
+        hits = conn.find_hybrid("needle", [1.0, 0.0, 0.0], top_k=2)
+        assert hits and all("embedding_id" not in h for h in hits)
+        assert all(set(h) == {"note_id", "text", "score"} for h in hits)
+
+
+class TestRRFRankInputLogging:
+    def test_reports_dense_and_bm25_ranks_per_survivor(self, monkeypatch):
+        from grimore.cognition import connector as conn_mod
+
+        calls: list[tuple[str, dict]] = []
+
+        class _CaptureLogger:
+            def debug(self, event, **kw):
+                calls.append((event, kw))
+
+            def __getattr__(self, _name):  # info/warning/… are no-ops
+                return lambda *a, **k: None
+
+        monkeypatch.setattr(conn_mod, "logger", _CaptureLogger())
+
+        dense = [{"embedding_id": 10}, {"embedding_id": 20}, {"embedding_id": 30}]
+        sparse = [{"embedding_id": 30}, {"embedding_id": 40}]
+        survivors = [
+            {"embedding_id": 30, "note_id": 3},   # both lists: dense#3, bm25#1
+            {"embedding_id": 10, "note_id": 1},   # dense-only: dense#1, bm25 None
+            {"embedding_id": 40, "note_id": 4},   # bm25-only: dense None, bm25#2
+        ]
+        Connector._log_rrf_inputs(dense, sparse, survivors)
+
+        event, kw = calls[-1]
+        assert event == "rrf_rank_inputs"
+        assert kw["dense_pool"] == 3 and kw["bm25_pool"] == 2
+        assert kw["inputs"] == [
+            {"note_id": 3, "dense_rank": 3, "bm25_rank": 1},
+            {"note_id": 1, "dense_rank": 1, "bm25_rank": None},
+            {"note_id": 4, "dense_rank": None, "bm25_rank": 2},
+        ]
+
+    def test_no_survivors_logs_nothing(self, monkeypatch):
+        from grimore.cognition import connector as conn_mod
+
+        calls: list = []
+
+        class _Cap:
+            def debug(self, *a, **k):
+                calls.append((a, k))
+
+            def __getattr__(self, _name):
+                return lambda *a, **k: None
+
+        monkeypatch.setattr(conn_mod, "logger", _Cap())
+        Connector._log_rrf_inputs([{"embedding_id": 1}], [], [])
+        assert calls == []
+
 
 class TestFindSimilarStillWorks:
     """The dense-only path is still the fallback when FTS is off — keep it wired."""

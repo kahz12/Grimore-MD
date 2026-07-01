@@ -14,7 +14,7 @@ questions:
     question: "Natural-language query"   # required
     category: single-hop         # stratum: single-hop | multi-hop | negative | …
     expected_sources: ["Roman Empire"]   # note titles (see matching below)
-    expected_keywords: ["republic"]      # substrings the ANSWER must contain
+    expected_keywords: ["republic"]      # terms the ANSWER must contain
     follow_ups:                  # optional; chained through one session
       - id: roman-warlords-followup
         question: "Which generals concentrated military power?"
@@ -42,11 +42,21 @@ Pick tokens that identify **exactly one** note. `Software Architecture` is fine;
 a lone `architecture` could match more than one. To see the title the system
 actually prints, run `grimore search "<query>"`.
 
-## `expected_keywords` — substrings of the answer
+## `expected_keywords` — terms the answer must contain
 
-Matched case-insensitively against the generated answer. Choose terms a correct
-answer can't avoid — **proper nouns are safest** (`marius`, `cialdini`, `anura`).
-Two traps:
+Matched against the generated answer, **accent-folded** (`energía` ⇄ `energia`)
+and **word-boundary anchored** on the leading edge. Practical consequences:
+
+- Accents don't matter on either side — the LLM's accenting is non-deterministic.
+- A keyword only counts at a word start, so `art` no longer matches `Sparta`;
+  pick terms that stand as their own word.
+- Simple inflection still counts (there's no trailing boundary): `frog` matches
+  `frogs`, `orbit` matches `orbital`.
+- Multi-word keywords tolerate any separator: `machine learning` matches
+  `machine-learning` too.
+
+Choose terms a correct answer can't avoid — **proper nouns are safest**
+(`marius`, `cialdini`, `anura`). Two traps:
 
 - **Language.** Ask in the note's language so the answer's language matches your
   keywords. The Spanish notes here use Spanish questions + Spanish keywords.

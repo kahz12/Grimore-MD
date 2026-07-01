@@ -139,6 +139,49 @@ def test_retrieve_ranks_without_calling_the_answer_llm():
     o.router.complete.assert_not_called()
 
 
+def test_ask_reports_per_stage_timings():
+    """ask() exposes a rewrite/embed/retrieve/rerank/generate/total breakdown."""
+    o = _make_oracle()
+    _capture_system_prompt(o)
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 1, "text": "body", "score": 0.9},
+    ]
+
+    result = o.ask("hi")
+
+    t = result["timings"]
+    for stage in ("rewrite_s", "embed_s", "retrieve_s", "generate_s", "total_s"):
+        assert stage in t and t[stage] >= 0.0
+    # Dense-only path here → no second-stage rerank.
+    assert t["rerank_s"] == 0.0
+
+
+def test_ask_empty_vault_still_reports_timings_with_zero_generate():
+    """When nothing is retrieved, timings are still emitted and generate is 0."""
+    o = _make_oracle()
+    o.connector.find_similar_notes.return_value = []
+
+    result = o.ask("hi")
+
+    assert result["answer"].startswith("Your vault seems empty")
+    assert result["timings"]["generate_s"] == 0.0
+    assert "total_s" in result["timings"]
+
+
+def test_retrieve_fills_timings_out_param_without_generating():
+    """retrieve(timings=…) populates the stage dict in place; no generate stage."""
+    o = _make_oracle()
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 5, "text": "x", "score": 0.9},
+    ]
+
+    timings: dict[str, float] = {}
+    o.retrieve("hi", top_k=10, timings=timings)
+
+    assert "embed_s" in timings and "retrieve_s" in timings
+    assert "generate_s" not in timings
+
+
 def test_oversized_first_source_is_skipped_then_smaller_ones_kept():
     """A single huge top-ranked source must not starve the rest of the context."""
     o = _make_oracle()

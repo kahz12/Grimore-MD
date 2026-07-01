@@ -4,6 +4,7 @@ This module combines semantic search (via the Connector) with LLM completion
 (via the LLMRouter) to answer questions based on the vault's content.
 """
 import re
+import time
 from pathlib import Path
 from typing import Iterator
 
@@ -83,43 +84,60 @@ class Oracle:
         budget. Same wrap_untrusted defence applies.
         """
         logger.info("oracle_query", question=question)
+        # Per-stage latency, threaded through retrieval and filled here. Lets
+        # eval attribute end-to-end time to embed/retrieve/rerank/generate
+        # instead of a single opaque number.
+        timings: dict[str, float] = {}
+        t_total = time.perf_counter()
         history = self._normalize_history(history)
+        t_rewrite = time.perf_counter()
         retrieval_query = self._rewrite_query(question, history)
+        timings["rewrite_s"] = time.perf_counter() - t_rewrite
         full_context, sources, retrieved = self._build_context(
-            retrieval_query, top_k, extra_sources=extra_sources, retrieval_k=retrieval_k
+            retrieval_query, top_k, extra_sources=extra_sources,
+            retrieval_k=retrieval_k, timings=timings,
         )
         if full_context is None:
+            timings["generate_s"] = 0.0
+            timings["total_s"] = time.perf_counter() - t_total
             return {
                 "answer": "Your vault seems empty of relevant whispers on this subject.",
                 "sources": [],
                 "retrieved": retrieved,
                 "dropped_citations": 0,
+                "timings": timings,
             }
 
         system_prompt = self.system_prompt_template.replace("{context}", full_context)
         if history:
             system_prompt = self._format_history(history) + "\n\n" + system_prompt
+        t_gen = time.perf_counter()
         response = self.router.complete(
             prompt=f"Question: {question}",
             system_prompt=system_prompt,
         )
+        timings["generate_s"] = time.perf_counter() - t_gen
 
         if not response or not isinstance(response, dict):
             logger.warning("oracle_no_response")
+            timings["total_s"] = time.perf_counter() - t_total
             return {"answer": "The Oracle is silent.", "sources": sources,
-                    "retrieved": retrieved, "dropped_citations": 0}
+                    "retrieved": retrieved, "dropped_citations": 0, "timings": timings}
 
         answer, dropped = self.verify_citations(
             response.get("answer", "The Oracle is silent."), sources
         )
+        timings["total_s"] = time.perf_counter() - t_total
         return {
             "answer": answer,
             "sources": sources,
             "retrieved": retrieved,
             "dropped_citations": dropped,
+            "timings": timings,
         }
 
-    def retrieve(self, question: str, top_k: int = 10, history=None) -> list[dict]:
+    def retrieve(self, question: str, top_k: int = 10, history=None,
+                 timings: "dict | None" = None) -> list[dict]:
         """Retrieval-only path: rank the top-``top_k`` sources for a question
         *without* generating an answer.
 
@@ -133,14 +151,19 @@ class Oracle:
 
         Used by the eval harness's ``--retrieval-only`` mode to measure Hit@k /
         MRR cheaply on every change without paying for (or being perturbed by)
-        generation.
+        generation. Pass a ``timings`` dict to have the per-stage latency
+        (rewrite/embed/retrieve/rerank) filled in place — the return type stays
+        a plain list so existing callers are unaffected.
         """
         logger.info("oracle_retrieve", question=question)
         history = self._normalize_history(history)
+        t_rewrite = time.perf_counter()
         retrieval_query = self._rewrite_query(question, history)
+        if timings is not None:
+            timings["rewrite_s"] = time.perf_counter() - t_rewrite
         # ``top_k`` here is the ranking depth; the discarded context is built
         # at the same depth, which is fine — we only want ``retrieved``.
-        _, _, retrieved = self._build_context(retrieval_query, top_k)
+        _, _, retrieved = self._build_context(retrieval_query, top_k, timings=timings)
         return retrieved
 
     @staticmethod
@@ -269,7 +292,8 @@ class Oracle:
         return block[: self._HISTORY_MAX_CHARS]
 
     def _build_context(self, question: str, top_k: int, extra_sources=None,
-                       retrieval_k: "int | None" = None):
+                       retrieval_k: "int | None" = None,
+                       timings: "dict | None" = None):
         """Run retrieval + context-cap and return (full_context, sources, retrieved).
 
         Returns ``(None, [], retrieved)`` when no context is usable, so the
@@ -291,12 +315,17 @@ class Oracle:
         legacy behaviour where ranking depth == context depth == ``top_k``.
         """
         n_retrieve = max(top_k, retrieval_k) if retrieval_k else top_k
+        t_embed = time.perf_counter()
         query_vector = self.embedder.embed(question)
+        embed_s = time.perf_counter() - t_embed
         use_hybrid = (
             getattr(self.config.cognition, "hybrid_search", True)
             and self.db.fts_available
         )
+        rerank_s = 0.0
+        t_search = time.perf_counter()
         if use_hybrid:
+            search_timings: dict[str, float] = {}
             similar = self.connector.find_hybrid(
                 query_text=question,
                 query_vector=query_vector,
@@ -304,11 +333,19 @@ class Oracle:
                 rrf_k=getattr(self.config.cognition, "rrf_k", 60),
                 rerank=getattr(self.config.cognition, "rerank", False),
                 rerank_pool=getattr(self.config.cognition, "rerank_pool", 20),
+                timings=search_timings,
             )
+            rerank_s = search_timings.get("rerank_s", 0.0)
         elif query_vector:
             similar = self.connector.find_similar_notes(query_vector, top_k=n_retrieve)
         else:
             similar = []
+        # "retrieve" is dense + BM25 + fusion; the optional rerank is subtracted
+        # out so it shows up as its own bucket rather than inflating retrieval.
+        if timings is not None:
+            timings["embed_s"] = embed_s
+            timings["retrieve_s"] = max(time.perf_counter() - t_search - rerank_s, 0.0)
+            timings["rerank_s"] = rerank_s
 
         if not similar and not extra_sources:
             return None, [], []

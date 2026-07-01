@@ -4,6 +4,7 @@ This module provides logic to find related notes by comparing their vector
 embeddings and, optionally, fusing vector ranking with BM25 (FTS5) ranking
 via Reciprocal Rank Fusion.
 """
+import time
 from typing import List, Optional
 
 from grimore.cognition.embedder import Embedder
@@ -268,6 +269,7 @@ class Connector:
         exclude_note_id: Optional[int] = None,
         rerank: bool = False,
         rerank_pool: int = 20,
+        timings: Optional[dict] = None,
     ) -> list[dict]:
         """
         Fuse dense retrieval and FTS5 BM25 with Reciprocal Rank Fusion.
@@ -281,6 +283,11 @@ class Connector:
 
         * No vector (embedder failed) → BM25-only.
         * No FTS5 or no BM25 hits     → vector-only.
+
+        Observability: emits a debug ``rrf_rank_inputs`` log with each
+        surviving doc's dense- and BM25-rank (the actual fusion inputs), and,
+        when ``timings`` is supplied, records the second-stage rerank duration
+        under ``timings["rerank_s"]`` so eval can bucket latency by stage.
         """
         pool = max(top_k * 4, 20)
 
@@ -299,44 +306,89 @@ class Connector:
 
         if not dense and not sparse:
             return []
+        # ``embedding_id`` is retained through fusion so per-doc rank inputs can
+        # be logged, then stripped just before returning.
         if not sparse:
             # BM25 contributed nothing — behave exactly like the dense path.
-            ranked = [
-                {k: v for k, v in item.items() if k != "embedding_id"}
-                for item in dense
-            ]
+            ranked = [dict(item) for item in dense]
         elif not dense:
             ranked = [
-                {"note_id": s["note_id"], "text": s["text"], "score": -s["bm25"]}
+                {"embedding_id": s["embedding_id"], "note_id": s["note_id"],
+                 "text": s["text"], "score": -s["bm25"]}
                 for s in sparse
             ]
         else:
             ranks: dict[int, dict] = {}
             for rank, item in enumerate(dense):
                 ranks.setdefault(item["embedding_id"], {
+                    "embedding_id": item["embedding_id"],
                     "note_id": item["note_id"],
                     "text": item["text"],
                     "rrf": 0.0,
                 })["rrf"] += 1.0 / (rrf_k + rank + 1)
             for rank, item in enumerate(sparse):
                 ranks.setdefault(item["embedding_id"], {
+                    "embedding_id": item["embedding_id"],
                     "note_id": item["note_id"],
                     "text": item["text"],
                     "rrf": 0.0,
                 })["rrf"] += 1.0 / (rrf_k + rank + 1)
 
             ranked = [
-                {"note_id": v["note_id"], "text": v["text"], "score": v["rrf"]}
+                {"embedding_id": v["embedding_id"], "note_id": v["note_id"],
+                 "text": v["text"], "score": v["rrf"]}
                 for v in ranks.values()
             ]
             ranked.sort(key=lambda x: x["score"], reverse=True)
 
         # Optional second-stage re-rank over the head of the pool. Falls
         # back to the fusion order on any failure (handled inside _rerank).
+        # Timed separately so a slow reranker doesn't hide inside "retrieve".
         if rerank and self._reranker is not None and len(ranked) > 1:
+            t_rerank = time.perf_counter()
             ranked = self._rerank(query_text, ranked, rerank_pool)
+            if timings is not None:
+                timings["rerank_s"] = time.perf_counter() - t_rerank
 
-        return ranked[:top_k]
+        survivors = ranked[:top_k]
+        self._log_rrf_inputs(dense, sparse, survivors)
+        # Drop the internal embedding_id — callers key on note_id/text/score.
+        return [
+            {k: v for k, v in item.items() if k != "embedding_id"}
+            for item in survivors
+        ]
+
+    @staticmethod
+    def _log_rrf_inputs(
+        dense: list[dict], sparse: list[dict], survivors: list[dict]
+    ) -> None:
+        """Debug-log the RRF rank inputs for the docs that survived to the result.
+
+        For each returned doc, records its 1-indexed rank in the dense list and
+        in the BM25 list (``None`` when that signal didn't surface it) — the raw
+        inputs the fusion combined. Makes it visible whether hybrid is genuinely
+        fusing two signals or one is carrying the result, which is the first
+        thing you want to know when a query ranks worse than expected. Silent in
+        normal use; turn logging up during eval to see it.
+        """
+        if not survivors:
+            return
+        dense_rank = {d["embedding_id"]: i + 1 for i, d in enumerate(dense)}
+        bm25_rank = {s["embedding_id"]: i + 1 for i, s in enumerate(sparse)}
+        inputs = [
+            {
+                "note_id": item.get("note_id"),
+                "dense_rank": dense_rank.get(item.get("embedding_id")),
+                "bm25_rank": bm25_rank.get(item.get("embedding_id")),
+            }
+            for item in survivors
+        ]
+        logger.debug(
+            "rrf_rank_inputs",
+            dense_pool=len(dense),
+            bm25_pool=len(sparse),
+            inputs=inputs,
+        )
 
     def _rerank(
         self, query_text: str, candidates: list[dict], pool: int

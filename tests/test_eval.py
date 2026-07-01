@@ -25,6 +25,7 @@ from grimore.cognition.eval import (
     faithfulness,
     judge_relevance,
     keyword_recall,
+    _keyword_hits,
     load_golden,
     mrr,
     ranked_sources,
@@ -32,6 +33,7 @@ from grimore.cognition.eval import (
     run_baseline,
     run_eval,
     source_hit_at_k,
+    _stage_latency_means,
 )
 
 
@@ -73,6 +75,34 @@ class TestMetrics:
     def test_keyword_recall_case_insensitive(self):
         assert keyword_recall("Pointed Arches matter.", ["pointed", "ARCHES"]) == 1.0
         assert keyword_recall("Only one term.", ["one", "missing"]) == 0.5
+
+    def test_keyword_recall_is_accent_insensitive_both_ways(self):
+        # LLM accenting is non-deterministic; match must survive either drift.
+        assert keyword_recall("La energía del Sol.", ["energia"]) == 1.0
+        assert keyword_recall("The Socrates method.", ["Sócrates"]) == 1.0
+
+    def test_keyword_recall_no_midword_false_positive(self):
+        # The substring test used to count 'art' inside 'Sparta'/'start'; the
+        # leading word boundary now rejects both.
+        assert keyword_recall("Sparta had a strong start.", ["art"]) == 0.0
+        # …but a real occurrence at a word boundary still counts.
+        assert keyword_recall("Gothic art endured.", ["art"]) == 1.0
+
+    def test_keyword_recall_tolerates_simple_inflection(self):
+        # No trailing boundary, so plurals/derivations still register.
+        assert keyword_recall("Frogs breathe through skin.", ["frog"]) == 1.0
+        assert keyword_recall("An orbital resonance.", ["orbit"]) == 1.0
+
+    def test_keyword_recall_multiword_separator_flexible(self):
+        for text in ("machine learning", "machine-learning", "machine  learning"):
+            assert keyword_recall(f"About {text} today.", ["machine learning"]) == 1.0
+
+    def test_keyword_hits_present_and_missing_agree_with_recall(self):
+        present, missing = _keyword_hits(
+            "Frogs and pointed arches.", ["frog", "pointed", "buttress"]
+        )
+        assert present == ["frog", "pointed"]
+        assert missing == ["buttress"]
 
     def test_hit_at_k_respects_rank(self):
         assert source_hit_at_k(["A", "B", "C"], ["A"], 1) is True
@@ -596,6 +626,52 @@ def test_export_creates_parent_dirs(tmp_path):
     import json
     data = json.loads(out.read_text())
     assert data["n"] == 1 and data["aggregate"]["recall_at_k"] == 1.0
+
+
+# ── per-stage latency ────────────────────────────────────────────────────────
+
+
+def _turn_with_timings(timings: dict) -> TurnResult:
+    return TurnResult(
+        case_id="x", turn_index=0, question="q", answer="a",
+        sources=["S"], dropped_citations=0, total_citations=0,
+        recall_at_k=1.0, mrr=1.0, faithfulness=1.0,
+        keyword_recall=1.0, answer_relevance=None, latency_s=0.1,
+        timings=timings,
+    )
+
+
+class TestStageLatency:
+    def test_means_average_stages_independently(self):
+        turns = [
+            _turn_with_timings({"embed_s": 0.1, "retrieve_s": 0.2, "generate_s": 2.0}),
+            _turn_with_timings({"embed_s": 0.3, "retrieve_s": 0.4}),  # no generate
+        ]
+        means = _stage_latency_means(turns)
+        assert means["embed_s"] == pytest.approx(0.2)
+        assert means["retrieve_s"] == pytest.approx(0.3)
+        # generate seen once → averaged only over the turn that reported it.
+        assert means["generate_s"] == pytest.approx(2.0)
+        # a stage no turn reported never appears.
+        assert "rerank_s" not in means
+
+    def test_keys_follow_pipeline_order(self):
+        means = _stage_latency_means([
+            _turn_with_timings({"generate_s": 1.0, "embed_s": 0.1, "retrieve_s": 0.2}),
+        ])
+        assert list(means) == ["embed_s", "retrieve_s", "generate_s"]
+
+    def test_run_captures_oracle_timings_into_aggregate(self):
+        session = _FakeSession([
+            {"answer": "a", "sources": ["A"], "dropped_citations": 0,
+             "timings": {"embed_s": 0.05, "retrieve_s": 0.1, "generate_s": 1.5}},
+        ])
+        cases = [EvalCase(id="x", question="q", expected_sources=["A"])]
+        report = run_eval(session, cases, top_k=1, judge=False)
+        assert report.turns[0].timings["generate_s"] == pytest.approx(1.5)
+        stages = report.summary()["aggregate"]["stage_latency"]
+        assert stages["embed_s"] == pytest.approx(0.05)
+        assert stages["generate_s"] == pytest.approx(1.5)
 
 
 # ── history ledger + run-over-run comparison ─────────────────────────────────
