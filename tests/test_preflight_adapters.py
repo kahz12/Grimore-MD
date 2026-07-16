@@ -8,9 +8,7 @@ missing optional library surfaces an error with an actionable fix line.
 """
 from __future__ import annotations
 
-import sys
 
-import pytest
 
 from grimore.utils.config import Config, VaultConfig
 from grimore.utils.preflight import PreflightChecker, PreflightReport

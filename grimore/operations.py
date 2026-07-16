@@ -1098,3 +1098,113 @@ def _do_graph_export(
     console.print()
     console.print(ui.success_panel(ui.kv_table(rows), title="Graph exported"))
     return stats
+
+
+# ── Duplicate detection ───────────────────────────────────────────────────
+
+
+def _do_dedupe(
+    session: Session,
+    *,
+    threshold: Optional[float] = None,
+    limit: int = 30,
+    export: Optional[Path] = None,
+) -> dict:
+    """Body of ``grimore dedupe``.
+
+    Report-only: renders exact-hash groups and near-duplicate pairs,
+    optionally dumps the full report as JSON. Returns
+    ``{"exact_groups": n, "near_pairs": n}`` so callers can assert on
+    counts without parsing the console output.
+    """
+    from grimore.cognition.dedupe import find_exact_duplicates, find_near_duplicates
+
+    if threshold is None:
+        threshold = session.config.cognition.dedupe_threshold
+
+    ui.command_header("dedupe", f"threshold={threshold:.2f} · limit={limit}")
+
+    vault_root = session.vault_root
+
+    def _rel(path: str) -> str:
+        try:
+            return str(Path(path).relative_to(vault_root))
+        except ValueError:
+            return path
+
+    exact = find_exact_duplicates(session.db)
+    near = find_near_duplicates(session.db, threshold=threshold, limit=limit)
+
+    console.print()
+    if exact:
+        ui.section(f"Exact duplicates — {len(exact)} group(s)")
+        for group in exact:
+            t = ui.Table(
+                box=ui.box.SIMPLE, show_header=False, padding=(0, 2), pad_edge=False,
+            )
+            t.add_column("Title", style="grimore.primary", no_wrap=True)
+            t.add_column("Path", style="grimore.muted", overflow="fold")
+            for _note_id, path, title in group.notes:
+                t.add_row(title or "(untitled)", _rel(path))
+            console.print(t)
+
+    if near:
+        ui.section(f"Near-duplicates — {len(near)} pair(s) ≥ {threshold:.2f}")
+        t = ui.Table(
+            box=ui.box.SIMPLE, show_header=True,
+            header_style="grimore.muted", padding=(0, 2), pad_edge=False,
+        )
+        t.add_column("Score", justify="right", style="grimore.accent", no_wrap=True)
+        t.add_column("Note A", style="grimore.primary", overflow="fold")
+        t.add_column("Note B", style="grimore.primary", overflow="fold")
+        for pair in near:
+            t.add_row(f"{pair.score:.3f}", _rel(pair.a_path), _rel(pair.b_path))
+        console.print(t)
+
+    if not exact and not near:
+        # Distinguish "clean vault" from "nothing indexed yet".
+        count, _max_id = session.db.embeddings_signature()
+        if count == 0:
+            console.print(ui.info_panel(
+                "No embeddings indexed yet. Run [cyan]grimore scan --no-dry-run[/] "
+                "first so notes have vectors to compare.",
+                title="Nothing to compare",
+            ))
+        else:
+            console.print(ui.success_panel(
+                f"No duplicates found at threshold [bold]{threshold:.2f}[/].",
+                title="Vault clean",
+            ))
+
+    if export is not None:
+        import json
+
+        report = {
+            "threshold": threshold,
+            "exact": [
+                {
+                    "content_hash": g.content_hash,
+                    "notes": [
+                        {"note_id": nid, "path": path, "title": title}
+                        for nid, path, title in g.notes
+                    ],
+                }
+                for g in exact
+            ],
+            "near": [
+                {
+                    "a": {"note_id": p.a_id, "path": p.a_path, "title": p.a_title},
+                    "b": {"note_id": p.b_id, "path": p.b_path, "title": p.b_title},
+                    "score": round(p.score, 6),
+                }
+                for p in near
+            ],
+        }
+        payload = json.dumps(report, indent=2, ensure_ascii=False)
+        atomic_write(export, lambda fh: fh.write(payload.encode("utf-8")), mode="wb")
+        console.print()
+        console.print(ui.success_panel(
+            f"Report saved to [bold cyan]{export}[/].", title="Exported",
+        ))
+
+    return {"exact_groups": len(exact), "near_pairs": len(near)}

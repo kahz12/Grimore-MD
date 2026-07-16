@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import sqlite3
 import struct
-from pathlib import Path
 
 import pytest
 
@@ -115,7 +114,6 @@ class TestRouting:
 class TestProbeAndSchema:
     def test_probe_returns_false_without_extension(self, monkeypatch):
         # Force the import to fail even if sqlite_vec is somehow on path.
-        import grimore.memory.db as dbmod
         real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
 
         def fake_import(name, *args, **kwargs):
@@ -203,11 +201,6 @@ class TestVecEndToEnd:
         v = _unit([0.5, 0.5, 0.5, 0.5])
         db.store_embedding(nid, 0, "c0", _vec_blob(v), chunk_hash="h0")
         db.store_embedding(nid, 1, "c1", _vec_blob(v), chunk_hash="h1")
-
-        with sqlite3.connect(db.db_path) as conn:
-            # The connection in the test process won't have the extension
-            # loaded, so just count rows the long way.
-            pass
 
         assert len(db.vec_search(v, 5)) == 2
         db.delete_chunks(nid, [0])

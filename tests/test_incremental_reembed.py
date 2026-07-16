@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock
 
-import pytest
 
 from grimore.cognition.chunker import Chunk
 from grimore.cognition.embedder import Embedder

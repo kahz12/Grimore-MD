@@ -72,7 +72,7 @@ class TestVectorSearch:
         slow = Connector(db, Embedder.__new__(Embedder)).find_similar_notes(query, top_k=4)
 
         assert [r["note_id"] for r in fast] == [r["note_id"] for r in slow]
-        for f, s in zip(fast, slow):
+        for f, s in zip(fast, slow, strict=True):
             assert f["score"] == pytest.approx(s["score"], abs=1e-4)
 
     def test_ragged_vectors_fall_back_without_crashing(self, db):

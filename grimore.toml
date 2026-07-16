@@ -13,6 +13,8 @@ hybrid_search = true
 rrf_k = 60
 # Minimum cosine similarity for `grimore connect` to propose a wikilink.
 connect_threshold = 0.7
+# Minimum cosine similarity for `grimore dedupe` to report a near-duplicate pair.
+dedupe_threshold = 0.90
 # HTTP timeouts (seconds) for Ollama. Bump request_timeout_s when pointing
 # model_llm_local at a larger model (e.g. 180 for 14B-class on CPU).
 request_timeout_s = 90   # /api/generate, JSON path

@@ -365,7 +365,8 @@ class TestDismissalPersistence:
         )
 
         # Force re-extraction by bumping mtime.
-        import os, time
+        import os
+        import time
         future = time.time() + 5
         os.utime(path_a, (future, future))
         os.utime(path_b, (future, future))

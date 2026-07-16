@@ -219,13 +219,15 @@ class TestConnectorBackendPick:
 
     def test_explicit_reranker_injection_wins(self):
         sentinel = _StubReranker([1.0])
-        db = MagicMock(); db.vec_available = False
+        db = MagicMock()
+        db.vec_available = False
         c = Connector(db, MagicMock(), router=MagicMock(), reranker=sentinel)
         assert c._reranker is sentinel
 
     def test_no_router_no_extra_yields_none(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "sentence_transformers", None)
-        db = MagicMock(); db.vec_available = False
+        db = MagicMock()
+        db.vec_available = False
         c = Connector(db, MagicMock(), router=None, rerank_engine="cross-encoder")
         assert c._reranker is None
 

@@ -110,6 +110,11 @@ class CognitionConfig:
     # Below this the candidate is dropped; exposed so vaults that lean more
     # on RAG recall can relax it and vice versa.
     connect_threshold: float = 0.7
+    # Minimum cosine similarity between two notes' mean-pooled chunk
+    # vectors for `dedupe` to report them as near-duplicates. Much
+    # stricter than connect_threshold: linking wants "related",
+    # dedupe wants "practically the same note".
+    dedupe_threshold: float = 0.90
     # Per-call HTTP timeouts (seconds) for Ollama. Defaults suit qwen2.5:3b on
     # modest hardware; bigger models (e.g. ministral-3:14b) routinely need
     # request_timeout_s ≥ 180 on the first warm-up call.

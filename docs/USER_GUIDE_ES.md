@@ -25,6 +25,7 @@
    - [`ask`](#ask)
    - [`eval`](#eval)
    - [`tags`](#tags)
+   - [`dedupe`](#dedupe)
    - [`prune`](#prune)
    - [`status`](#status)
    - [`preflight`](#preflight)
@@ -204,6 +205,7 @@ allow_remote           = false  # bloquea endpoints Ollama / OpenAI que no sean 
 hybrid_search          = true   # BM25 + coseno vía RRF
 rrf_k                  = 60     # curva de peso por rango; menor = más pronunciada
 connect_threshold      = 0.7    # umbral coseno para sugerir un wikilink
+dedupe_threshold       = 0.90   # umbral coseno para un par casi-duplicado
 request_timeout_s      = 60     # /api/generate, vía JSON
 stream_timeout_s       = 120    # /api/generate, vía streaming
 embed_timeout_s        = 30     # /api/embeddings
@@ -557,6 +559,25 @@ grimore tags [-n N]
 
 Tabla de frecuencia de todas las etiquetas en uso. `-n` limita las filas
 mostradas (por defecto 30).
+
+### `dedupe`
+
+```bash
+grimore dedupe [-t UMBRAL] [-n N] [-e reporte.json]
+```
+
+Encuentra notas duplicadas en dos niveles: copias **exactas** (mismo hash
+de contenido — re-importaciones, backups sueltos) y **casi-duplicados**
+(pares de notas cuyos vectores promediados de chunks superan un umbral de
+similitud coseno — reescrituras, ediciones tipo `archivo (1).md`). Solo
+reporta: no toca ni el vault ni el índice. Determinista y sin LLM, así que
+funciona aunque Ollama esté ocupado.
+
+- `-t, --threshold` — coseno mínimo para reportar un par, en `[0.0, 1.0]`
+  (por defecto `[cognition].dedupe_threshold`, 0.90).
+- `-n, --limit` — máximo de pares casi-duplicados mostrados, mejores
+  primero (por defecto 30).
+- `-e, --export` — escribe el reporte completo (ambas secciones) en JSON.
 
 ### `prune`
 

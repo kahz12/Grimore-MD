@@ -29,7 +29,7 @@ class TestSerialization:
         original = [0.1, -0.2, 0.3, 0.4, -0.5]
         blob = Embedder.serialize_vector(original)
         restored = Embedder.deserialize_vector(blob)
-        for a, b in zip(original, restored):
+        for a, b in zip(original, restored, strict=True):
             assert math.isclose(a, b, abs_tol=1e-6)
 
     def test_blob_is_bytes(self):

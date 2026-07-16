@@ -11,7 +11,6 @@ installed (the common case).
 """
 from __future__ import annotations
 
-import io
 import subprocess
 import zipfile
 from pathlib import Path
@@ -21,9 +20,9 @@ import pytest
 
 from grimore.ingest.adapters.base import AdapterOptions
 from grimore.ingest.adapters.doc import DocAdapter, antiword_available
-from grimore.ingest.adapters.odt import OdtAdapter, _MAX_ODT_BYTES
+from grimore.ingest.adapters.odt import OdtAdapter
 from grimore.ingest.adapters.pdf import PdfAdapter, _SUPPORTED_ENGINES
-from grimore.ingest.adapters.rtf import RtfAdapter, _MAX_RTF_BYTES
+from grimore.ingest.adapters.rtf import RtfAdapter
 
 
 # ── RTF ────────────────────────────────────────────────────────────────────

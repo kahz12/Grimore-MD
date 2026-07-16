@@ -19,15 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
-from pathlib import Path
 
 import pytest
 import requests
 
 from grimore.cognition.embedder import Embedder
-from grimore.cognition.llm_router import LLMRouter
-from grimore.cognition.oracle import Oracle
 from grimore.memory.db import Database
 from grimore.session import Session
 from grimore.utils.config import load_config

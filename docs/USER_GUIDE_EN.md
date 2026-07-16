@@ -23,6 +23,7 @@
    - [`ask`](#ask)
    - [`eval`](#eval)
    - [`tags`](#tags)
+   - [`dedupe`](#dedupe)
    - [`prune`](#prune)
    - [`status`](#status)
    - [`preflight`](#preflight)
@@ -199,6 +200,7 @@ allow_remote          = false   # block non-loopback Ollama / OpenAI endpoints
 hybrid_search         = true    # BM25 + cosine via RRF
 rrf_k                 = 60      # RRF rank-weight; lower = steeper
 connect_threshold     = 0.7     # cosine floor for a suggested wikilink
+dedupe_threshold      = 0.90    # cosine floor for a near-duplicate pair
 request_timeout_s     = 60      # /api/generate, JSON path
 stream_timeout_s      = 120     # /api/generate, streaming path
 embed_timeout_s       = 30      # /api/embeddings
@@ -529,6 +531,23 @@ grimore tags [-n N]
 ```
 
 Frequency table of every tag in use. `-n` caps the rows shown (default 30).
+
+### `dedupe`
+
+```bash
+grimore dedupe [-t THRESHOLD] [-n N] [-e report.json]
+```
+
+Finds duplicate notes at two levels: **exact** copies (same content hash —
+re-imports, stray backups) and **near-duplicates** (note pairs whose
+mean-pooled chunk vectors exceed a cosine-similarity threshold — rewrites,
+`file (1).md` edits). Report-only: nothing in the vault or the index is
+touched. Deterministic and LLM-free, so it runs even while Ollama is busy.
+
+- `-t, --threshold` — minimum cosine to report a pair, in `[0.0, 1.0]`
+  (default `[cognition].dedupe_threshold`, 0.90).
+- `-n, --limit` — max near-duplicate pairs shown, best scores first (default 30).
+- `-e, --export` — write the full report (both sections) as JSON.
 
 ### `prune`
 

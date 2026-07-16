@@ -21,7 +21,6 @@ import io
 import json
 from unittest.mock import MagicMock
 
-import pytest
 
 from grimore.mcp_server import MCPServer
 
@@ -364,7 +363,7 @@ class TestTransport:
         )
         stdout = io.StringIO()
         srv.serve(stdin=stdin, stdout=stdout)
-        lines = [l for l in stdout.getvalue().splitlines() if l.strip()]
+        lines = [ln for ln in stdout.getvalue().splitlines() if ln.strip()]
         assert len(lines) == 2
         first = json.loads(lines[0])
         assert first["id"] == 1 and first["result"]["serverInfo"]["name"] == "grimore"
@@ -384,7 +383,7 @@ class TestTransport:
         stdin = io.StringIO("\n\n" + json.dumps(_request("ping")) + "\n")
         stdout = io.StringIO()
         srv.serve(stdin=stdin, stdout=stdout)
-        out_lines = [l for l in stdout.getvalue().splitlines() if l.strip()]
+        out_lines = [ln for ln in stdout.getvalue().splitlines() if ln.strip()]
         assert len(out_lines) == 1
         assert json.loads(out_lines[0])["result"] == {}
 
@@ -396,7 +395,7 @@ class TestTransport:
         }) + "\n" + json.dumps(_request("ping", req_id=99)) + "\n")
         stdout = io.StringIO()
         srv.serve(stdin=stdin, stdout=stdout)
-        out_lines = [l for l in stdout.getvalue().splitlines() if l.strip()]
+        out_lines = [ln for ln in stdout.getvalue().splitlines() if ln.strip()]
         # Only the ping should produce a response.
         assert len(out_lines) == 1
         assert json.loads(out_lines[0])["id"] == 99

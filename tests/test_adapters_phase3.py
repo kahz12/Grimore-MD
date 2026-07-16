@@ -17,7 +17,6 @@ that page / heading anchors survive the chain:
 """
 from __future__ import annotations
 
-import io
 import struct
 import zipfile
 from pathlib import Path
@@ -30,8 +29,8 @@ from grimore.ingest.adapters.base import (
     AdapterOptions,
     ExtractedSection,
 )
-from grimore.ingest.adapters.epub import EpubAdapter, _MAX_EPUB_BYTES
-from grimore.ingest.adapters.pdf import PdfAdapter, _MAX_PDF_BYTES
+from grimore.ingest.adapters.epub import EpubAdapter
+from grimore.ingest.adapters.pdf import PdfAdapter
 from grimore.memory.db import Database
 
 
@@ -59,12 +58,9 @@ def _make_pdf(
     """
     from pypdf import PdfWriter
     from pypdf.generic import (
-        ContentStream,
         DecodedStreamObject,
         DictionaryObject,
         NameObject,
-        NumberObject,
-        ArrayObject,
     )
 
     writer = PdfWriter()

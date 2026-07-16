@@ -21,7 +21,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-import pytest
 
 from grimore.cognition.chunker import (
     Chunk,

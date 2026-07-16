@@ -27,6 +27,7 @@ from grimore.operations import (
     _do_chronicler_list,
     _do_chronicler_verify,
     _do_daemon_status,
+    _do_dedupe,
     _do_distill,
     _do_eval,
     _do_graph_export,
@@ -687,6 +688,42 @@ def tags(
         ("  ·  ", "grimore.muted"),
         (f"{db.get_tag_count()} unique in use", "grimore.muted"),
     ))
+
+
+@app.command(rich_help_panel="Knowledge ops")
+def dedupe(
+    threshold: float = typer.Option(
+        None,
+        "--threshold",
+        "-t",
+        help="Min. cosine similarity to report a near-duplicate pair, in "
+             "[0.0, 1.0] (default: cognition.dedupe_threshold).",
+        callback=_validate_threshold,
+    ),
+    limit: int = typer.Option(
+        30, "--limit", "-n",
+        help="Max near-duplicate pairs to report (best scores first).",
+    ),
+    export: Path = typer.Option(
+        None, "--export", "-e",
+        help="Write the full report as JSON to this path.",
+    ),
+):
+    """
+    👯 Find duplicate notes — exact copies and semantic near-duplicates.
+
+    Report-only: nothing in the vault or the index is modified. Exact
+    duplicates share a content hash; near-duplicates are note pairs whose
+    mean chunk vectors exceed the cosine threshold. Deterministic and
+    LLM-free, so it works while Ollama is busy or offline.
+    """
+    setup_logger()
+    config = load_config()
+    session = Session(config)
+    try:
+        _do_dedupe(session, threshold=threshold, limit=limit, export=export)
+    finally:
+        session.close()
 
 
 @app.command("migrate-embeddings", rich_help_panel="System")

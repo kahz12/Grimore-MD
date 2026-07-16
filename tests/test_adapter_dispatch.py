@@ -13,7 +13,7 @@ import pytest
 from grimore.ingest.adapters import for_path, supported_extensions
 from grimore.ingest.adapters.base import AdapterOptions, ExtractedDocument
 from grimore.ingest.adapters.markdown import MarkdownAdapter
-from grimore.ingest.adapters.registry import register, _reset_for_tests
+from grimore.ingest.adapters.registry import register
 from grimore.ingest.parser import MarkdownParser, ParsedNote
 
 
