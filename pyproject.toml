@@ -144,7 +144,12 @@ ignore = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+# 3.12, not the 3.11 floor: current numpy stubs use PEP 695 `type`
+# aliases, which mypy refuses to parse when analysing as 3.11 (hard
+# abort, "errors prevented further checking"). Trade-off: mypy won't
+# catch code that only breaks on 3.11 — the py3.11 test matrix job
+# still covers that at runtime.
+python_version = "3.12"
 # Gradual rollout: mypy sees the whole package (so cross-module signatures
 # are real, not Any), but only the packages re-enabled in the overrides
 # below gate CI. Widen the list as modules are cleaned up; the endgame is
