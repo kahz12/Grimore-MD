@@ -522,7 +522,9 @@ no lo que afirmara el modelo.
 ### `eval`
 
 ```bash
-grimore eval [-g RUTA] [-k N] [--judge/--no-judge] [--export RUTA] [--json]
+grimore eval [-g RUTA] [-k N] [--retrieval-k N] [--retrieval-only]
+             [--baseline] [--judge/--no-judge] [--export RUTA]
+             [--history RUTA] [--compare RUTA] [--json]
 ```
 
 Corre un conjunto Q&A dorado contra el Oráculo y reporta métricas de
@@ -531,6 +533,7 @@ recuperación y calidad de respuesta. Por defecto usa
 
 | Métrica | Qué mide |
 |---|---|
+| **hit@1 / hit@3** | Si una fuente esperada es el primer resultado / está entre los 3 primeros. |
 | **recall@k** | Fracción de fuentes esperadas que aparecen en el top-k recuperado. |
 | **MRR** | Rango recíproco medio de la primera fuente esperada acertada. |
 | **faithfulness** | 1 − dropped/total citas (1.0 = sin citas alucinadas). |
@@ -539,9 +542,26 @@ recuperación y calidad de respuesta. Por defecto usa
 | **latencia p50 / p95** | Tiempo de reloj por turno. |
 
 - `-g, --golden` — ruta al YAML del conjunto dorado.
-- `-k, --top-k` — pasajes recuperados por pregunta (defecto 5).
+- `-k, --top-k` — pasajes que alimentan la respuesta por pregunta (defecto 5).
+- `--retrieval-k` — profundidad del pool rankeado que puntúa Hit@k / MRR,
+  independiente de `--top-k` (defecto 10).
+- `--retrieval-only` — puntúa solo el ranking y salta la generación de
+  respuestas. Rápido, determinista y sin modelo de chat — córrelo en
+  cada cambio.
+- `--baseline` — corre dos veces, híbrido (RRF) vs solo-denso, y muestra
+  el delta por métrica para ver qué aporta la fusión con BM25.
 - `--no-judge` — salta el paso del LLM-juez (útil sin red / CI rápido).
 - `--export` — vuelca el informe completo como JSON.
+- `--history` — añade un registro de una línea a un ledger JSONL, para
+  seguir la tendencia de las métricas entre corridas.
+- `--compare` — compara esta corrida contra un JSON previo de `--export`
+  y sale con código distinto de cero ante cualquier regresión. Combinado
+  con `--retrieval-only` es una puerta de calidad barata para CI:
+
+  ```bash
+  grimore eval --retrieval-only --export run.json --compare last-good.json
+  ```
+
 - `--json` — logs estructurados en JSON.
 
 El formato del conjunto dorado es una entrada por Q&A con

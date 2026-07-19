@@ -138,7 +138,7 @@ def _flock_exclusive_nb(fd: int) -> bool:
         # msvcrt.locking takes a byte count; one byte is enough to make the
         # lock advisory-but-cooperative across processes on Windows.
         try:
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
         except OSError:
             return False
         return True
@@ -159,7 +159,7 @@ def _flock_release(fd: int) -> None:
         try:
             # Rewind so the unlock targets the same byte as the lock.
             os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
         except OSError:
             pass
 

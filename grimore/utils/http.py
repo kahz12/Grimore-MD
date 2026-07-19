@@ -29,7 +29,9 @@ class _LoopbackPinAdapter(HTTPAdapter):
         self._pins = pins
         super().__init__(*args, **kwargs)
 
-    def send(self, request, **kwargs):
+    def send(self, request, **kwargs):  # type: ignore[override]
+        # Deliberately looser than HTTPAdapter.send — every kwarg passes
+        # through to the superclass untouched.
         parsed = urlparse(request.url)
         ips = self._pins.get(parsed.hostname)
         if not ips:
@@ -49,6 +51,7 @@ class _LoopbackPinAdapter(HTTPAdapter):
             except requests.exceptions.ConnectionError as exc:
                 last_exc = exc
                 continue
+        assert last_exc is not None  # ips is non-empty, so the loop ran
         raise last_exc
 
 

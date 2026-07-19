@@ -7,10 +7,10 @@ This prevents data corruption in case of a crash during the write operation.
 import os
 import tempfile
 from pathlib import Path
-from typing import Callable
+from typing import IO, Any, Callable
 
 
-def atomic_write(path: Path, writer: Callable[[object], None], *, mode: str = "wb") -> None:
+def atomic_write(path: Path, writer: Callable[[IO[Any]], object], *, mode: str = "wb") -> None:
     """
     Writes content to a file atomically.
 

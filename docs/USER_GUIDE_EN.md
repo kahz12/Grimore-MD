@@ -498,7 +498,9 @@ reflects the *retrieved* notes, not whatever the model claimed.
 ### `eval`
 
 ```bash
-grimore eval [-g PATH] [-k N] [--judge/--no-judge] [--export PATH] [--json]
+grimore eval [-g PATH] [-k N] [--retrieval-k N] [--retrieval-only]
+             [--baseline] [--judge/--no-judge] [--export PATH]
+             [--history PATH] [--compare PATH] [--json]
 ```
 
 Runs a golden Q&A set against the Oracle and reports retrieval and
@@ -506,6 +508,7 @@ answer-quality metrics. Defaults to `eval/grimore_golden.yaml`.
 
 | Metric | What it measures |
 |---|---|
+| **hit@1 / hit@3** | Whether an expected source is the top-ranked hit / among the top 3. |
 | **recall@k** | Fraction of expected sources that appear in the top-k retrieved set. |
 | **MRR** | Mean reciprocal rank of the first expected source hit. |
 | **faithfulness** | 1 − dropped/total citations (1.0 = no hallucinated citations). |
@@ -514,9 +517,25 @@ answer-quality metrics. Defaults to `eval/grimore_golden.yaml`.
 | **p50 / p95 latency** | Wall-clock per turn. |
 
 - `-g, --golden` — path to the YAML golden set.
-- `-k, --top-k` — passages retrieved per question (default 5).
+- `-k, --top-k` — passages fed to the answer per question (default 5).
+- `--retrieval-k` — depth of the ranked pool scored for Hit@k / MRR,
+  independent of `--top-k` (default 10).
+- `--retrieval-only` — score ranking only and skip answer generation.
+  Fast, deterministic, and needs no chat model — run it on every change.
+- `--baseline` — run twice, hybrid (RRF) vs dense-only, and show the
+  per-metric delta so you can see what BM25 fusion is buying you.
 - `--no-judge` — skip the LLM-as-judge pass (handy offline / fast CI).
 - `--export` — dump the full report as JSON for downstream tooling.
+- `--history` — append a one-line run record to a JSONL ledger, for
+  tracking metric trends across runs.
+- `--compare` — diff this run against a previous `--export` JSON and
+  exit non-zero on any regression. Combined with `--retrieval-only`
+  this makes a cheap CI quality gate:
+
+  ```bash
+  grimore eval --retrieval-only --export run.json --compare last-good.json
+  ```
+
 - `--json` — JSON-formatted structured logs.
 
 The golden set format is one entry per Q&A item with optional

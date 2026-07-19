@@ -16,6 +16,7 @@ independently and the end-to-end orchestration through
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 import struct
 from pathlib import Path
 from unittest.mock import patch
@@ -66,7 +67,7 @@ class TestBegin:
         assert row["target_model"] == "new-model"
         assert row["total"] == 3
         assert row["done"] == 0
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             tables = {
                 r[0]
                 for r in conn.execute(
@@ -126,7 +127,7 @@ class TestSwap:
         assert result["status"] == "complete"
 
         # New rows present, old vectors gone, shadow table dropped.
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             rows = conn.execute(
                 "SELECT chunk_hash, vector FROM embeddings ORDER BY chunk_index"
             ).fetchall()
@@ -175,7 +176,7 @@ class TestAbort:
 
         result = db.abort_embedding_migration()
         assert result["status"] == "aborted"
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             live = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
             tables = {
                 r[0]
@@ -248,7 +249,7 @@ class TestOrchestration:
         )
         assert out["status"] == "complete"
         # Verify the chunk_hash on the swapped rows reflects the new model.
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             rows = conn.execute(
                 "SELECT text_content, chunk_hash FROM embeddings ORDER BY chunk_index"
             ).fetchall()
@@ -291,7 +292,7 @@ class TestOrchestration:
             cfg, db, target_model="new-model", write_config=False,
         )
         assert out["status"] == "complete"
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             count = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
         assert count == 4
 

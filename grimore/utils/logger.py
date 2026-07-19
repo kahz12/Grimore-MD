@@ -4,6 +4,8 @@ Uses the structlog library to provide both human-readable console output
 and machine-readable JSON logs.
 """
 import logging
+from typing import Any
+
 import structlog
 
 def setup_logger(json_format: bool = False):
@@ -11,7 +13,7 @@ def setup_logger(json_format: bool = False):
     Configures the global logger with a standard pipeline of processors.
     If json_format is True, output will be structured JSON (ideal for the daemon).
     """
-    processors = [
+    processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.StackInfoRenderer(),

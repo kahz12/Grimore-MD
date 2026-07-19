@@ -216,9 +216,9 @@ class Session:
         self._oracle = None
 
     def close(self) -> None:
-        """Idempotent teardown. Database has no explicit close (per-call
-        sqlite3 connections), so this just drops references and lets GC
-        do the rest."""
+        """Idempotent teardown. Database holds no long-lived connection —
+        each call opens one and closes it on exit — so this just drops
+        references."""
         self.refresh()
 
     def __enter__(self) -> "Session":

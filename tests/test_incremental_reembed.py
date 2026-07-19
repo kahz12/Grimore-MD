@@ -10,6 +10,7 @@ indices whose content actually changed.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Optional
 from unittest.mock import MagicMock
@@ -288,7 +289,7 @@ class TestReembedNote:
         ]
         reembed_note(db, emb, note_id, chunks)
 
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             rows = conn.execute(
                 "SELECT chunk_index, page, heading FROM embeddings "
                 "WHERE note_id = ? ORDER BY chunk_index",
@@ -304,14 +305,14 @@ class TestReembedNote:
         note_id = _seed_note(db)
         emb = _SpyEmbedder()
         reembed_note(db, emb, note_id, self._chunks("p1", "p2", "p3"))
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             ids_before = dict(conn.execute(
                 "SELECT chunk_index, id FROM embeddings WHERE note_id = ?",
                 (note_id,),
             ).fetchall())
 
         reembed_note(db, emb, note_id, self._chunks("p1", "p2-edited", "p3"))
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             ids_after = dict(conn.execute(
                 "SELECT chunk_index, id FROM embeddings WHERE note_id = ?",
                 (note_id,),
@@ -338,7 +339,7 @@ class TestReembedNote:
         assert emb.calls == []          # text unchanged → embedding reused
         assert result.kept == 1
         assert result.embedded == 0
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             row = conn.execute(
                 "SELECT page, heading FROM embeddings "
                 "WHERE note_id = ? AND chunk_index = 0",

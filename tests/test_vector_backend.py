@@ -14,6 +14,7 @@ Two surfaces are covered:
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 import struct
 
 import pytest
@@ -239,7 +240,7 @@ class TestVecEndToEnd:
         nid = db.upsert_note(path="/u.md", title="U", content_hash="x")
         v = _unit([1.0, 0.0, 0.0, 0.0])
         # Insert through a connection that bypasses the vec mirror.
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             conn.execute(
                 "INSERT INTO embeddings (note_id, chunk_index, text_content, vector, chunk_hash) "
                 "VALUES (?, ?, ?, ?, ?)",

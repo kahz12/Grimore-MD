@@ -113,6 +113,17 @@ markers = [
     "serve: requires fastapi + uvicorn (auto-skips when unavailable).",
 ]
 
+[tool.coverage.run]
+source = ["grimore"]
+
+[tool.coverage.report]
+precision = 1
+skip_empty = true
+# Report-only for now — no fail_under gate until the numbers stabilise.
+# Snapshot 2026-07-19: 74% total; thinnest spots are cli.py (31%),
+# operations.py (49%), utils/system.py (42%), utils/backup.py (24%),
+# ingest/observer.py (44%), daemon.py (53%).
+
 [tool.ruff]
 target-version = "py311"
 # We don't reflow the existing hand-tuned line layout, so the formatter's
@@ -131,3 +142,24 @@ ignore = [
     "E731",  # a couple of assigned lambdas are deliberate and readable
     "B008",  # Typer takes `typer.Option(...)`/`Argument(...)` as default values
 ]
+
+[tool.mypy]
+python_version = "3.11"
+# Gradual rollout: mypy sees the whole package (so cross-module signatures
+# are real, not Any), but only the packages re-enabled in the overrides
+# below gate CI. Widen the list as modules are cleaned up; the endgame is
+# deleting the blanket ignore_errors.
+ignore_errors = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["grimore.memory.*", "grimore.utils.*"]
+ignore_errors = false
+
+[[tool.mypy.overrides]]
+# Untyped third-party deps (no stubs published). Remove entries as
+# upstream ships py.typed or a types-* package gets added to CI.
+module = ["defusedxml.*", "sqlite_vec.*", "striprtf.*", "frontmatter.*"]
+ignore_missing_imports = true

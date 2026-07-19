@@ -9,6 +9,7 @@ losing data, and running it again on the upgraded schema must be a no-op.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -21,7 +22,7 @@ def _columns(conn, table: str) -> set[str]:
 
 def _make_v2_schema(db_path: Path) -> None:
     """Re-create the v2.0 schema by hand so the migration has work to do."""
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE notes (
@@ -57,7 +58,7 @@ def _make_v2_schema(db_path: Path) -> None:
 class TestMigration:
     def test_fresh_db_has_all_multiformat_columns(self, tmp_path):
         db = Database(str(tmp_path / "fresh.db"))
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             notes_cols = _columns(conn, "notes")
             emb_cols = _columns(conn, "embeddings")
         for col in ("format", "file_hash", "sidecar_path", "size_bytes"):
@@ -72,7 +73,7 @@ class TestMigration:
         # Trigger the migration.
         db = Database(str(db_path))
 
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             row = conn.execute(
                 "SELECT title, format, file_hash, sidecar_path, size_bytes "
                 "FROM notes WHERE path = ?",
@@ -134,7 +135,7 @@ class TestStoreEmbeddingKwargs:
         nid = db.upsert_note("/vault/x.md", "X", "h")
         # The historical positional signature must keep working.
         db.store_embedding(nid, 0, "chunk", b"\x00" * 8)
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             row = conn.execute(
                 "SELECT page, heading FROM embeddings WHERE note_id = ?",
                 (nid,),
@@ -145,7 +146,7 @@ class TestStoreEmbeddingKwargs:
         db = Database(str(tmp_path / "e.db"))
         nid = db.upsert_note("/vault/book.pdf", "Book", "h", format="pdf")
         db.store_embedding(nid, 0, "chunk", b"\x01" * 4, page=42, heading="Ch 3")
-        with sqlite3.connect(db.db_path) as conn:
+        with closing(sqlite3.connect(db.db_path)) as conn, conn:
             row = conn.execute(
                 "SELECT page, heading FROM embeddings WHERE note_id = ?",
                 (nid,),

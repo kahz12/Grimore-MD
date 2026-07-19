@@ -5,10 +5,10 @@ banners, panels, tables, and progress bars to ensure a consistent look and feel
 across all CLI commands.
 """
 from contextlib import contextmanager
-from typing import Iterator
+from typing import Iterator, cast
 
 from rich.align import Align
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,
@@ -152,7 +152,9 @@ def kv_table(rows: list[tuple[str, object]]) -> Table:
     for key, value in rows:
         if isinstance(value, (str, int, float)):
             value = Text(str(value), style="grimore.accent")
-        t.add_row(key, value)
+        # Anything else the callers pass (Text badges, etc.) is already a
+        # Rich renderable.
+        t.add_row(key, cast(RenderableType, value))
     return t
 
 

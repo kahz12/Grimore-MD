@@ -23,6 +23,26 @@ jobs:
       - name: ruff check
         run: ruff check grimore
 
+  typecheck:
+    name: Types (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install package + mypy
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          # Stub packages for typed use of requests / yaml in the gated
+          # modules. The gate itself (which packages must be clean) lives
+          # in [tool.mypy] overrides in pyproject.toml.
+          pip install "mypy>=2.3,<3" types-requests types-PyYAML
+      - name: mypy (gated: grimore.memory, grimore.utils)
+        run: mypy grimore
+
   test:
     name: Test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -44,6 +64,8 @@ jobs:
           # without them). The vec (sqlite-vec), reranker (torch), ocr, and
           # e2e (live Ollama) suites need native libs or external services,
           # so they stay opt-in and auto-skip here.
-          pip install pytest pytest-mock starlette httpx
+          pip install pytest pytest-mock pytest-cov starlette httpx
       - name: Run tests
-        run: pytest -q
+        # Coverage is report-only (config in [tool.coverage.*]); the summary
+        # lands in the job log so drift is visible per-PR without gating.
+        run: pytest -q --cov --cov-report=term
