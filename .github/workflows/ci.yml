@@ -40,7 +40,7 @@ jobs:
           # modules. The gate itself (which packages must be clean) lives
           # in [tool.mypy] overrides in pyproject.toml.
           pip install "mypy>=2.3,<3" types-requests types-PyYAML
-      - name: mypy (gated: grimore.memory, grimore.utils)
+      - name: "mypy (gated: grimore.memory, grimore.utils)"
         run: mypy grimore
 
   test:
