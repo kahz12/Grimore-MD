@@ -7,37 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-21
+
 ### Added
 - `serve --strict-token` — requires the bearer token from loopback
   clients too. On Android/Termux any app on the device can reach
   localhost ports, so loopback is not a trust boundary there; strict
   mode closes that gap (the bundled web UI sends no token, so drive the
   API with explicit `Authorization` headers in this mode).
-
-### Security
-- Failed API-token attempts are now throttled per peer address: after
-  10 bad tokens within 60 s, further attempts get HTTP 429 until the
-  window expires. The constant-time compare already blocked timing
-  attacks; this bounds the online guess *rate* on a LAN bind.
-- `serve` warns when the API token is passed as a command-line argument
-  (visible to other local users via `ps`) and recommends the
-  `GRIMORE_API_TOKEN` env var; the guides' LAN examples now use the env
-  var alone.
-- Bounded the *decompressed* size of every zip member read from
-  `.docx` / `.odt` / `.epub` files (100 MB ceiling, enforced while
-  inflating — never trusting the zip header). The existing per-format
-  caps bound the archive on disk, but deflate reaches ~1000:1, so a
-  few-MB member inside a size-legal file could still balloon to
-  gigabytes in memory before any parser saw it (zip-bomb DoS).
-- The HTTP API's `GET /api/notes/{id}` and the MCP `grimore_get_note`
-  tool now re-assert vault containment on the DB-stored path before
-  reading the file, closing the one spot where a tampered index row or
-  a symlink swapped after scanning could have exposed a file outside
-  the vault to a caller. Escaping paths read as a plain 404 / not-found.
-
-## [3.2.0] - 2026-07-21
-
-### Added
 - `dedupe` command — finds duplicate notes with two deterministic, LLM-free
   signals: **exact** (bodies sharing a `content_hash`) and **near** (note
   pairs whose mean chunk vectors exceed a cosine threshold). Report-only —
@@ -87,6 +64,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A migration test asserted on `click.exceptions.Exit`; recent `typer` no
   longer installs `click` as a top-level module, so the test now asserts
   `typer.Exit` (the type the code actually raises).
+
+### Security
+- Bounded the *decompressed* size of every zip member read from
+  `.docx` / `.odt` / `.epub` files (100 MB ceiling, enforced while
+  inflating — never trusting the zip header). The existing per-format
+  caps bound the archive on disk, but deflate reaches ~1000:1, so a
+  few-MB member inside a size-legal file could still balloon to
+  gigabytes in memory before any parser saw it (zip-bomb DoS).
+- The HTTP API's `GET /api/notes/{id}` and the MCP `grimore_get_note`
+  tool now re-assert vault containment on the DB-stored path before
+  reading the file, closing the one spot where a tampered index row or
+  a symlink swapped after scanning could have exposed a file outside
+  the vault to a caller. Escaping paths read as a plain 404 / not-found.
+- Failed API-token attempts are now throttled per peer address: after
+  10 bad tokens within 60 s, further attempts get HTTP 429 until the
+  window expires. The constant-time compare already blocked timing
+  attacks; this bounds the online guess *rate* on a LAN bind.
+- `serve` warns when the API token is passed as a command-line argument
+  (visible to other local users via `ps`) and recommends the
+  `GRIMORE_API_TOKEN` env var; the guides' LAN examples now use the env
+  var alone.
 
 ## [3.1.0] - 2026-06-24
 
