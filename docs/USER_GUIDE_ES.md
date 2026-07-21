@@ -813,7 +813,7 @@ de trabajo (el servidor lee `grimore.toml` desde el `cwd`).
 
 ```bash
 grimore serve [-H HOST] [-P PORT] [--allow-lan] [--api-token TOKEN]
-              [--cors-origin ORIGEN]
+              [--strict-token] [--cors-origin ORIGEN]
 ```
 
 Arranca un servidor ASGI Starlette de solo lectura en
@@ -833,9 +833,20 @@ Compuertas de seguridad codificadas en el CLI (no solo en la doc):
 - Por defecto enlaza solo a loopback. Establecer `--host 0.0.0.0` (o
   cualquier dirección no-loopback) exige **ambos** `--allow-lan` y
   `--api-token`.
-- `--api-token` (también leído desde `GRIMORE_API_TOKEN`) se valida
-  en cada POST. Los GET permanecen abiertos para que el flujo del
-  navegador en loopback no tenga que pasar credenciales en cada fetch.
+- `--api-token` (también leído desde `GRIMORE_API_TOKEN` — prefiere la
+  variable de entorno: un token escrito en la línea de comandos es
+  visible para otros usuarios locales vía `ps`) se valida en **cada**
+  petición `/api/*` de un cliente no-loopback, GET incluido. La
+  comparación es de tiempo constante, y los fallos repetidos desde una
+  misma dirección se limitan (HTTP 429) para acotar la fuerza bruta.
+- Los clientes loopback saltan el token para que la UI del navegador
+  local funcione sin pasar credenciales en cada fetch. En
+  Android/Termux esa exención es más débil de lo que parece —
+  *cualquier app del dispositivo* puede alcanzar los puertos de
+  localhost — así que allí pasa `--strict-token` para exigir el token
+  también a los clientes loopback. La UI web incluida no envía token,
+  de modo que en modo estricto consume la API con cabeceras
+  `Authorization: Bearer` explícitas.
 - CORS está desactivado por defecto. `--cors-origin <origen>` añade
   exactamente un origen (sin comodines).
 
@@ -1249,10 +1260,11 @@ defecto; los binds no-loopback exigen tanto `--allow-lan` como
 # Solo loopback — ábrelo en tu navegador
 grimore serve
 
-# Exponerlo en la LAN con un bearer token
+# Exponerlo en la LAN con un bearer token. La variable de entorno
+# mantiene el token fuera de `ps` — `serve` avisa si lo ve en los
+# argumentos.
 GRIMORE_API_TOKEN="$(openssl rand -hex 32)" \
-  grimore serve --host 0.0.0.0 --port 8000 \
-                --allow-lan --api-token "$GRIMORE_API_TOKEN"
+  grimore serve --host 0.0.0.0 --port 8000 --allow-lan
 ```
 
 Las respuestas en streaming usan Server-Sent Events en
@@ -1264,10 +1276,19 @@ Cuando se define un token, este protege **todas** las rutas `/api/*` —
 incluidos los GET, no solo los POST al LLM — para cualquier cliente
 no-loopback; los clientes loopback siguen abiertos para que la UI web local
 funcione sin token. El par (peer) se lee de la propia conexión, así que un
-`X-Forwarded-For` falsificado no puede saltarse la comprobación, y el token
-se compara en tiempo constante. Un `top_k` en el cuerpo de la petición se
-acota a un techo razonable (y un valor no numérico se rechaza con `400`) en
-lugar de amplificar el trabajo de recuperación.
+`X-Forwarded-For` falsificado no puede saltarse la comprobación, el token
+se compara en tiempo constante, y los fallos repetidos desde una misma
+dirección se limitan (HTTP 429) para acotar la fuerza bruta. Un `top_k` en
+el cuerpo de la petición se acota a un techo razonable (y un valor no
+numérico se rechaza con `400`) en lugar de amplificar el trabajo de
+recuperación.
+
+En Android/Termux, desconfía de la exención loopback: Android no aísla
+localhost entre apps, así que *cualquier app del dispositivo* puede
+alcanzar un puerto `127.0.0.1` a la escucha. Pasa allí `--strict-token`
+para exigir el bearer token también a los clientes loopback (la UI web
+incluida no envía token, así que en ese modo usa cabeceras
+`Authorization: Bearer` explícitas).
 
 El extra `serve` es obligatorio: `pip install 'grimore[serve]'`. En
 Linux/Windows arrastra FastAPI como ruta de upgrade; la

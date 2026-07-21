@@ -128,7 +128,7 @@ graph TD
 
 ## Privacy
 
-Local-first by construction: with `cognition.allow_remote = false` (the default), LLM calls are rejected unless the endpoint resolves to a loopback address — and the connection is pinned to that validated IP so DNS can't rebind it mid-request. Every destructive operation defaults to `--dry-run`. PII detection, prompt-injection neutralisation (note content **and** client-supplied conversation history), hardened XML parsing for office/EPUB documents (entity-expansion DoS defence), constant-time API-token checks on every `/api/*` route, automatic git snapshots, and path containment via `SecurityGuard` round out the safety model — see the [user guide](docs/USER_GUIDE_EN.md#10-privacy--safety) for the full picture.
+Local-first by construction: with `cognition.allow_remote = false` (the default), LLM calls are rejected unless the endpoint resolves to a loopback address — and the connection is pinned to that validated IP so DNS can't rebind it mid-request. Every destructive operation defaults to `--dry-run`. PII detection, prompt-injection neutralisation (note content **and** client-supplied conversation history), hardened XML parsing for office/EPUB documents (entity-expansion DoS defence), constant-time and brute-force-throttled API-token checks on every `/api/*` route (with `--strict-token` to require the token even from localhost — recommended on Android, where apps share the loopback interface), automatic git snapshots, and path containment via `SecurityGuard` round out the safety model — see the [user guide](docs/USER_GUIDE_EN.md#10-privacy--safety) for the full picture.
 
 ## Documentation
 

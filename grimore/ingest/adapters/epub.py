@@ -37,7 +37,7 @@ from grimore.ingest.adapters.base import (
 )
 from grimore.ingest.adapters.html import _PARSER as _HTML_PARSER, _NOISE_TAGS
 from grimore.ingest.adapters.registry import register
-from grimore.ingest.adapters.safexml import safe_parse_xml
+from grimore.ingest.adapters.safexml import read_bounded, safe_parse_xml
 from grimore.utils.hashing import calculate_content_hash, sha256_file
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
@@ -121,7 +121,9 @@ def _extract_chapter(zf: zipfile.ZipFile, archive_path: str) -> tuple[Optional[s
     """Return ``(heading, body_text)`` for one XHTML spine item."""
     try:
         with zf.open(archive_path) as fh:
-            raw = fh.read()
+            # Bounded read: a chapter is deflate-compressed, so the archive
+            # size cap doesn't limit what it inflates to (zip bomb).
+            raw = read_bounded(fh, what=archive_path)
     except KeyError:
         logger.warning("epub_chapter_missing", path=archive_path)
         return None, ""

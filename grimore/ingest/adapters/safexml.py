@@ -51,14 +51,58 @@ except ImportError:  # pragma: no cover - defusedxml is a declared dependency
 # things properly. Case-insensitive to reject aggressively.
 _DTD_MARKER_RE = re.compile(rb"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
+# Ceiling on the *decompressed* size of a single archive member. The
+# adapters cap the archive on disk, but that caps the compressed bytes:
+# deflate reaches ~1000:1, so a few-MB member inside a size-legal
+# .docx/.odt/.epub could still inflate to gigabytes in memory before any
+# parser sees it (zip-bomb DoS). 100 MB comfortably clears any real
+# document.xml / content.xml / chapter while bounding the blowup.
+MAX_MEMBER_BYTES = 100_000_000
+
 
 class UnsafeXmlError(ValueError):
-    """Raised when XML carries a DTD/entity construct we refuse to parse.
+    """Raised on a construct we refuse to process: a DTD/entity
+    declaration, or a member that inflates past :data:`MAX_MEMBER_BYTES`.
 
     Subclasses ``ValueError`` so it flows through the adapters' existing
     "raise ValueError on unprocessable input → scan loop logs a skip"
     contract without any special handling.
     """
+
+
+def read_bounded(
+    source: IO[bytes],
+    *,
+    max_bytes: int | None = None,
+    what: str = "member",
+) -> bytes:
+    """Read a (possibly compressed) stream, refusing to inflate past the cap.
+
+    The check runs on the bytes as they decompress — never on the zip
+    header's declared ``file_size``, which an attacker controls. Raises
+    :class:`UnsafeXmlError` when the cap is exceeded.
+    """
+    if max_bytes is None:
+        max_bytes = MAX_MEMBER_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = source.read(1 << 20)
+        if not chunk:
+            break
+        if isinstance(chunk, str):  # tolerate a text-mode file object
+            chunk = chunk.encode("utf-8", errors="replace")
+        total += len(chunk)
+        if total > max_bytes:
+            logger.warning(
+                "zip_member_too_large", what=what, max=max_bytes,
+            )
+            raise UnsafeXmlError(
+                f"{what}: decompressed content exceeds {max_bytes} bytes "
+                "(zip-bomb protection)"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def safe_parse_xml(
@@ -69,21 +113,20 @@ def safe_parse_xml(
     """Parse XML from an untrusted document and return its root element.
 
     ``source`` may be a binary file object (e.g. ``ZipFile.open(...)``) or
-    raw bytes. Refuses entity/DTD constructs (the billion-laughs vector)
-    and external-entity references; raises :class:`UnsafeXmlError` (a
-    ``ValueError``) on a rejected construct and
+    raw bytes. Refuses entity/DTD constructs (the billion-laughs vector),
+    external-entity references, and file objects that decompress past
+    :data:`MAX_MEMBER_BYTES` (zip bombs); raises :class:`UnsafeXmlError`
+    (a ``ValueError``) on a rejected construct and
     ``xml.etree.ElementTree.ParseError`` on merely malformed XML.
 
     ``what`` is a short label (usually the archive member name) used only
     for logging.
     """
     if isinstance(source, (bytes, bytearray)):
+        # Already materialised in memory — nothing left to bound.
         data: bytes = bytes(source)
     else:
-        raw = source.read()
-        data = raw if isinstance(raw, (bytes, bytearray)) else raw.encode(
-            "utf-8", errors="replace"
-        )
+        data = read_bounded(source, what=what)
 
     if _HAVE_DEFUSED:
         try:

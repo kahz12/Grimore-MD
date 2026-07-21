@@ -19,6 +19,7 @@ from grimore.ingest.adapters.base import AdapterOptions
 from grimore.ingest.adapters.docx import DocxAdapter
 from grimore.ingest.adapters.epub import EpubAdapter
 from grimore.ingest.adapters.odt import OdtAdapter
+from grimore.ingest.adapters import safexml
 from grimore.ingest.adapters.safexml import UnsafeXmlError, safe_parse_xml
 
 
@@ -140,6 +141,80 @@ class TestSafeParseXml:
         # Merely broken (non-malicious) XML keeps the type adapters catch.
         with pytest.raises(ET.ParseError):
             safe_parse_xml(b"<a><b></a>")
+
+
+class TestZipBombCap:
+    """Decompressed-size ceiling on archive members.
+
+    The adapters cap the archive size on disk, but deflate reaches
+    ~1000:1 — a few-MB member inside a size-legal file could inflate to
+    gigabytes in memory. ``read_bounded`` refuses past the cap; the cap
+    is monkeypatched small here so the tests stay fast and light.
+    """
+
+    def test_read_bounded_rejects_oversized_stream(self):
+        with pytest.raises(UnsafeXmlError):
+            safexml.read_bounded(io.BytesIO(b"A" * 4096), max_bytes=1024)
+
+    def test_read_bounded_passes_small_stream(self):
+        assert safexml.read_bounded(io.BytesIO(b"ok"), max_bytes=1024) == b"ok"
+
+    def test_default_cap_is_read_at_call_time(self, monkeypatch):
+        # max_bytes=None must pick up the *current* module constant, so
+        # both this suite and any operator override take effect.
+        monkeypatch.setattr(safexml, "MAX_MEMBER_BYTES", 8)
+        with pytest.raises(UnsafeXmlError):
+            safexml.read_bounded(io.BytesIO(b"123456789"))
+
+    def test_docx_rejects_inflating_member(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(safexml, "MAX_MEMBER_BYTES", 1024)
+        # Highly compressible: small on disk, over the cap when inflated.
+        big = (
+            b'<w:document xmlns:w="http://schemas.openxmlformats.org/'
+            b'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'
+            + b"A" * 100_000
+            + b"</w:t></w:r></w:p></w:body></w:document>"
+        )
+        p = _make_zip(tmp_path, "inflate.docx", {"word/document.xml": big})
+        with pytest.raises(ValueError):
+            DocxAdapter().extract(p, options=AdapterOptions())
+
+    def test_odt_rejects_inflating_member(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(safexml, "MAX_MEMBER_BYTES", 1024)
+        big = (
+            b'<office:document-content '
+            b'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            b'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">'
+            b"<office:body><office:text><text:p>"
+            + b"A" * 100_000
+            + b"</text:p></office:text></office:body></office:document-content>"
+        )
+        p = _make_zip(tmp_path, "inflate.odt", {"content.xml": big})
+        with pytest.raises(ValueError):
+            OdtAdapter().extract(p, options=AdapterOptions())
+
+    def test_epub_rejects_inflating_chapter(self, tmp_path, monkeypatch):
+        # Chapters bypass safe_parse_xml (they're XHTML for bs4), so the
+        # bounded read must guard that path too.
+        monkeypatch.setattr(safexml, "MAX_MEMBER_BYTES", 1024)
+        opf = (
+            b'<?xml version="1.0"?>'
+            b'<package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+            b'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            b"<dc:title>T</dc:title></metadata>"
+            b'<manifest><item id="c1" href="ch1.xhtml" '
+            b'media-type="application/xhtml+xml"/></manifest>'
+            b'<spine><itemref idref="c1"/></spine>'
+            b"</package>"
+        )
+        chapter = b"<html><body><p>" + b"A" * 100_000 + b"</p></body></html>"
+        p = _make_zip(tmp_path, "inflate.epub", {
+            "META-INF/container.xml": _VALID_CONTAINER,
+            "content.opf": opf,
+            "ch1.xhtml": chapter,
+        })
+        with pytest.raises(ValueError):
+            EpubAdapter().extract(p, options=AdapterOptions())
 
 
 class TestBenignStillParses:

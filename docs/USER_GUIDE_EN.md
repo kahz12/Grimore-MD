@@ -766,7 +766,7 @@ configs and the working-directory caveat.
 
 ```bash
 grimore serve [-H HOST] [-P PORT] [--allow-lan] [--api-token TOKEN]
-              [--cors-origin ORIGIN]
+              [--strict-token] [--cors-origin ORIGIN]
 ```
 
 Boots a read-only HTTP API + minimal vanilla-JS browser UI on
@@ -785,9 +785,19 @@ Security gates baked into the CLI (not just docs):
 
 - Bind to loopback by default. Setting `--host 0.0.0.0` (or any
   non-loopback address) requires both `--allow-lan` and `--api-token`.
-- `--api-token` (also read from `GRIMORE_API_TOKEN`) is checked on every
-  POST. GETs stay open so the loopback browser flow doesn't have to
-  thread credentials into every fetch.
+- `--api-token` (also read from `GRIMORE_API_TOKEN` — prefer the env
+  var; a token typed on the command line is visible to other local users
+  via `ps`) is checked on **every** `/api/*` request from a non-loopback
+  client, GET included. The comparison is constant-time, and repeated
+  failures from one address are throttled (HTTP 429) to bound online
+  brute force.
+- Loopback clients skip the token so the local browser UI works without
+  threading credentials into every fetch. On Android/Termux that
+  exemption is weaker than it looks — *any app on the device* can reach
+  localhost ports — so pass `--strict-token` there to require the token
+  from loopback clients too. The bundled web UI sends no token, so in
+  strict mode drive the API with explicit `Authorization: Bearer`
+  headers instead.
 - CORS is off by default. `--cors-origin <origin>` adds exactly one
   origin (no wildcards).
 
@@ -1177,10 +1187,10 @@ require both `--allow-lan` and `--api-token`.
 # Loopback only — open in your browser
 grimore serve
 
-# Expose on the LAN with a bearer token
+# Expose on the LAN with a bearer token. The env var keeps the token
+# out of `ps` output — `serve` warns if it sees one in the arguments.
 GRIMORE_API_TOKEN="$(openssl rand -hex 32)" \
-  grimore serve --host 0.0.0.0 --port 8000 \
-                --allow-lan --api-token "$GRIMORE_API_TOKEN"
+  grimore serve --host 0.0.0.0 --port 8000 --allow-lan
 ```
 
 Streaming answers use Server-Sent Events on `POST /api/ask` when the
@@ -1190,10 +1200,17 @@ body has `stream: true`. CORS is off by default; pass
 When a token is set it gates **every** `/api/*` route — GET included, not
 just the LLM POSTs — for any non-loopback caller; loopback clients stay open
 so the local browser UI works without a token. The peer is read from the
-connection itself, so a forged `X-Forwarded-For` can't bypass the check, and
-the token is compared in constant time. A `top_k` in the request body is
-clamped to a sane ceiling (and a non-numeric value is rejected with `400`)
-rather than amplifying retrieval work.
+connection itself, so a forged `X-Forwarded-For` can't bypass the check, the
+token is compared in constant time, and repeated failures from one address
+are throttled (HTTP 429) to bound online brute force. A `top_k` in the
+request body is clamped to a sane ceiling (and a non-numeric value is
+rejected with `400`) rather than amplifying retrieval work.
+
+On Android/Termux, treat the loopback exemption with suspicion: Android
+does not firewall localhost between apps, so *any app on the device* can
+reach a listening `127.0.0.1` port. Pass `--strict-token` there to require
+the bearer token from loopback clients too (the bundled web UI sends no
+token, so use explicit `Authorization: Bearer` headers in that mode).
 
 The `serve` extra is required: `pip install 'grimore[serve]'`. On
 Linux/Windows that pulls FastAPI as the upgrade path; the shipped

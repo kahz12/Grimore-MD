@@ -3,6 +3,7 @@ Command Line Interface (CLI) for Project Grimore.
 This module defines the user commands for scanning vaults, connecting notes,
 consulting the Oracle (RAG), and managing the background daemon.
 """
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -1571,8 +1572,17 @@ def serve(
         None, "--api-token",
         help="Bearer token required on every non-loopback request (all "
              "methods). Read from env GRIMORE_API_TOKEN if unset. Required "
-             "for any non-loopback bind.",
+             "for any non-loopback bind. Prefer the env var: a token on "
+             "the command line is visible to other local users via ps.",
         envvar="GRIMORE_API_TOKEN",
+    ),
+    strict_token: bool = typer.Option(
+        False, "--strict-token",
+        help="Require the bearer token from loopback clients too (needs "
+             "--api-token). Recommended on Android/Termux, where any app "
+             "on the device can reach localhost ports. The bundled web UI "
+             "sends no token, so use the API with explicit Authorization "
+             "headers in this mode.",
     ),
     cors_origin: Optional[str] = typer.Option(
         None, "--cors-origin",
@@ -1627,12 +1637,36 @@ def serve(
             title="Missing API token",
         ))
         raise typer.Exit(code=1)
+    if strict_token and not api_token:
+        console.print(ui.error_panel(
+            "[cyan]--strict-token[/] requires [cyan]--api-token[/] (or "
+            "[cyan]GRIMORE_API_TOKEN[/] env) — without a token there is "
+            "nothing to enforce.",
+            title="Missing API token",
+        ))
+        raise typer.Exit(code=1)
+    if api_token and "--api-token" in sys.argv:
+        # The value itself never gets printed — only the advice. A token on
+        # the command line is readable by any local user via `ps` / /proc.
+        console.print(ui.warn_panel(
+            "The API token was passed on the command line, which other "
+            "local users can read via [cyan]ps[/]. Prefer the env var: "
+            "[cyan]GRIMORE_API_TOKEN=... grimore serve[/].",
+            title="Token visible in process list",
+        ))
 
     session = Session(config)
-    app_ = build_app(session, api_token=api_token, cors_origin=cors_origin)
+    app_ = build_app(
+        session, api_token=api_token, cors_origin=cors_origin,
+        strict_token=strict_token,
+    )
+    if api_token:
+        auth_line = "Token auth ON (strict — loopback included)" if strict_token \
+            else "Token auth ON"
+    else:
+        auth_line = "No token — loopback only."
     console.print(ui.success_panel(
-        f"Grimore API listening on [bold cyan]http://{host}:{port}[/].\n"
-        f"{'Token auth ON' if api_token else 'No token — loopback only.'}",
+        f"Grimore API listening on [bold cyan]http://{host}:{port}[/].\n{auth_line}",
         title="serve",
     ))
 

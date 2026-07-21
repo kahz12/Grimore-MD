@@ -290,12 +290,24 @@ class MCPServer:
 
         # Read body off disk so callers see the live file (incremental
         # re-embed makes the DB a partial mirror of the chunked content,
-        # not a full-text mirror).
-        from pathlib import Path
+        # not a full-text mirror). Re-assert vault containment first: this
+        # is the one tool that turns a stored path into file bytes for the
+        # client, so a tampered row or a symlink swapped after indexing
+        # must not become an arbitrary-file read. Fail as a plain miss.
+        try:
+            resolved = SecurityGuard.resolve_within_vault(
+                row["path"], self.session.vault_root,
+            )
+        except ValueError:
+            logger.warning(
+                "mcp_note_path_escapes_vault",
+                note_id=row["note_id"], path=row["path"],
+            )
+            return {"found": False}
 
         body = ""
         try:
-            body = Path(row["path"]).read_text(encoding="utf-8", errors="replace")
+            body = resolved.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             logger.warning("mcp_note_read_failed", path=row["path"], error=str(exc))
         return {

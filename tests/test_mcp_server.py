@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 
@@ -37,6 +38,10 @@ def _stub_session(*, hits=None, ask_answer="hello", chunk_vectors=None,
     (find_hybrid + find_similar_notes); when None, both return [].
     """
     session = MagicMock()
+
+    # Derived from note_path so the note is always inside the vault and
+    # get_note's containment check passes for the stub by construction.
+    session.vault_root = Path(note_path).parent
 
     # Config knobs the search tool reads via getattr.
     session.config.cognition.hybrid_search = True
@@ -259,6 +264,18 @@ class TestGetNoteTool:
         resp = _call(srv, "grimore_get_note", {"title": "Gothic"})
         body = _content_payload(resp)
         assert body["found"] is True
+
+    def test_path_outside_vault_returns_not_found(self, tmp_path):
+        # A DB row whose path escapes the vault (tampered index, or a
+        # symlink swapped after scan) must not become an arbitrary-file
+        # read for the MCP client — it reads as a plain miss.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("top secret", encoding="utf-8")
+        sess = _stub_session(note_path=str(secret))
+        sess.vault_root = tmp_path / "vault"
+        srv = _server(sess)
+        resp = _call(srv, "grimore_get_note", {"note_id": 7})
+        assert _content_payload(resp) == {"found": False}
 
     def test_missing_id_returns_not_found(self):
         sess = _stub_session()

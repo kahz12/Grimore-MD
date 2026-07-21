@@ -14,7 +14,9 @@ Security defaults:
   clients (the local browser UI, which sends no token) stay open, as do
   the ``/`` UI shell and static assets. Enforced centrally in
   ``_TokenAuthMiddleware`` so no route can forget the check; the token
-  comparison is constant-time.
+  comparison is constant-time, and repeated failures from one peer are
+  throttled (429). ``strict_token`` drops the loopback exemption for
+  hosts where localhost isn't a trust boundary (Android/Termux).
 * CORS off by default. ``cors_origin`` (single origin, no wildcards)
   is the only escape valve. Plays well with the typical "serve on
   loopback, point a browser at it" flow.
@@ -24,6 +26,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import secrets
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -117,6 +120,22 @@ async def _send_401(send: Send, message: str) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+async def _send_429(send: Send, retry_after: int) -> None:
+    body = json.dumps({
+        "error": "too many failed authentication attempts; retry later",
+    }).encode("utf-8")
+    await send({
+        "type": "http.response.start",
+        "status": 429,
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"retry-after", str(retry_after).encode("ascii")),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
 class _TokenAuthMiddleware:
     """Gate every ``/api/*`` route behind the bearer token.
 
@@ -130,11 +149,68 @@ class _TokenAuthMiddleware:
 
     Only attached when a token is configured, so the no-token loopback
     deployment is byte-for-byte unchanged.
+
+    ``exempt_loopback=False`` (the ``--strict-token`` serve flag) drops
+    the loopback exemption: on Android/Termux any app on the device can
+    reach localhost ports, so "loopback" is not "same trust domain" there.
+
+    Failed attempts are throttled per peer: after ``MAX_FAILURES`` bad
+    tokens inside ``WINDOW_SECONDS``, further attempts from that address
+    get a 429 until the window expires. The constant-time compare already
+    blunts timing attacks; this bounds the online guess *rate* on a LAN
+    bind. State is in-memory and per-process — matching the single-process
+    uvicorn deployment ``serve`` runs.
     """
 
-    def __init__(self, app: ASGIApp, *, api_token: str) -> None:
+    MAX_FAILURES = 10
+    WINDOW_SECONDS = 60.0
+    # Bound the throttle map so a spoofed-address sweep can't grow it
+    # without limit.
+    _MAX_TRACKED_PEERS = 1024
+
+    def __init__(
+        self, app: ASGIApp, *, api_token: str, exempt_loopback: bool = True,
+    ) -> None:
         self.app = app
         self.api_token = api_token
+        self.exempt_loopback = exempt_loopback
+        self._failures: dict[str, tuple[float, int]] = {}
+
+    @staticmethod
+    def _peer_key(scope: Scope) -> str:
+        client = scope.get("client")
+        try:
+            return str(client[0])
+        except (TypeError, IndexError):
+            return "?"
+
+    def _is_throttled(self, peer: str, now: float) -> bool:
+        entry = self._failures.get(peer)
+        if entry is None:
+            return False
+        start, count = entry
+        if now - start >= self.WINDOW_SECONDS:
+            del self._failures[peer]
+            return False
+        return count >= self.MAX_FAILURES
+
+    def _record_failure(self, peer: str, now: float) -> None:
+        start, count = self._failures.get(peer, (now, 0))
+        if now - start >= self.WINDOW_SECONDS:
+            start, count = now, 0
+        self._failures[peer] = (start, count + 1)
+        if len(self._failures) > self._MAX_TRACKED_PEERS:
+            expired = [
+                k for k, (s, _) in self._failures.items()
+                if now - s >= self.WINDOW_SECONDS
+            ]
+            for k in expired:
+                del self._failures[k]
+            # Everything still live: evict oldest windows so the newest
+            # (most relevant) offenders stay tracked.
+            while len(self._failures) > self._MAX_TRACKED_PEERS:
+                oldest = min(self._failures, key=lambda k: self._failures[k][0])
+                del self._failures[oldest]
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -144,14 +220,22 @@ class _TokenAuthMiddleware:
         method = scope.get("method", "GET")
         # Non-/api/ paths (UI shell, static assets) stay open. OPTIONS is
         # an unauthenticated CORS preflight carrying no credentials.
-        if (
-            not path.startswith("/api/")
-            or method == "OPTIONS"
-            or _client_is_loopback(scope)
-            or _request_has_valid_bearer(scope, self.api_token)
-        ):
+        if not path.startswith("/api/") or method == "OPTIONS":
             await self.app(scope, receive, send)
             return
+        if self.exempt_loopback and _client_is_loopback(scope):
+            await self.app(scope, receive, send)
+            return
+        peer = self._peer_key(scope)
+        now = time.monotonic()
+        if self._is_throttled(peer, now):
+            await _send_429(send, retry_after=int(self.WINDOW_SECONDS))
+            return
+        if _request_has_valid_bearer(scope, self.api_token):
+            self._failures.pop(peer, None)
+            await self.app(scope, receive, send)
+            return
+        self._record_failure(peer, now)
         await _send_401(send, "valid bearer token required")
 
 
@@ -268,9 +352,18 @@ def _build_routes(session: Session) -> list:
         if loc is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         path, title = loc
+        # The DB is normally trustworthy, but this is the one route that
+        # turns a stored path into file bytes for a (possibly remote)
+        # caller — so re-assert vault containment, catching a tampered
+        # row or a symlink swapped after indexing. Fail as a plain 404.
+        try:
+            resolved = SecurityGuard.resolve_within_vault(path, session.vault_root)
+        except ValueError:
+            logger.warning("api_note_path_escapes_vault", note_id=note_id, path=path)
+            return JSONResponse({"error": "not found"}, status_code=404)
         body_text = ""
         try:
-            body_text = Path(path).read_text(encoding="utf-8", errors="replace")
+            body_text = resolved.read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
             logger.warning("api_note_read_failed", path=path, error=str(exc))
         return JSONResponse({
@@ -316,13 +409,21 @@ def build_app(
     *,
     api_token: Optional[str] = None,
     cors_origin: Optional[str] = None,
+    strict_token: bool = False,
 ) -> Starlette:
     """Construct the ASGI app.
 
     Called by ``grimore serve`` and by tests that drive the routes via
     ``starlette.testclient.TestClient``. The session is captured by
     closure so requests reuse the warm embedder + router.
+
+    ``strict_token`` drops the loopback exemption so the token is required
+    from local clients too (Android/Termux: localhost is reachable by any
+    app on the device). It only makes sense with a token, so it raises
+    without one rather than silently serving unauthenticated.
     """
+    if strict_token and not api_token:
+        raise ValueError("strict_token requires api_token")
     # Order matters: CORS is listed first so it's the outermost layer and
     # answers preflight OPTIONS before auth runs; the token gate sits just
     # inside it, in front of the routes.
@@ -336,7 +437,11 @@ def build_app(
             allow_credentials=False,
         ))
     if api_token:
-        middleware.append(Middleware(_TokenAuthMiddleware, api_token=api_token))
+        middleware.append(Middleware(
+            _TokenAuthMiddleware,
+            api_token=api_token,
+            exempt_loopback=not strict_token,
+        ))
 
     return Starlette(
         debug=False,
