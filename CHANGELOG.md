@@ -7,8 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-21
+
 ### Added
+- `dedupe` command — finds duplicate notes with two deterministic, LLM-free
+  signals: **exact** (bodies sharing a `content_hash`) and **near** (note
+  pairs whose mean chunk vectors exceed a cosine threshold). Report-only —
+  it never touches the vault or the index. Flags: `--threshold/-t`,
+  `--limit/-n`, `--export/-e`.
+- `eval` retrieval-quality harness, substantially expanded: new
+  `--retrieval-k`, `--retrieval-only`, `--baseline` (hybrid RRF vs
+  dense-only, per-metric delta), `--judge/--no-judge`, `--export`,
+  `--history` (JSONL run ledger), `--compare` (regression gate, non-zero
+  exit on any drop) and `--json` flags, plus Hit@1 / Hit@3, MRR and recall@k
+  metrics. Expected-source matching is token-normalised (accent/emoji/case
+  folded), so golden entries stay short and robust.
+- CI now runs a mypy type-check job (gated on `grimore.memory` and
+  `grimore.utils`) and reports test coverage (`pytest-cov`, report-only).
 - `CHANGELOG.md` (this file).
+
+### Changed
+- Split the ~1,800-line `memory/db.py` "god object" into nine domain mixins
+  (`schema`, `search`, `notes`, `chunks`, `embedding_migration`, `tags`,
+  `upkeep`, `freshness`, `mirror_store`) plus a `_base` typing contract.
+  `Database`'s public API is unchanged — every caller still imports the same
+  class from the same module.
+- Hybrid retrieval (RRF fusion of BM25 + dense) tuning in the connector and
+  Oracle, with matching test coverage.
+- CI actions bumped off the deprecated Node 20 runtime (`checkout@v7`,
+  `setup-python@v6`).
+- EN/ES user guides updated for the new `eval` flags and `dedupe`.
 
 ### Removed
 - `requirements.txt` — it was an unpinned duplicate of the dependencies in
@@ -16,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pip install -e .` (add extras as needed, e.g. `pip install -e ".[serve]"`).
 
 ### Fixed
+- SQLite connections opened by `Database._get_connection` were never
+  explicitly closed, leaking a file descriptor per call — harmless in
+  one-shot CLI runs but a steady drip in the long-running daemon. It is now
+  a context manager that commits/rolls back **and** always closes.
 - Note and sidecar writes raised "a bytes-like object is required, not 'str'"
   on installs that resolved python-frontmatter 1.3.0, whose `dump()` no longer
   encodes when handed a binary file handle. `FrontmatterWriter` now serializes
@@ -50,5 +82,6 @@ summarizes the capabilities present at this version.
 - Preserve intentional exception suppression with `raise ... from None` at the
   CLI/validation boundaries that convert internal errors into clean exits.
 
-[Unreleased]: https://github.com/kahz12/Grimore-MD/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/kahz12/Grimore-MD/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/kahz12/Grimore-MD/releases/tag/v3.2.0
 [3.1.0]: https://github.com/kahz12/Grimore-MD/releases/tag/v3.1.0
