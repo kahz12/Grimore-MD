@@ -285,3 +285,56 @@ class TestProfiles:
         cfg = load_config(str(path), profile="bare")
         assert cfg.active_profile == "bare"
         assert cfg.vault.path == "./vault"
+
+
+class TestTunableDefaults:
+    """opt.8: magic constants promoted to config.
+
+    The contract is that a TOML written before these keys existed behaves
+    exactly as it did, so every default is asserted against the literal value
+    that used to be hard-coded, not against the dataclass field (which would
+    make the test tautological and pass even if a default were changed).
+    """
+
+    def test_defaults_match_the_previously_hardcoded_values(self, tmp_path):
+        cfg = load_config(str(tmp_path / "absent.toml"))
+        assert cfg.cognition.chunk_store_chars == 500          # reembed.py
+        assert cfg.cognition.context_max_chars == 16_000       # oracle.py
+        assert cfg.cognition.embed_batch_size == 32            # embedder.py
+        assert cfg.cognition.circuit_failure_threshold == 5    # llm_router.py
+        assert cfg.cognition.circuit_cooldown_s == 120         # llm_router.py
+        assert cfg.shell.max_turns == 3                        # session.py
+
+    def test_toml_without_new_keys_keeps_defaults(self, tmp_path):
+        path = tmp_path / "grimore.toml"
+        path.write_text(
+            "[cognition]\nmodel_llm_local = \"qwen2.5:3b\"\n\n[shell]\nvi_mode = true\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(path))
+        # Neighbouring keys in the same sections still applied...
+        assert cfg.cognition.model_llm_local == "qwen2.5:3b"
+        assert cfg.shell.vi_mode is True
+        # ...and the absent tunables fell back rather than erroring.
+        assert cfg.cognition.context_max_chars == 16_000
+        assert cfg.shell.max_turns == 3
+
+    def test_values_are_overridable(self, tmp_path):
+        path = tmp_path / "grimore.toml"
+        path.write_text(
+            "[cognition]\n"
+            "chunk_store_chars = 1500\n"
+            "context_max_chars = 32000\n"
+            "embed_batch_size = 8\n"
+            "circuit_failure_threshold = 2\n"
+            "circuit_cooldown_s = 30\n"
+            "\n[shell]\nmax_turns = 10\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(str(path))
+        assert cfg.cognition.chunk_store_chars == 1500
+        assert cfg.cognition.context_max_chars == 32_000
+        assert cfg.cognition.embed_batch_size == 8
+        assert cfg.cognition.circuit_failure_threshold == 2
+        assert cfg.cognition.circuit_cooldown_s == 30
+        assert cfg.shell.max_turns == 10

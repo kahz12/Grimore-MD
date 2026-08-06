@@ -49,6 +49,12 @@ class Oracle:
     """
     Implements the RAG pipeline to provide context-aware answers to user queries.
     """
+    # Class-level default so the cap resolves even on instances built without
+    # __init__ -- tests exercise _build_context against a bare
+    # ``Oracle.__new__(Oracle)`` to isolate it from the LLM and the DB.
+    # __init__ shadows this with the configured value.
+    context_max_chars = _ORACLE_CONTEXT_MAX_CHARS
+
     def __init__(self, config, db: Database, router: LLMRouter, embedder: Embedder):
         self.config = config
         self.db = db
@@ -62,6 +68,13 @@ class Oracle:
                 config.cognition, "rerank_model", "BAAI/bge-reranker-base"
             ),
         )
+        # Snapshot the context cap once. Read via getattr so a partially
+        # populated config (the SimpleNamespace stand-ins used in tests, or a
+        # TOML written before this key existed) still yields the historical
+        # 16 KB rather than an AttributeError.
+        self.context_max_chars = int(getattr(
+            config.cognition, "context_max_chars", _ORACLE_CONTEXT_MAX_CHARS
+        ))
         self.system_prompt_template = self._load_prompt()
 
     def _load_prompt(self):
@@ -407,7 +420,7 @@ class Oracle:
         dropped = 0
         for title, part in candidate_parts:
             extra = len(part) + (len(_CONTEXT_SEPARATOR) if accepted_parts else 0)
-            if used + extra > _ORACLE_CONTEXT_MAX_CHARS:
+            if used + extra > self.context_max_chars:
                 dropped += 1
                 continue
             accepted_parts.append(part)
@@ -419,7 +432,7 @@ class Oracle:
                 "oracle_context_truncated",
                 kept=len(accepted_parts),
                 dropped=dropped,
-                cap=_ORACLE_CONTEXT_MAX_CHARS,
+                cap=self.context_max_chars,
                 used_chars=used,
             )
 

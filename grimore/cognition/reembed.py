@@ -116,22 +116,40 @@ def reembed_note(
         _embed_batch = getattr(embedder, "embed_batch", None)
         vectors = _embed_batch(texts) if callable(_embed_batch) \
             else [embedder.embed(t) for t in texts]
+        pending: list[dict] = []
         for (idx, c, h), vector in zip(stale_items, vectors, strict=True):
             if vector is None:
                 # Embed failure: skip — the next scan will retry. We've already
                 # deleted any prior row for this index, so nothing inconsistent
                 # is left behind.
                 continue
-            db.store_embedding(
-                note_id,
-                idx,
-                c.text[:text_truncation],
-                embedder.serialize_vector(vector),
-                page=c.page,
-                heading=c.heading,
-                chunk_hash=h,
-            )
-            embedded += 1
+            pending.append({
+                "chunk_index": idx,
+                "text_content": c.text[:text_truncation],
+                "vector": embedder.serialize_vector(vector),
+                "page": c.page,
+                "heading": c.heading,
+                "chunk_hash": h,
+            })
+
+        # One transaction for the whole note instead of one per chunk. Falls
+        # back to the per-chunk path for stand-in databases (the test doubles
+        # that implement only the v2.0 surface), so this stays additive.
+        _bulk = getattr(db, "store_embeddings_bulk", None)
+        if callable(_bulk):
+            embedded += _bulk(note_id, pending)
+        else:
+            for row in pending:
+                db.store_embedding(
+                    note_id,
+                    row["chunk_index"],
+                    row["text_content"],
+                    row["vector"],
+                    page=row["page"],
+                    heading=row["heading"],
+                    chunk_hash=row["chunk_hash"],
+                )
+                embedded += 1
 
     stored = kept + embedded
     if removed or embedded or reanchored:

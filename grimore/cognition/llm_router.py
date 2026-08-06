@@ -130,6 +130,17 @@ class LLMRouter:
         self.session = getattr(self.backend, "session", None)
         self._consecutive_failures = 0
         self._open_until = 0.0
+        # Instance-level breaker settings, defaulting to the class constants
+        # so the historical behaviour is unchanged and the class attributes
+        # stay valid as the documented defaults. Floored at 1 failure: a
+        # threshold of 0 would trip the breaker before any call was made.
+        cognition = getattr(config, "cognition", None)
+        self.failure_threshold = max(1, int(getattr(
+            cognition, "circuit_failure_threshold", self._FAILURE_THRESHOLD
+        )))
+        self.cooldown_s = float(getattr(
+            cognition, "circuit_cooldown_s", self._COOLDOWN_SECONDS
+        ))
 
     def _circuit_open(self) -> bool:
         """Returns True if the circuit breaker is currently open (cooldown active)."""
@@ -138,11 +149,11 @@ class LLMRouter:
     def _record_failure(self) -> None:
         """Records a failure and potentially opens the circuit."""
         self._consecutive_failures += 1
-        if self._consecutive_failures >= self._FAILURE_THRESHOLD and not self._circuit_open():
-            self._open_until = time.monotonic() + self._COOLDOWN_SECONDS
+        if self._consecutive_failures >= self.failure_threshold and not self._circuit_open():
+            self._open_until = time.monotonic() + self.cooldown_s
             logger.warning(
                 "llm_circuit_open",
-                cooldown_s=self._COOLDOWN_SECONDS,
+                cooldown_s=self.cooldown_s,
                 failures=self._consecutive_failures,
             )
 
