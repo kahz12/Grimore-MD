@@ -44,6 +44,7 @@ from grimore.output.git_guard import GitGuard
 from grimore.output.link_injector import LinkInjector
 from grimore.session import Session
 from grimore.utils import ui
+from grimore.utils import matrix_cache
 from grimore.utils.config import load_config, set_active_profile
 from grimore.utils.logger import get_logger, setup_logger
 from grimore.utils.preflight import PreflightChecker, PreflightReport
@@ -415,50 +416,71 @@ def connect(
     connector = Connector(
         db, embedder,
         vector_backend=config.cognition.vector_backend,
+        matrix_cache_enabled=bool(getattr(
+            config.cognition, "vec_matrix_cache", True)),
     )
     injector = LinkInjector()
 
-    all_embeddings = db.get_all_embeddings()
-    if not all_embeddings:
+    # One row per note -- the note's first chunk, which is the vector the
+    # per-note loop used to pick up as it walked the table.
+    note_vectors = db.get_first_chunk_vectors()
+    if not note_vectors:
         console.print(ui.warn_panel(
             "No embeddings yet. Run [cyan]grimore scan --no-dry-run[/] first.",
             title="No vector memory",
         ))
         return
 
-    ui.section(f"Searching connections between {len(all_embeddings)} fragments")
+    ui.section(f"Searching connections between {len(note_vectors)} notes")
 
-    processed_notes: set[int] = set()
+    # The whole all-against-all sweep as one blocked matmul, instead of one
+    # full-matrix multiply per note. Results are identical to calling
+    # find_similar_notes in a loop; only the number of BLAS calls changes.
+    note_ids = [nid for nid, _blob in note_vectors]
+    # Straight from the stored bytes into one float32 matrix. Deserializing
+    # each vector into a Python list first costs roughly 8x the memory (a list
+    # slot plus a boxed float per element) and every one of them stays alive
+    # for the whole sweep, which on a large vault is hundreds of megabytes.
+    query_matrix = Embedder.buffer_to_matrix(
+        b"".join(blob for _nid, blob in note_vectors),
+        len(note_vectors),
+        len(note_vectors[0][1]) // 4,
+    )
+    similar_by_note = connector.find_similar_notes_batch(
+        query_matrix if query_matrix is not None
+        else [embedder.deserialize_vector(blob) for _nid, blob in note_vectors],
+        top_k=12, exclude_note_ids=note_ids, dedupe_by_note=True,
+        with_text=False,
+    )
+    # Titles for every candidate above the threshold, in one query rather
+    # than one per suggested link.
+    wanted_titles = {
+        s["note_id"]
+        for hits in similar_by_note
+        for s in hits if s["score"] > effective_threshold
+    }
+    titles = db.get_note_titles(wanted_titles)
+    # path / title / format / sidecar for every note, in one query rather than
+    # the two per note the loop used to make.
+    targets = db.get_note_targets(note_ids)
+
     total_links = 0
     unique_sources = 0
 
     with ui.progress_bar() as progress:
-        task = progress.add_task("Connecting", total=len(all_embeddings))
-        for note_id, _text, vector_blob in all_embeddings:
+        task = progress.add_task("Connecting", total=len(note_vectors))
+        for note_id, similar in zip(note_ids, similar_by_note, strict=True):
             progress.advance(task)
-            if note_id in processed_notes:
-                continue
-            processed_notes.add(note_id)
 
-            location = db.get_note_location(note_id)
-            if not location:
+            target = targets.get(note_id)
+            if not target:
                 logger.warning("orphan_embedding", note_id=note_id)
                 continue
-            path, title = location
             # Format-aware writeback target: .md hits the source file,
-            # everything else lands in its sidecar. Falls back gracefully
-            # for legacy rows whose ``format`` column is NULL.
-            writeback = db.get_note_writeback_target(note_id)
-            note_format = writeback[1] if writeback else "md"
-            note_sidecar = Path(writeback[2]) if writeback and writeback[2] else None
-
-            # Find similar notes using cosine similarity on embeddings.
-            # dedupe_by_note guarantees we see distinct notes (not 12 chunks
-            # of the same note) so the 3-candidate budget is always fillable.
-            vector = embedder.deserialize_vector(vector_blob)
-            similar = connector.find_similar_notes(
-                vector, top_k=12, exclude_note_id=note_id, dedupe_by_note=True,
-            )
+            # everything else lands in its sidecar. Rows whose ``format``
+            # column is NULL come back as "md", the historical behaviour.
+            path, title, note_format, sidecar = target
+            note_sidecar = Path(sidecar) if sidecar else None
 
             candidates = [s for s in similar if s["score"] > effective_threshold][:3]
 
@@ -468,7 +490,7 @@ def connect(
             connections_to_inject = []
             bullet_lines = []
             for c in candidates:
-                c_title = db.get_note_title(c["note_id"])
+                c_title = titles.get(c["note_id"])
                 if not c_title:
                     continue
                 bullet_lines.append(f"  ↳ [cyan]{c_title}[/]  [grimore.muted](score {c['score']:.2f})[/]")
@@ -1232,6 +1254,12 @@ def maintenance_run(
 
     ui.command_header("maintenance run", config.memory.db_path)
     report = MaintenanceRunner(db, mcfg).run(reason="manual")
+
+    # The matrix cache survives VACUUM (ids are preserved), so housekeeping
+    # leaves it alone -- unless the feature is off, in which case the file is
+    # dead weight the size of every vector in the vault.
+    if not bool(getattr(config.cognition, "vec_matrix_cache", True)):
+        matrix_cache.clear(config.memory.db_path)
 
     console.print()
     console.print(Text.assemble(

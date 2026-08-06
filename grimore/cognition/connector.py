@@ -10,6 +10,7 @@ from typing import List, Optional
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.reranker import Reranker, build_reranker
 from grimore.memory.db import Database
+from grimore.utils import matrix_cache
 from grimore.utils.logger import get_logger
 
 try:  # vectorized scoring fast path; the per-row loop is the fallback.
@@ -41,6 +42,7 @@ class Connector:
         rerank_engine: str = "llm",
         rerank_model: str = "BAAI/bge-reranker-base",
         reranker: Optional[Reranker] = None,
+        matrix_cache_enabled: bool = True,
     ):
         self.db = db
         self.embedder = embedder
@@ -50,9 +52,24 @@ class Connector:
         # (handy for parity tests). "sqlite-vec" tries the extension and
         # transparently falls back to numpy if the probe failed.
         self.vector_backend = vector_backend
+        # Persist the built matrix next to the DB so a one-shot CLI run does
+        # not rebuild it. Off restores the pre-cache behaviour exactly, and
+        # also removes any file a previous run left behind -- the matrix is
+        # the size of every vector in the vault, so leaving it orphaned when
+        # the feature is switched off would be a surprising amount of disk.
+        #
+        # Deliberately not cleared by `maintenance run`: VACUUM preserves the
+        # ids of an INTEGER PRIMARY KEY table, so the seal still matches
+        # afterwards and dropping the cache would only force a needless
+        # rebuild. The one thing that does invalidate it silently is the
+        # embedding-model swap, which clears it itself. Reclaiming the file
+        # when the feature is switched off is discard_matrix_cache()'s job,
+        # called from the CLI -- constructing a Connector deletes nothing.
+        self.matrix_cache_enabled = matrix_cache_enabled
         # Matrix cache for the warm shell session — see _load_dense().
-        self._cache_sig: Optional[tuple[int, int]] = None
-        self._cache_rows: Optional[list] = None
+        self._cache_sig: Optional[tuple] = None
+        self._cache_keys: Optional[list] = None
+        self._cache_blobs: Optional[list] = None
         self._cache_matrix = None
         # Second-stage re-ranker. ``reranker`` (explicit injection) is
         # for tests / advanced wiring; otherwise build one from the
@@ -64,6 +81,18 @@ class Connector:
         else:
             self._reranker = build_reranker(rerank_engine, router, model_name=rerank_model)
 
+    def discard_matrix_cache(self) -> None:
+        """Delete the on-disk matrix cache and forget the in-memory one.
+
+        Housekeeping, called explicitly -- notably by ``maintenance run`` when
+        the feature is switched off, so the file (the size of every vector in
+        the vault) does not sit there orphaned. Deliberately not done in
+        ``__init__``: constructing a Connector should not delete anything,
+        least of all a file another process may be reading.
+        """
+        matrix_cache.clear(self.db.db_path)
+        self._cache_sig = None
+
     def _use_vec_backend(self) -> bool:
         """Whether this call should route through ``db.vec_search`` instead
         of building the in-memory matmul matrix."""
@@ -72,24 +101,93 @@ class Connector:
         return self.db.vec_available
 
     def _load_dense(self):
-        """Return ``(rows, matrix)`` for dense scoring, cached across queries.
+        """Return ``(keys, matrix, blobs)`` for dense scoring, cached per query.
 
-        ``rows`` are ``(embedding_id, note_id, text, vector_blob)`` tuples;
-        ``matrix`` is the aligned ``(N, D)`` numpy matrix (or ``None`` when
-        numpy is absent / vectors are ragged, in which case the caller scores
-        per-row). The cache is keyed on the DB's cheap embeddings signature so
-        a long-lived shell ``Session`` rebuilds only when the vault changes.
+        ``keys`` are ``(embedding_id, note_id)`` pairs aligned positionally
+        with the matrix rows. ``matrix`` is the ``(N, D)`` numpy matrix, or
+        ``None`` when numpy is absent or the vectors are ragged. ``blobs`` is
+        the per-row vector list, and is populated **only** in that fallback
+        case -- when the matrix exists it stays ``None`` so the raw bytes can
+        be freed rather than held alongside a copy of themselves.
+
+        Neither the text nor (normally) the blobs are kept: the text belongs to
+        the few rows that win the ranking, and the caller fetches those with
+        :py:meth:`Database.get_chunk_texts`.
+
+        The cache is keyed on the DB's cheap embeddings signature so a
+        long-lived shell ``Session`` rebuilds only when the vault changes.
         """
-        sig = self.db.embeddings_signature()
+        # The cheap signature plus the DB's data generation. COUNT/MAX cannot
+        # see an embedding-model swap (it re-inserts under the original ids),
+        # and folding the vector byte total in would make every query a full
+        # scan; the generation is an in-memory int the swap bumps, so it costs
+        # nothing and closes that hole for anyone sharing this Database.
+        sig = (self.db.embeddings_signature(),
+               getattr(self.db, "data_generation", 0))
         if sig != self._cache_sig:
-            rows = self.db.get_all_embeddings_with_id()
-            self._cache_rows = rows
-            self._cache_matrix = Embedder.vectors_to_matrix([r[3] for r in rows])
+            keys, matrix, blobs = self._build_dense()
+            self._cache_keys = keys
+            self._cache_matrix = matrix
+            self._cache_blobs = blobs
             self._cache_sig = sig
-        return self._cache_rows, self._cache_matrix
+        return self._cache_keys, self._cache_matrix, self._cache_blobs
 
-    def _scores_for(self, query_vector, rows, matrix) -> list[float]:
-        """Cosine score for every row, aligned to ``rows``.
+    def _build_dense(self):
+        """Produce ``(keys, matrix, blobs)`` from the disk cache or SQLite.
+
+        On a cache hit only the keys are read from the database and the matrix
+        arrives memory-mapped, so the vectors never pass through Python at all.
+        On a miss the matrix is built from the vector buffer and written back
+        for the next process.
+        """
+        seal_before = None
+        if self.matrix_cache_enabled:
+            seal_before = self.db.matrix_cache_signature()
+            count, _max_id, total_bytes = seal_before
+            # dim comes from the seal alone. That is exact for the uniform
+            # vectors the cache stores, but it cannot *prove* uniformity:
+            # lengths 4 and 12 seal identically to two 8-byte rows. Ragged
+            # data therefore falls under the same limitation as any
+            # same-shape rewrite -- see matrix_cache.clear.
+            dim = (total_bytes // count // 4) if count else 0
+            if count and dim:
+                matrix = matrix_cache.load(self.db.db_path, seal_before, count, dim)
+                if matrix is not None:
+                    keys = self.db.get_embedding_keys()
+                    # The matrix and the keys are two independent reads; a
+                    # writer landing between them would leave the rows
+                    # misaligned, which silently attributes a score to the
+                    # wrong note (or indexes past the end). Length disagreement
+                    # is the observable symptom, so treat it as a miss.
+                    if len(keys) == matrix.shape[0]:
+                        return keys, matrix, None
+                    logger.warning(
+                        "matrix_cache_keys_mismatch",
+                        keys=len(keys), rows=int(matrix.shape[0]),
+                    )
+
+        keys, blob, dim = self.db.get_embedding_matrix_parts()
+        matrix = Embedder.buffer_to_matrix(blob, len(keys), dim)
+        # The per-row list costs as much as the matrix, so it is only
+        # fetched when there is no matrix to score against.
+        blobs = None
+        if matrix is None and keys:
+            blobs = self.db.get_embedding_vectors()
+        elif matrix is not None and self.matrix_cache_enabled:
+            # Skip the write when the table moved under us mid-build (the
+            # daemon indexing while a query runs). This is an efficiency
+            # guard, not a safety one: such a file would be sealed with a
+            # signature no future reader can match, so it would only ever
+            # cost a write and then miss. Safety against a seal that matches
+            # the wrong contents comes from the shape check in
+            # matrix_cache.load, and -- for a same-shape rewrite, which no
+            # signature can see -- from matrix_cache.clear.
+            if self.db.matrix_cache_signature() == seal_before:
+                matrix_cache.save(self.db.db_path, matrix, seal_before)
+        return keys, matrix, blobs
+
+    def _scores_for(self, query_vector, matrix, blobs) -> list[float]:
+        """Cosine score for every row, aligned to the matrix / blob order.
 
         Vectors are unit-normalized at embed time, so cosine == dot product.
         Fast path: one ``matrix @ query`` matmul. Fallback (no numpy, ragged
@@ -100,9 +198,17 @@ class Connector:
             q = _np.asarray(query_vector, dtype=_np.float32)
             if q.shape[0] == matrix.shape[1]:
                 return (matrix @ q).tolist()
+        # A dimension mismatch lands here with a matrix but no blobs, since
+        # those are only fetched when the matrix itself is missing. Cache the
+        # read: without it every query re-runs a full SELECT over the vector
+        # column, which is what the pre-split code avoided by keeping the rows.
+        if not blobs:
+            if self._cache_blobs is None:
+                self._cache_blobs = self.db.get_embedding_vectors()
+            blobs = self._cache_blobs
         return [
-            Embedder.dot_product(query_vector, Embedder.deserialize_vector(r[3]))
-            for r in rows
+            Embedder.dot_product(query_vector, Embedder.deserialize_vector(b))
+            for b in blobs
         ]
 
     @staticmethod
@@ -140,6 +246,7 @@ class Connector:
         top_k: int = 5,
         exclude_note_id: int = None,
         dedupe_by_note: bool = False,
+        with_text: bool = True,
     ):
         """
         Finds the top_k most similar chunks in the database compared to a query vector.
@@ -151,6 +258,12 @@ class Connector:
         is kept — useful for the ``connect`` pass that needs distinct notes
         rather than chunks. Oracle-style RAG keeps it False so multiple
         chunks of the same note can all feed the context window.
+
+        ``with_text=False`` returns ``""`` for every ``text`` and skips the
+        lookup that fills it. Chunk text no longer rides along with the scoring
+        matrix, so it costs one query per call — which the callers that only
+        read ``note_id`` and ``score`` (``connect``, the graph's suggested
+        edges) would otherwise pay once per note across the whole vault.
         """
         query = list(query_vector)
 
@@ -162,8 +275,10 @@ class Connector:
             if dedupe_by_note:
                 needed = max(needed * 5, needed + 10)
             hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
+            # with_text is honoured here too: the flag is a contract about the
+            # returned shape, not an artefact of how the numpy path fetches.
             similarities = [
-                {"note_id": nid, "text": text, "score": score}
+                {"note_id": nid, "text": text if with_text else "", "score": score}
                 for _eid, nid, text, score in hits
             ]
             if dedupe_by_note:
@@ -177,8 +292,8 @@ class Connector:
                 similarities = unique
             return similarities[:top_k]
 
-        rows, matrix = self._load_dense()
-        scores = self._scores_for(query, rows, matrix)
+        keys, matrix, blobs = self._load_dense()
+        scores = self._scores_for(query, matrix, blobs)
         if not scores:
             return []
 
@@ -193,26 +308,158 @@ class Connector:
             needed = max(needed * 5, needed + 10)
         top_idx = self._topk_indices(scores, needed)
 
-        similarities: list[dict] = []
-        for i in top_idx:
-            _emb_id, note_id, text, _blob = rows[i]
+        # Text for the winners only -- one query instead of carrying every
+        # chunk's 500 chars through the scoring pass.
+        picks = [(keys[i][0], keys[i][1], float(scores[i])) for i in top_idx]
+        texts = (
+            self.db.get_chunk_texts([eid for eid, _nid, _s in picks])
+            if with_text else {}
+        )
+        return self._hits_from_picks(picks, texts, exclude_note_id,
+                                     dedupe_by_note, top_k)
+
+    @staticmethod
+    def _hits_from_picks(picks, texts, exclude_note_id,
+                         dedupe_by_note, top_k) -> list[dict]:
+        """Turn ranked ``(embedding_id, note_id, score)`` picks into results.
+
+        Picks carry their score rather than an index into the score array, so
+        nothing here holds a reference to that array. That matters for the
+        batched path: a numpy row obtained by iterating a block is a *view*
+        whose base is the whole block, so keeping one row per query would pin
+        every block until the sweep ended and make the blocking pointless.
+
+        Shared by the single-query and batched paths so they cannot drift.
+        The order of the three steps is the behaviour, not an implementation
+        detail: the self-note filter and the per-note dedup both run *after*
+        the top-k cut, so a note whose best chunk sits outside the oversampled
+        window is absent even if it would place well among notes. Reproducing
+        that exactly is what makes the batched sweep a drop-in replacement.
+        """
+        hits: list[dict] = []
+        for emb_id, note_id, score in picks:
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
-            similarities.append(
-                {"note_id": note_id, "text": text, "score": float(scores[i])}
+            hits.append(
+                {"note_id": note_id, "text": texts.get(emb_id, ""),
+                 "score": score}
             )
 
         if dedupe_by_note:
             seen: set[int] = set()
             unique: list[dict] = []
-            for item in similarities:
+            for item in hits:
                 if item["note_id"] in seen:
                     continue
                 seen.add(item["note_id"])
                 unique.append(item)
-            similarities = unique
+            hits = unique
 
-        return similarities[:top_k]
+        return hits[:top_k]
+
+    # Scores for one block of queries against every chunk. 64 MB of float32
+    # is a few hundred rows on a realistic vault -- big enough that the whole
+    # sweep is one or two passes over the matrix, small enough that the score
+    # buffer never approaches the size of the matrix itself.
+    _BLOCK_TARGET_BYTES = 64 * 1024 * 1024
+
+    def find_similar_notes_batch(
+        self,
+        query_vectors,
+        *,
+        top_k: int = 5,
+        exclude_note_ids=None,
+        dedupe_by_note: bool = False,
+        with_text: bool = True,
+        block_rows: Optional[int] = None,
+    ) -> list[list[dict]]:
+        """Run many queries in one blocked matmul instead of one matmul each.
+
+        Returns one result list per query, each identical to what
+        :py:meth:`find_similar_notes` would return for that query -- the two
+        share the ranking helper and the assembly step, so parity is
+        structural rather than a coincidence to be re-checked.
+
+        ``connect`` used to call the single-query method once per note, and
+        each of those calls multiplied the query against every chunk in the
+        vault: O(notes x chunks) products issued one at a time. Here the whole
+        sweep is ``Q @ C.T``, which BLAS does in far fewer, far larger
+        operations.
+
+        Blocked from the start rather than as a later refinement: the full
+        score matrix is ``len(queries) x chunks`` floats, which for a big vault
+        is larger than the embeddings themselves. ``block_rows`` defaults to
+        whatever keeps one block near
+        :py:attr:`_BLOCK_TARGET_BYTES`, and is exposed so tests can force
+        several blocks on a small fixture.
+
+        Falls back to a plain loop when there is no matrix to multiply (no
+        numpy, ragged vectors) or when the sqlite-vec backend is active, since
+        that path ranks inside SQLite and has no batch form. Correctness is
+        unaffected either way; only the speed-up is.
+        """
+        queries = list(query_vectors)
+        excludes = list(exclude_note_ids) if exclude_note_ids is not None \
+            else [None] * len(queries)
+        if len(excludes) != len(queries):
+            raise ValueError("exclude_note_ids must align with query_vectors")
+        if not queries:
+            return []
+
+        def _per_query():
+            return [
+                self.find_similar_notes(
+                    q, top_k=top_k, exclude_note_id=ex,
+                    dedupe_by_note=dedupe_by_note, with_text=with_text,
+                )
+                for q, ex in zip(queries, excludes, strict=True)
+            ]
+
+        keys, matrix, _blobs = self._load_dense()
+        if self._use_vec_backend() or matrix is None or _np is None:
+            return _per_query()
+
+        chunks, dim = matrix.shape
+        if block_rows is None:
+            block_rows = max(1, self._BLOCK_TARGET_BYTES // max(chunks * 4, 1))
+
+        # Two passes so the text for every winner across the whole batch is
+        # one query: collect the picks first, resolve text once, assemble after.
+        per_query: list[tuple[list, list]] = []
+        for start in range(0, len(queries), block_rows):
+            block = queries[start:start + block_rows]
+            q_block = _np.asarray(block, dtype=_np.float32)
+            if q_block.ndim != 2 or q_block.shape[1] != dim:
+                # A query of the wrong width cannot be scored against this
+                # matrix; defer the whole batch to the per-query path, which
+                # already handles the mismatch by scoring row-wise.
+                return _per_query()
+            block_scores = q_block @ matrix.T
+            for offset, row in enumerate(block_scores):
+                # The oversample window is computed per query, exactly as the
+                # single-query path does: it widens by one only when *that*
+                # query excludes a note. Hoisting it out of the loop would
+                # diverge for a batch that mixes excluded and plain queries.
+                exclude = excludes[start + offset]
+                needed = top_k + (1 if exclude is not None else 0)
+                if dedupe_by_note:
+                    needed = max(needed * 5, needed + 10)
+                top_idx = self._topk_indices(row, needed)
+                # float(row[i]) copies the value out; keeping `row` itself
+                # would keep the whole block alive (see _hits_from_picks).
+                per_query.append(
+                    [(keys[i][0], keys[i][1], float(row[i])) for i in top_idx]
+                )
+
+        texts = {}
+        if with_text:
+            wanted = {eid for picks in per_query for eid, _n, _s in picks}
+            texts = self.db.get_chunk_texts(wanted)
+
+        return [
+            self._hits_from_picks(picks, texts, exclude, dedupe_by_note, top_k)
+            for picks, exclude in zip(per_query, excludes, strict=True)
+        ]
 
     def _vector_candidates(
         self,
@@ -236,8 +483,8 @@ class Connector:
                 for eid, nid, text, score in hits
             ][:limit]
 
-        rows, matrix = self._load_dense()
-        scores = self._scores_for(query, rows, matrix)
+        keys, matrix, blobs = self._load_dense()
+        scores = self._scores_for(query, matrix, blobs)
         if not scores:
             return []
 
@@ -247,15 +494,17 @@ class Connector:
         needed = limit + (1 if exclude_note_id is not None else 0)
         top_idx = self._topk_indices(scores, needed)
 
+        picks = [(keys[i][0], keys[i][1], i) for i in top_idx]
+        texts = self.db.get_chunk_texts([eid for eid, _nid, _i in picks])
+
         scored: list[dict] = []
-        for i in top_idx:
-            embedding_id, note_id, text, _blob = rows[i]
+        for embedding_id, note_id, i in picks:
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
             scored.append({
                 "embedding_id": embedding_id,
                 "note_id": note_id,
-                "text": text,
+                "text": texts.get(embedding_id, ""),
                 "score": float(scores[i]),
             })
         return scored[:limit]

@@ -154,6 +154,11 @@ class CognitionConfig:
     # batches cut round-trips on a batching server (vLLM) but raise the cost of
     # a single failed sub-batch, which falls back to serial embedding.
     embed_batch_size: int = 32
+    # Persist the dense scoring matrix as a .npy beside the database so a
+    # one-shot `grimore ask` reloads it (memory-mapped) instead of rebuilding
+    # it from the whole embeddings table. Set false to restore the previous
+    # always-rebuild behaviour.
+    vec_matrix_cache: bool = True
     # Circuit breaker around the LLM backend: after this many back-to-back
     # failures, calls short-circuit for the cooldown instead of hammering a
     # backend that is down. Lower the threshold to fail faster on flaky

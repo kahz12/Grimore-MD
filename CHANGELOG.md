@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `grimore.toml.example` — a documented template replacing the tracked
   `grimore.toml`, which carried one machine's vault path, model names and
   timeouts. Copy it and edit your copy; the real file is now gitignored.
+- `[cognition].vec_matrix_cache` (default on) — the dense scoring matrix is
+  stored as a `.npy` beside the database and reloaded memory-mapped, so a
+  one-shot `grimore ask` no longer rebuilds it from the whole embeddings table.
+  Costs 4 bytes per dimension per chunk on disk (~53 MB for 17,500 chunks at
+  768 dims). Setting it false restores the previous behaviour and deletes any
+  existing file.
 - `bench/` — a benchmark harness for the persistence and retrieval paths:
   a seeded deterministic vault generator, an Ollama-shaped LLM stub, and a
   measurement script that counts SQLite connections and statements as well as
@@ -40,11 +46,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in **two queries instead of two per retrieved chunk** (`get_note_titles`,
   `get_chunk_anchors_bulk`): 10 metadata queries per warm `ask` become 2.
   Retrieval itself is untouched, so answers and citations are byte-identical.
+- The dense scoring matrix is built from a vector-only load instead of one
+  that also fetched every chunk's stored text and kept it cached. Peak memory
+  for that load drops 53.6% (121.2 MB to 56.3 MB on a 2000-note vault), leaving
+  2.6 MB of overhead above the matrix itself where there used to be 67.6 MB.
+  Chunk text is now fetched for the handful of results that need it, and
+  `find_similar_notes(with_text=False)` skips even that for the callers that
+  only read note ids and scores.
+- `connect` scores every note against every chunk in one blocked matrix
+  multiply rather than calling the single-query path once per note: 20.5 s down
+  to 3.1 s on 2000 notes, with 2000 fewer queries. Suggested links are
+  unchanged. Scores can differ in the last bits, since a matrix-by-matrix
+  product accumulates in a different order than matrix-by-vector; measured at
+  4.8e-07 worst case, with no observed change of ranking.
 - HTTP read timeouts are no longer retried on inference calls. A read timeout
   on `/api/generate` means the model is still working, so retrying discarded
   work in progress and turned one over-budget call into three, reporting the
   failure 3x later than the configured timeout. Connection retries are kept —
   those are what let the daemon start before Ollama is up.
+- `migrate-embeddings` now drops the matrix cache on its final swap. The swap
+  re-inserts every row under its original id, so the row count and max id come
+  out identical even though every vector changed — nothing the cache seals on
+  can detect that.
 - EN/ES user guides document the new config keys, and explain how to **size**
   `request_timeout_s` / `stream_timeout_s` from a measurement rather than by
   guessing. `stream_timeout_s` in particular has to cover the entire prompt

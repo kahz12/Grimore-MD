@@ -67,6 +67,8 @@ class Oracle:
             rerank_model=getattr(
                 config.cognition, "rerank_model", "BAAI/bge-reranker-base"
             ),
+            matrix_cache_enabled=bool(getattr(
+                config.cognition, "vec_matrix_cache", True)),
         )
         # Snapshot the context cap once. Read via getattr so a partially
         # populated config (the SimpleNamespace stand-ins used in tests, or a

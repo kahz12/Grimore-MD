@@ -91,14 +91,14 @@ Generated vault: 2000 notes · 17,465 chunks · ~9.4 KB per note.
 
 | Metric | Mean | Min | Max | Spread | ±5% | Bottleneck / opt. |
 |---|---:|---:|---:|---:|:---:|---|
-| `scan_s` | **476.09 s** | 474.94 | 477.25 | 0.48% | ✅ | B1 · opt. 1, 3 |
-| `scan_db_opens` | **66,396** | 66,396 | 66,396 | 0.00% | ✅ | **B1 · opt. 1** |
-| `connect_s` | **26.46 s** | 26.37 | 26.54 | 0.63% | ✅ | B4 · opt. 5 |
-| `connect_db_opens` | **12,003** | 12,003 | 12,003 | 0.00% | ✅ | B4 · opt. 5 |
-| `load_dense_s` | **0.1122 s** | 0.1103 | 0.1141 | 3.39% | ✅ | B3 · opt. 4 |
-| `load_dense_peak_mb` | **121.22 MB** | 121.22 | 121.22 | 0.00% | ✅ | **B3 · opt. 4** |
-| `load_dense_rows` | 17,465 | — | — | 0.00% | ✅ | context |
-| `load_dense_matrix_mb` | 53.65 MB | — | — | 0.00% | ✅ | context |
+| `scan_s` | **476.09 s** | 474.94 | 477.25 | 0.48% | yes | B1 · opt. 1, 3 |
+| `scan_db_opens` | **66,396** | 66,396 | 66,396 | 0.00% | yes | **B1 · opt. 1** |
+| `connect_s` | **26.46 s** | 26.37 | 26.54 | 0.63% | yes | B4 · opt. 5 |
+| `connect_db_opens` | **12,003** | 12,003 | 12,003 | 0.00% | yes | B4 · opt. 5 |
+| `load_dense_s` | **0.1122 s** | 0.1103 | 0.1141 | 3.39% | yes | B3 · opt. 4 |
+| `load_dense_peak_mb` | **121.22 MB** | 121.22 | 121.22 | 0.00% | yes | **B3 · opt. 4** |
+| `load_dense_rows` | 17,465 | — | — | 0.00% | yes | context |
+| `load_dense_matrix_mb` | 53.65 MB | — | — | 0.00% | yes | context |
 
 ### 4.2 `ask` with `top_k=5` — warm and cold
 
@@ -110,14 +110,14 @@ them together measured neither.
 
 | Metric | Mean | Spread | ±5% | Note |
 |---|---:|---:|:---:|---|
-| `warm.total_s` | **0.1010 s** | 0.68% | ✅ | shell / live `Session` |
-| `warm.retrieve_s` | **0.0894 s** | 0.35% | ✅ | **opt. 2 gate** |
-| `warm.embed_s` | 0.0009 s | 1.03% | ✅ | embedding cache |
-| `warm.db_opens` | **13.0** | 0.00% | ✅ | **opt. 2 gate** (target: ≤2) |
-| `warm.generate_s` | 0.0026 s | 12.81% | ❌ | 2.6 ms of stub; no opt. touches it |
-| `cold.total_s` | 0.2289 s | 16.59% | ❌ | one-shot CLI |
-| `cold.retrieve_s` | 0.2057 s | 18.06% | ❌ | dominated by matrix build |
-| `cold.db_opens` | **15.0** | 0.00% | ✅ | +2 over warm: matrix load |
+| `warm.total_s` | **0.1010 s** | 0.68% | yes | shell / live `Session` |
+| `warm.retrieve_s` | **0.0894 s** | 0.35% | yes | **opt. 2 gate** |
+| `warm.embed_s` | 0.0009 s | 1.03% | yes | embedding cache |
+| `warm.db_opens` | **13.0** | 0.00% | yes | **opt. 2 gate** (target: ≤2) |
+| `warm.generate_s` | 0.0026 s | 12.81% | no | 2.6 ms of stub; no opt. touches it |
+| `cold.total_s` | 0.2289 s | 16.59% | no | one-shot CLI |
+| `cold.retrieve_s` | 0.2057 s | 18.06% | no | dominated by matrix build |
+| `cold.db_opens` | **15.0** | 0.00% | yes | +2 over warm: matrix load |
 
 **About the four metrics that miss ±5%**: none is a gate. `warm.generate_s` and `cold.rewrite_s`
 are millisecond or zero-cost stages (with no history, `_rewrite_query` returns immediately) that no
@@ -207,7 +207,7 @@ and 1 `reranker` (no sentence-transformers).
 
 ## 8. Optimisation log
 
-### opt. 8 — Magic constants → configuration ✅
+### opt. 8 — Magic constants → configuration
 
 Six constants promoted to `grimore.toml` keys, all read with `getattr(..., default)` following the
 existing house pattern:
@@ -251,7 +251,7 @@ Suite after the change: **925 passed, 11 skipped, 0 failed** · `ruff` clean.
 
 ---
 
-### opt. 1 — Reusable per-thread SQLite connection ✅
+### opt. 1 — Reusable per-thread SQLite connection
 
 One connection per thread, alive for the lifetime of the `Database`, with the PRAGMAs and the
 sqlite-vec load applied **once** instead of on each of the 73 data-access paths. Adds
@@ -261,10 +261,10 @@ microseconds later never hits). Explicit teardown via `Database.close()`, called
 
 | Metric | pre-opt.1 | opt.1 | Change | Criterion |
 |---|---:|---:|---:|---|
-| `scan_db_opens` | 66,396 | **1** | −100% | O(1) per thread ✅ |
-| `connect_db_opens` | 12,003 | **1** | −100% | ✅ |
-| `scan_s` | 529.75 s | **65.14 s** | **−87.7%** | −30% or more ✅ |
-| `connect_s` | 50.89 s | **31.72 s** | **−37.7%** | (not required) ✅ |
+| `scan_db_opens` | 66,396 | **1** | −100% | O(1) per thread, met |
+| `connect_db_opens` | 12,003 | **1** | −100% | met |
+| `scan_s` | 529.75 s | **65.14 s** | **−87.7%** | −30% or more, met |
+| `connect_s` | 50.89 s | **31.72 s** | **−37.7%** | (not required) |
 
 Measured A/B in one session, 2000 notes, 2 runs per variant. See §9 for why timings are measured
 this way and not against the §4 table.
@@ -327,7 +327,7 @@ Suite after the change: **941 passed, 11 skipped, 0 failed** · `ruff` clean · 
 
 ---
 
-### opt. 3 — Batched embedding inserts ✅
+### opt. 3 — Batched embedding inserts
 
 `store_embeddings_bulk` with `executemany` and **one transaction per note** instead of one per
 chunk. `reembed_note` accumulates the rows and calls once; the singular `store_embedding` is kept
@@ -384,7 +384,7 @@ Without sqlite-vec installed (CI's default configuration): 949 passed, 20 skippe
 
 ---
 
-### opt. 2 — Killing the Oracle's N+1 ✅
+### opt. 2 — Killing the Oracle's N+1
 
 The minimal proposal, extended to the anchors as well: `get_note_titles(ids)` and
 `get_chunk_anchors_bulk(pairs)`. Retrieval is untouched — no `JOIN`, no change to the match
@@ -453,6 +453,147 @@ Suite after the change: **981 passed, 6 skipped, 0 failed** · `ruff` clean · `
 73 files. `tests/test_batch_metadata.py` adds 13 cases, with the three key mutations (`ORDER BY id`
 reversed, pair filter removed, dedup removed) verified red→green.
 
+### opt. 4 — Lighter `_load_dense` + on-disk matrix cache
+
+Two halves. **A**: build the matrix from a vector-only load instead of one that
+also drags `text_content`. **B**: persist the built matrix as a `.npy` beside the database and
+reload it memory-mapped.
+
+#### A — dropping `text_content` from the scoring pass
+
+| Metric | before | opt. 4A | Change |
+|---|---:|---:|---:|
+| `load_dense_peak_mb` | 121.2 MB | **56.29 MB** | **−53.6%** |
+| `load_dense_resident_mb` | 119.7 MB | **56.28 MB** | **−53.0%** |
+| overhead above the matrix itself | 67.57 MB | **2.63 MB** | **−96%** |
+| `ask_cold.retrieve_s` | 183.96 ms | 141.50 ms | −23.1% |
+| `load_dense_s` | 91.5 ms | 76.2 ms | −16.7% |
+
+**The first attempt only bought −6.9%.** `tracemalloc` reports the transient high-water mark, and
+the naive version still held two full copies of the vector data at once: the row list from
+`fetchall`, then the joined buffer. Streaming the rows into one growing `bytearray` — so each row's
+bytes are released as they are appended — is what took the peak from 113 MB to 56 MB. The metric
+`load_dense_resident_mb` was added at the same time: the peak is what a one-shot CLI pays, but the
+resident figure is what a shell `Session` or the daemon holds for its whole life, and only the
+second was actually improved by removing the text.
+
+**Ragged vectors need an explicit check, not an inferred one.** With the vectors concatenated into
+one buffer, a mixed-width table has no recoverable row boundaries, so it must be refused rather
+than reshaped. Inferring raggedness from the buffer length is not sound: widths `[8, 4, 12]` sum to
+exactly `3 × 8`, so a length-only test accepts data it has to reject. The uniformity test runs per
+row, and the fallback fetches the per-row vectors separately, so the common path never pays for
+that list.
+
+**A regression found and fixed during the change.** With text no longer riding along,
+`find_similar_notes` fetches it per call — and `connect` calls it once per note, which showed up as
+`connect_s` **+15.5%**. Neither `connect` nor the graph's suggested edges read `hit["text"]`; they
+use `note_id` and `score`. With `with_text=False` on those two paths, `connect_db_queries` is
+**1233 → 1233, delta 0**. The +4.8% still visible on the clock afterwards was session drift, which
+the counter settles.
+
+The accepted cost is `ask.db_queries` **5 → 6**: one lookup per ask in exchange for not carrying
+500 chars per chunk through the scoring pass.
+
+#### B — the `.npy` cache
+
+Fresh processes (what a one-shot CLI actually does), 2000 notes, median of 5:
+
+| Scenario | Load | vs no cache |
+|---|---:|---:|
+| No cache (rebuild every time) | 72.00 ms | — |
+| First run with cache (build + write 53 MB) | 102.00 ms | +42% |
+| Cache hit (`mmap`) | **33.00 ms** | **−54%** |
+
+Break-even is the second invocation: the first pays 30 ms extra, each one after saves 39 ms.
+
+**The seal the design called for is unsafe, and this is demonstrable.**
+`swap_embedding_migration` installs the re-embedded table with
+`INSERT INTO embeddings (id, ...) SELECT id, ... FROM embeddings_migration`, preserving every id.
+After switching embedding model the count and the max id are **identical** while every vector has
+changed. For the Connector's in-process cache that is a one-process hazard; for a cache that
+survives restarts it would serve the previous model's vectors indefinitely. Three layers instead:
+
+1. The seal carries `(count, max_id, total_vector_bytes)` — no change of dimension survives it.
+2. The migration swap calls `matrix_cache.clear()` — covers a same-dimension model swap, which no
+   seal can see.
+3. `load()` re-checks the matrix shape — covers a truncated `.npy` under a still-valid seal, which
+   a crash between the two writes can leave behind.
+
+**A correction to the design's memory claim.** It states that with `mmap_mode="r"` RSS stops
+scaling with vault size. Measured, that does not hold for this access pattern: `matrix @ q` touches
+every row, so the mapping is paged in fully and RSS is identical (+56.3 MB) with and without the
+cache. What the mapping does buy is that those 51.2 MB are **file-backed** (confirmed in
+`/proc/self/smaps`) rather than anonymous heap, so the kernel can drop and re-read them under
+pressure instead of having to swap. A real benefit, but a different one, and invisible to RSS.
+
+**Also corrected: a comment of mine that overclaimed.** The optimistic seal re-check before writing
+the cache was documented as preventing a stale hit. It does not — in that scenario the signature is
+identical and it is the shape check that saves you. All it actually avoids is writing a file that is
+guaranteed to miss. The mutation run is what exposed this: removing the check failed no test, which
+was the signal that the comment described something untested and untrue.
+
+Not hooked into `maintenance run`, deliberately. `id` is an `INTEGER PRIMARY KEY`, so VACUUM
+preserves it and the seal still matches afterwards; clearing there would force a needless rebuild.
+Verified empirically rather than assumed.
+
+Suite after the change: **1027 passed, 6 skipped, 0 failed** · `ruff` clean · `mypy` no issues
+across 74 files. `tests/test_dense_loading.py` (22 cases) and `tests/test_matrix_cache.py`
+(24 cases), with seven mutations verified red→green.
+
+### opt. 5 — Vectorised `connect`
+
+`connect` called `find_similar_notes` once per note, and each of those multiplied the query against
+every chunk in the vault: O(notes × chunks) products issued one at a time. The sweep is now one
+blocked `Q @ C.T`.
+
+| Metric | per-note loop | blocked sweep | Change |
+|---|---:|---:|---:|
+| `connect_s` | 20.47 s | **3.116 s** | **−84.8%** |
+| `connect_db_queries` | 6,040 | **4,041** | **−1,999** |
+| `scan_s` (control) | 46.42 s | 46.84 s | +0.9% |
+
+A/B alternated within one session, 2000 notes. The A/B isolates the driver: the batch method and
+the first-chunk query are present in both arms, and only the loop in `cli.py` differs, so nothing
+else can account for the delta. The query saving is one per note — `find_similar_notes` reads the
+embeddings signature on every call, which the sweep does once.
+
+**The design's note-level mean would have changed the results.** It proposes a matrix of per-note
+vectors, "the mean of its chunks, or the first chunk". Those are not interchangeable here: the old
+loop walked the chunk table and kept the first row it met for each note, so the query vector was
+always the first chunk. `get_first_chunk_vectors` selects exactly that, now explicitly rather than
+by luck of SQLite's scan order.
+
+**Bit-exact parity is not achievable, and asserting it was wrong.** The per-query path is a
+matrix-by-vector product (gemv); the batch is matrix-by-matrix (gemm). BLAS accumulates them in a
+different order, so the scores differ in the last bits. Measured over 200 queries against 1000
+chunks at 768 dims: largest disagreement **4.8e-07** (four float32 eps), median 7.5e-09, and
+**0 of 200 queries had a different top-20**. Block size perturbs them too, so `block_rows` is not a
+pure performance knob. The gate is therefore the ranking — same notes, same order — with scores
+compared at a tolerance 20× the measured worst case.
+
+**Blocked from the start, as required** — but the first version's blocking did nothing, and only a
+review caught it. Iterating a numpy block yields row *views* whose base is the whole block, so
+keeping one row per query to read its scores later pinned every block until the sweep ended.
+Measured on 400 notes × 2000 chunks: `block_rows=16` peaked at 5.04 MB and `block_rows=400` at
+4.98 MB — identical, when the per-block cost should have been 0.13 MB. Picks now carry their score
+as a float instead of an index into the row, so nothing holds the array: the same measurement gives
+1.83 MB blocked versus 4.84 MB unblocked. Block height is derived from a 64 MB target, so it adapts
+instead of being a constant that is wrong at one end of the range.
+
+The lesson generalises: a memory optimisation whose test suite only checks *results* will pass
+happily while doing none of the thing it claims. The parity tests were green throughout.
+
+**Two mutations initially survived, and both exposed real gaps in the tests.** Hoisting the
+oversample window out of the per-query loop changed nothing, because the fixture was small enough
+that the window covered the whole table — a purpose-built crowded vault now makes the width
+observable, with a guard test asserting the fixture still distinguishes the two widths. Removing the
+self-note filter changed nothing either, because the parity tests compare two paths that *share* the
+assembly helper: a bug in that shared code passes both sides. Absolute-behaviour tests (a note never
+suggests itself, dedupe returns each note once, scores descend) now cover what parity cannot.
+
+Suite after the change: **1056 passed, 6 skipped, 0 failed** · `ruff` clean · `mypy` no issues.
+`tests/test_connect_sweep.py` adds 29 cases; five mutations verified red→green.
+
 ---
 
 ## 9. Harness limitation: timings are not comparable across sessions
@@ -493,15 +634,13 @@ spend 476 s waiting on `fsync` with a cool CPU, and now does the same work in 65
 
 ## 10. Next step
 
-With opt. 8 → 1 → 3 → 2 closed, the next block is an independent chain:
+With opt. 8 → 1 → 3 → 2 → 4 → 5 closed, what remains:
 
-1. **opt. 4** — `_load_dense` without `text_content` + an `.npy` cache with `mmap` (2 d, low risk).
-   Gate: `load_dense_peak_mb` drops, and the cache invalidates when the vault changes.
-2. **opt. 5** — vectorised `connect`, blocked `M @ M.T` (1.5 d, low risk). Depends on opt. 4 and
-   reuses the `get_note_titles(ids)` opt. 2 just introduced. Gate: suggested links above the
-   threshold are **the same**.
+1. **opt. 6** — conditional query rewrite. Gate: `eval --history` with no recall regression.
+2. **opt. 9** — retrieval filters (CLI + API).
+3. **opt. 7** — concurrent tagging. Gate: per-backend bench.
 
-The baseline for both is already taken: `load_dense_peak_mb` and `connect_s` in §4.1.
+The `connect_s` baseline is in §4.1.
 
 A reminder when measuring: the synthetic vault has a 50-word vocabulary, so most of an `ask`'s
 statements are FTS5-internal, not Grimore's. The counter already separates them (`db_queries` vs

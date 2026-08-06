@@ -447,6 +447,158 @@ class ChunksMixin(DbBase):
             )
             return cursor.fetchall()
 
+    def get_embedding_matrix_parts(self) -> tuple[list[tuple[int, int]], "bytes | bytearray", int]:
+        """Everything the dense scoring matrix needs, and nothing else.
+
+        Returns ``(keys, blob, dim)``: the ``(embedding_id, note_id)`` pairs in
+        row order, the vectors concatenated into one buffer, and the vector
+        dimension (0 when the table is empty).
+
+        This exists because :py:meth:`get_all_embeddings_with_id` also selects
+        ``text_content``, which the matrix does not use. On a vault with 100k
+        chunks that is ~50 MB of text moved into Python on every cold load, to
+        be thrown away immediately -- the text is only ever needed for the
+        handful of rows that win the ranking, which
+        :py:meth:`get_chunk_texts` fetches afterwards.
+
+        ``ORDER BY id`` is load-bearing: the caller aligns ``keys`` positionally
+        with the matrix rows, and the disk cache is only valid if the order is
+        reproducible across processes.
+
+        Ragged vectors -- an embedding model swapped without a re-scan, or a
+        truncated blob -- return ``(keys, b"", 0)``. Concatenating those would
+        destroy the row boundaries, and inferring raggedness from the buffer
+        length is not sound: lengths ``[8, 4, 12]`` sum to exactly
+        ``3 * 8``, so the check would pass on data it must reject. The
+        uniformity test is therefore explicit, and the caller falls back to
+        :py:meth:`get_embedding_vectors` for the per-row path.
+        """
+        keys: list[tuple[int, int]] = []
+        buf = bytearray()
+        width = -1
+        ragged = False
+        with self._get_connection() as conn:
+            # Streamed, not fetchall: appending each vector to one growing
+            # buffer means the per-row bytes are released as we go. Holding the
+            # row list and then joining it costs two full copies of the vector
+            # data at once, which on a large vault is the peak that matters.
+            cursor = conn.execute(
+                "SELECT id, note_id, vector FROM embeddings ORDER BY id"
+            )
+            for row in cursor:
+                keys.append((int(row[0]), int(row[1])))
+                vector = row[2]
+                if width < 0:
+                    width = len(vector)
+                    if width == 0 or width % 4 != 0:
+                        ragged = True
+                elif len(vector) != width:
+                    ragged = True
+                if not ragged:
+                    buf += vector
+        if not keys:
+            return [], b"", 0
+        if ragged:
+            # Keep collecting keys so the caller still knows the row count,
+            # but drop the partial buffer -- it is meaningless.
+            return keys, b"", 0
+        return keys, buf, width // 4
+
+    def get_first_chunk_vectors(self) -> list[tuple[int, bytes]]:
+        """``(note_id, vector)`` for the lowest-id chunk of every note.
+
+        This is the query vector ``connect`` uses per note. It looks like an
+        arbitrary choice, and historically it was: the old loop walked every
+        chunk row and kept the first one it happened to meet for each note,
+        which under a full table scan is the lowest id. Selecting it
+        explicitly makes deterministic what used to depend on SQLite's scan
+        order, and lets the sweep skip loading the other chunks (and all their
+        text) just to throw them away.
+
+        ``ORDER BY id`` keeps notes in the same sequence the old loop produced,
+        so the console output and the order links are injected are unchanged.
+        """
+        with self._get_connection() as conn:
+            return [
+                (int(r[0]), r[1]) for r in conn.execute(
+                    "SELECT note_id, vector FROM embeddings "
+                    "WHERE id IN (SELECT MIN(id) FROM embeddings GROUP BY note_id) "
+                    "ORDER BY id"
+                )
+            ]
+
+    def get_embedding_keys(self) -> list[tuple[int, int]]:
+        """``(embedding_id, note_id)`` in matrix order, without the vectors.
+
+        What a disk-cache hit still needs: the matrix comes back from the
+        ``.npy``, but the keys that align it to notes do not live there.
+        Reading two integer columns is a fraction of the cost of the vectors
+        the cache just saved.
+        """
+        with self._get_connection() as conn:
+            return [
+                (int(r[0]), int(r[1])) for r in conn.execute(
+                    "SELECT id, note_id FROM embeddings ORDER BY id"
+                )
+            ]
+
+    def matrix_cache_signature(self) -> tuple[int, int, int]:
+        """Seal for the on-disk matrix cache: ``(count, max_id, total_bytes)``.
+
+        Stronger than :py:meth:`embeddings_signature`, and deliberately so.
+        That one is checked on every query, so it stays at two cheap
+        aggregates; a process-scoped cache can afford the residual risk. This
+        one guards a cache that survives restarts, where being wrong means
+        ranking against a previous model's vectors indefinitely -- so it adds
+        the summed vector length, which no change of dimension can survive.
+
+        Even this cannot see a same-dimension model swap, because
+        ``swap_embedding_migration`` re-inserts with the original ids. That
+        path calls :func:`grimore.utils.matrix_cache.clear` explicitly.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*), COALESCE(MAX(id), 0), "
+                "COALESCE(SUM(LENGTH(vector)), 0) FROM embeddings"
+            ).fetchone()
+        return (int(row[0]), int(row[1]), int(row[2]))
+
+    def get_embedding_vectors(self) -> list[bytes]:
+        """Per-row vectors in the same ``ORDER BY id`` as the matrix parts.
+
+        The fallback for when no matrix could be built (numpy missing, or the
+        vectors are ragged). Kept separate so the common path never pays for
+        the per-row list.
+        """
+        with self._get_connection() as conn:
+            return [
+                r[0] for r in conn.execute(
+                    "SELECT vector FROM embeddings ORDER BY id"
+                ).fetchall()
+            ]
+
+    def get_chunk_texts(self, embedding_ids: Iterable[int]) -> dict[int, str]:
+        """``{embedding_id: text_content}`` for the given rows.
+
+        The other half of the split above: retrieval scores every chunk but
+        only ever shows the top handful, so the text comes back for those in
+        one ``IN (...)`` instead of riding along with the whole table.
+        """
+        unique = {int(i) for i in embedding_ids}
+        if not unique:
+            return {}
+        ids = list(unique)
+        texts: dict[int, str] = {}
+        with self._get_connection() as conn:
+            for batch in _batched(ids, _MAX_SQL_VARS):
+                rows = conn.execute(
+                    "SELECT id, text_content FROM embeddings "
+                    f"WHERE id IN ({','.join('?' * len(batch))})",
+                    tuple(batch),
+                ).fetchall()
+                texts.update({int(i): t for i, t in rows})
+        return texts
+
     def embeddings_signature(self) -> tuple[int, int]:
         """Cheap change-detection key for the embeddings table.
 

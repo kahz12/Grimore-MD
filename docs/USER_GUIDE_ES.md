@@ -242,6 +242,14 @@ embed_batch_size  = 32       # textos por petición a /api/embed. Lotes mayores
                              # ahorran round-trips en servidores con batching.
 circuit_failure_threshold = 5    # fallos seguidos antes de abrir el circuito
 circuit_cooldown_s        = 120  # segundos de corte antes de reintentar
+vec_matrix_cache  = true     # guarda la matriz de puntuación densa como .npy
+                             # junto a la base de datos y la recarga mapeada en
+                             # memoria. Sin ella, cada `grimore ask` de un solo
+                             # uso la reconstruye leyendo todos los vectores.
+                             # Ocupa 4 bytes por dimensión y chunk (~53 MB para
+                             # 17.500 chunks de 768 dimensiones). Ponla en false
+                             # para volver al comportamiento anterior; al
+                             # hacerlo se borra el fichero existente.
 
 [ingest]
 # Motor de PDF. "pypdf" es el predeterminado siempre disponible;
@@ -698,6 +706,20 @@ Reanudable: re-ejecutar el comando con el mismo destino retoma desde
 la fila en la que el worker quedó. Un preflight rechaza arrancar si
 el espacio libre en disco es menor que 2 × el tamaño actual de los
 embeddings.
+
+Reinicia cualquier daemon o shell que estuviera corriendo. El
+intercambio reescribe `model_embeddings_local`, que un proceso vivo no
+vuelve a leer, y su matriz de puntuación en memoria se indexa por una
+firma que el intercambio deja deliberadamente igual.
+
+El intercambio final reinserta cada fila con su `id` original, de modo
+que el número de filas y el `id` máximo quedan idénticos aunque todos
+los vectores hayan cambiado. La caché de matriz en disco
+(`vec_matrix_cache`) no puede detectar eso por su sello, así que el
+propio intercambio la borra. Si alguna vez reescribes vectores por
+fuera de este comando —editando la base de datos a mano—, borra tú los
+ficheros `*.vecmat.npy` y `*.vecmat.sig` que hay junto a la base de
+datos, o las búsquedas seguirán puntuando contra los vectores viejos.
 
 ### `category`
 

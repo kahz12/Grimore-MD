@@ -61,6 +61,12 @@ class Database(
         self._connections: dict[int, tuple[threading.Thread, sqlite3.Connection]] = {}
         self._conn_lock = threading.Lock()
         self._generation: int = 0
+        # Bumped when the embeddings change in a way the cheap signature
+        # cannot see -- currently only the embedding-model swap, which
+        # re-inserts every row under its original id. Connectors fold this
+        # into their cache key, so a stale matrix cannot outlive the swap
+        # within this process.
+        self.data_generation: int = 0
         # sqlite-vec capability is probed once at startup. ``_vec_available``
         # gates every other vec-aware code path so a missing extension
         # degrades silently to the numpy fast path.

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _connections: dict[int, tuple[threading.Thread, sqlite3.Connection]]
         _conn_lock: threading.Lock
         _generation: int
+        data_generation: int
 
         # Provided by SchemaMixin. Context manager: commit on success,
         # rollback on exception. Yields the calling thread's long-lived
@@ -52,6 +53,23 @@ if TYPE_CHECKING:
         def get_chunk_anchors_bulk(
             self, pairs: "Iterable[tuple[int, str]]",
         ) -> dict[tuple[int, str], tuple[Optional[int], Optional[str]]]:
+            raise NotImplementedError
+
+        def get_embedding_matrix_parts(
+            self,
+        ) -> tuple[list[tuple[int, int]], "bytes | bytearray", int]:
+            raise NotImplementedError
+
+        def get_embedding_vectors(self) -> list[bytes]:
+            raise NotImplementedError
+
+        def get_embedding_keys(self) -> list[tuple[int, int]]:
+            raise NotImplementedError
+
+        def matrix_cache_signature(self) -> tuple[int, int, int]:
+            raise NotImplementedError
+
+        def get_chunk_texts(self, embedding_ids: "Iterable[int]") -> dict[int, str]:
             raise NotImplementedError
 
         def _vec_write(self, conn, sql: str, payload: list, dim: int,

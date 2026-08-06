@@ -236,6 +236,13 @@ embed_batch_size  = 32       # texts per /api/embed request. Larger batches cut
                              # round-trips on a batching server.
 circuit_failure_threshold = 5    # back-to-back failures before the breaker opens
 circuit_cooldown_s        = 120  # seconds to short-circuit before retrying
+vec_matrix_cache  = true     # store the dense scoring matrix as a .npy beside
+                             # the database and reload it memory-mapped.
+                             # Without it every one-shot `grimore ask` rebuilds
+                             # it by reading every vector. Costs 4 bytes per
+                             # dimension per chunk (~53 MB for 17,500 chunks at
+                             # 768 dims). Set false for the previous behaviour;
+                             # doing so deletes any existing file.
 
 [ingest]
 # PDF engine. "pypdf" is the always-available default; "pdfplumber" and
@@ -661,6 +668,19 @@ serving from the old vectors.
 Resumable: re-running the command with the same target picks up at
 the row the worker last finished. A preflight refuses to start if
 disk free space is less than 2 × current embeddings size.
+
+Restart any running daemon or shell afterwards. The swap rewrites
+`model_embeddings_local`, which a live process does not re-read, and its
+in-memory scoring matrix is keyed on a signature the swap deliberately
+leaves unchanged.
+
+The final swap re-inserts every row under its original `id`, so the row
+count and the max id come out identical even though every vector
+changed. The on-disk matrix cache (`vec_matrix_cache`) cannot see that
+through its seal, so the swap deletes it outright. If you ever rewrite
+vectors outside this command — editing the database by hand — delete the
+`*.vecmat.npy` and `*.vecmat.sig` files next to the database yourself, or
+searches will keep scoring against the old vectors.
 
 ### `category`
 

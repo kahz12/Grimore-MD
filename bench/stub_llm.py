@@ -2,7 +2,7 @@
 
 Why the benchmark must not talk to a real Ollama
 ------------------------------------------------
-The Hito 0 definition of done demands a baseline reproducible to within +-5%
+The baseline has to be reproducible to within +-5%
 between runs. Live LLM generation cannot meet that: token throughput drifts
 with model residency, thermal state and whatever else shares the GPU. Worse,
 `scan` calls `tagger.tag_note()` once per changed note (cli.py:279, before the
@@ -13,8 +13,7 @@ improvement in the SQLite layer is invisible when SQLite is 5% of the total.
 So the stub answers instantly and deterministically, and the harness measures
 the layer under optimisation: parsing, chunking, SQL and numpy. What this
 deliberately does NOT measure is answer quality or real end-to-end latency;
-those belong to `grimore eval` against real models, which is the separate gate
-the plan already assigns to opt.6.
+those belong to `grimore eval` against real models, which is a separate gate.
 
 Embedding fidelity
 ------------------

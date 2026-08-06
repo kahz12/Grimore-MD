@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from grimore.memory._base import DbBase
+from grimore.utils import matrix_cache
 
 
 class EmbeddingMigrationMixin(DbBase):
@@ -190,6 +191,16 @@ class EmbeddingMigrationMixin(DbBase):
             except Exception:
                 conn.execute("ROLLBACK")
                 raise
+
+        # The swap re-inserts with the original ids, so (count, max_id) is
+        # unchanged even though every vector is new. Nothing the disk cache
+        # seals on can detect that, so drop it outright.
+        matrix_cache.clear(self.db_path)
+        # And the in-process copy, which keys on the cheap signature the swap
+        # leaves unchanged. Only reaches Connectors sharing this Database
+        # instance; a daemon in another process holds the previous model's
+        # config too, so it has to be restarted either way.
+        self.data_generation += 1
 
         # Rebuild the FTS index and (if available) the vec table from the
         # newly-installed embeddings rows.

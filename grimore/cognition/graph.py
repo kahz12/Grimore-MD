@@ -226,8 +226,10 @@ def _suggested_edges(
         avg = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
         normed = Embedder.normalize(avg)
 
+        # Only note_id and score are used, so skip the per-note text lookup.
         hits = connector.find_similar_notes(
             normed, top_k=top, exclude_note_id=node.id, dedupe_by_note=True,
+            with_text=False,
         )
         for hit in hits:
             score = float(hit.get("score") or 0.0)

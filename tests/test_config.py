@@ -185,8 +185,10 @@ class TestDeepMerge:
         assert merged == {"vault": {"path": "/over", "ignored_dirs": [".git"]}}
 
     def test_lists_are_replaced_not_concatenated(self):
-        # Profile setting formats = ["md"] means "only Markdown", not
-        # "Markdown also" — explicit choice in the plan.
+        # A profile setting formats = ["md"] means "only Markdown", not
+        # "Markdown as well". Concatenating would make a list impossible to
+        # narrow from a profile — you could only ever widen it — so replacing
+        # wholesale is the only semantics that lets a profile restrict.
         merged = _deep_merge({"vault": {"formats": ["md", "pdf"]}},
                              {"vault": {"formats": ["md"]}})
         assert merged == {"vault": {"formats": ["md"]}}
@@ -288,7 +290,7 @@ class TestProfiles:
 
 
 class TestTunableDefaults:
-    """opt.8: magic constants promoted to config.
+    """Magic constants promoted to config keys.
 
     The contract is that a TOML written before these keys existed behaves
     exactly as it did, so every default is asserted against the literal value

@@ -304,6 +304,29 @@ class Embedder:
             return None
 
     @staticmethod
+    def buffer_to_matrix(blob: bytes, rows: int, dim: int):
+        """Reshape an already-concatenated vector buffer into ``(rows, dim)``.
+
+        The counterpart to :py:meth:`vectors_to_matrix` for callers that get
+        the vectors as one buffer instead of a list, which lets the bytes go
+        straight from SQLite into numpy without a per-row Python list in
+        between. ``np.frombuffer`` does not copy, so the returned matrix is a
+        view over ``blob`` and keeps it alive.
+
+        Returns ``None`` when numpy is missing, the buffer is empty, or its
+        length disagrees with ``rows * dim * 4`` -- the caller then scores
+        per-row.
+        """
+        if _np is None or not blob or rows <= 0 or dim <= 0:
+            return None
+        if len(blob) != rows * dim * 4:
+            return None
+        try:
+            return _np.frombuffer(blob, dtype=_np.float32).reshape(rows, dim)
+        except Exception:  # pragma: no cover - defensive
+            return None
+
+    @staticmethod
     def dot_product(v1: list[float], v2: list[float]) -> float:
         """Calculates dot product. Equivalent to cosine similarity for unit-normalized vectors."""
         # strict=False: ragged dims (model swapped without re-scan) must

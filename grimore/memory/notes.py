@@ -42,6 +42,38 @@ class NotesMixin(DbBase):
             ).fetchone()
         return row[0] if row else None
 
+    def get_note_targets(
+        self, note_ids: Iterable[int],
+    ) -> dict[int, tuple[str, str, str, Optional[str]]]:
+        """``{note_id: (path, title, format, sidecar_path)}`` in one query.
+
+        ``connect`` needs all four per note and used to take them from
+        :py:meth:`get_note_location` and
+        :py:meth:`get_note_writeback_target` -- two statements per note over
+        the whole vault, both keyed on the same id and both selecting ``path``.
+        The singular methods stay for the callers that want one note.
+
+        ``format`` is normalised to ``"md"`` when NULL, matching
+        :py:meth:`get_note_writeback_target`: rows predating the multiformat
+        migration have no format and were always Markdown.
+        """
+        unique = {int(n) for n in note_ids}
+        if not unique:
+            return {}
+        ids = list(unique)
+        out: dict[int, tuple[str, str, str, Optional[str]]] = {}
+        with self._get_connection() as conn:
+            for start in range(0, len(ids), _MAX_SQL_VARS):
+                batch = ids[start:start + _MAX_SQL_VARS]
+                rows = conn.execute(
+                    "SELECT id, path, title, format, sidecar_path FROM notes "
+                    f"WHERE id IN ({','.join('?' * len(batch))})",
+                    tuple(batch),
+                ).fetchall()
+                for note_id, path, title, fmt, sidecar in rows:
+                    out[int(note_id)] = (path, title, fmt or "md", sidecar)
+        return out
+
     def get_note_location(self, note_id: int) -> Optional[tuple[str, str]]:
         """Returns ``(path, title)`` for the given note_id, or None if absent."""
         with self._get_connection() as conn:

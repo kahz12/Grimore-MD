@@ -1,4 +1,4 @@
-"""Benchmark harness: captures the Hito 0 baseline metrics.
+"""Benchmark harness for the persistence and retrieval paths.
 
 Measures the four paths the persistence and retrieval optimisations touch --
 scan, ask, connect and dense-matrix load -- plus a direct count of SQLite
@@ -75,19 +75,19 @@ class ConnectionCounter:
     """Counts SQLite connections opened AND statements executed.
 
     Two distinct costs, and they stopped moving together once connection reuse
-    landed. Connections are what opt.1 removes; statements are what the N+1 in
-    opt.2 is measured in ("~11 metadata queries down to <=2"). Before opt.1 the
-    connection count doubled as a query proxy because there was one connection
-    per query; afterwards it reads ~1 for a whole scan and no longer
-    discriminates, so the statement count is the metric that survives.
+    landed. Connections are what per-thread reuse removes; statements are what
+    an N+1 shows up in. Before the reuse, the connection count doubled as a
+    query proxy because there was one connection per query; afterwards it reads
+    ~1 for a whole scan and no longer discriminates, so the statement count is
+    the metric that survives.
 
-    The plan proposes `strace -e trace=openat` for the connection half.
+    The obvious alternative is `strace -e trace=openat` for the connection half.
     Counting at the sqlite3 layer instead is portable (strace needs ptrace
     permission, and is absent on plenty of hosts) and strictly more precise: it
     counts the connections Grimore actually opens rather than every file-open
     the process makes against the db path, including the -wal and -shm
     sidecars. It also has no way to see statements on an already-open
-    connection, which is exactly the post-opt.1 case.
+    connection, which is exactly the reused-connection case.
     """
 
     # Statement tracing is opt-in because it is not free: the callback fires
@@ -103,7 +103,7 @@ class ConnectionCounter:
         self.queries = 0
         self.queries_internal = 0
         self._original = sqlite3.connect
-        # Connections already open when the context is entered. Since opt.1 a
+        # Connections already open when the context is entered: a live
         # Session holds one for its lifetime, so a counter that only hooked
         # newly-opened connections would report zero statements for a query
         # that in fact did plenty of work.
@@ -132,7 +132,7 @@ class ConnectionCounter:
         # SQLite prefixes the statements a virtual table issues on its own
         # behalf with "--". FTS5's bm25() reads a docsize row per matching
         # document, so those dwarf everything else and would drown out the
-        # application-level N+1 that opt.2 targets. Counted, but separately.
+        # application-level N+1 we care about. Counted, but separately.
         if sql.lstrip().startswith("--"):
             self.queries_internal += 1
         else:
@@ -245,8 +245,8 @@ def bench_ask(session, warm_samples: int = 5) -> dict:
         values = [r[key] for r in warm_runs if isinstance(r.get(key), (int, float))]
         if values:
             warm[key] = statistics.median(values)
-    # Per-query opens, not the total across samples: the figure the plan's
-    # "~11 queries down to <=2" acceptance criterion is stated in.
+    # Per-query opens, not the total across samples: the metadata-query
+    # budget is stated per ask, so the counter has to match that shape.
     warm["db_opens"] = warm_counter.count / warm_samples
     warm["db_queries"] = warm_counter.queries / warm_samples
     warm["db_queries_internal"] = warm_counter.queries_internal / warm_samples
@@ -297,26 +297,44 @@ def bench_load_dense(session, samples: int = 5) -> dict:
 
     The connector caches on the embeddings signature, so the cache is cleared
     before every sample -- otherwise all but the first would time a dict lookup.
+    Clearing that in-process key is not enough on its own: an earlier `ask` in
+    the same run will have written the on-disk matrix, and every sample would
+    then time a mmap hit rather than the build this function is named after. So
+    the disk cache is dropped too, and the connector is pinned to the build
+    path for the duration.
     """
+    from grimore.utils import matrix_cache
+
     connector = session.oracle.connector
+    was_enabled = connector.matrix_cache_enabled
+    connector.matrix_cache_enabled = False
+    matrix_cache.clear(session.db.db_path)
 
     durations = []
     for _ in range(samples):
         connector._cache_sig = None
         start = time.perf_counter()
-        rows, matrix = connector._load_dense()
+        keys, matrix, _blobs = connector._load_dense()
         durations.append(time.perf_counter() - start)
 
     connector._cache_sig = None
     tracemalloc.start()
     connector._load_dense()
-    peak = tracemalloc.get_traced_memory()[1] / 1e6
+    current, peak_bytes = tracemalloc.get_traced_memory()
+    peak = peak_bytes / 1e6
+    # What the load leaves behind, as opposed to the transient high-water mark.
+    # A one-shot CLI only cares about the peak; a shell Session or the daemon
+    # holds the resident figure for its whole lifetime, so both are recorded.
+    resident = current / 1e6
     tracemalloc.stop()
 
+    connector.matrix_cache_enabled = was_enabled
+    connector._cache_sig = None
     return {
         "load_dense_s": statistics.median(durations),
         "load_dense_peak_mb": peak,
-        "load_dense_rows": len(rows or []),
+        "load_dense_resident_mb": resident,
+        "load_dense_rows": len(keys or []),
         "load_dense_matrix_mb": (matrix.nbytes / 1e6) if matrix is not None else 0.0,
     }
 

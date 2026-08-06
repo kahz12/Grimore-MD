@@ -77,6 +77,8 @@ class GrimoreDaemon:
         self.connector = Connector(
             self.db, self.embedder,
             vector_backend=getattr(config.cognition, "vector_backend", "auto"),
+            matrix_cache_enabled=bool(getattr(
+                config.cognition, "vec_matrix_cache", True)),
         )
 
         self.vault_root = Path(config.vault.path).resolve()

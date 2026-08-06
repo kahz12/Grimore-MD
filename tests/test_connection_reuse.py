@@ -1,4 +1,4 @@
-"""opt.1 regression: the Database reuses one SQLite connection per thread.
+"""Regression: the Database reuses one SQLite connection per thread.
 
 Before this change every data-access method opened its own connection, ran
 PRAGMA journal_mode=WAL (which rewrites the DB header) and reloaded
@@ -12,7 +12,7 @@ here:
 * the connection is genuinely released on close() -- the inverse of the v3.2.0
   fix, which added the close() this optimisation removes from the hot path;
 * concurrent readers and a writer do not raise "database is locked", which is
-  what busy_timeout buys and is the plan's non-negotiable gate for opt.1.
+  what busy_timeout buys, and is the gate this change had to clear.
 """
 import os
 import sqlite3
@@ -141,7 +141,7 @@ class TestDeadThreadReaping:
     Thread-local storage dies with the thread, but the registry holds a strong
     reference, so the connection and its descriptor would survive until
     close(). Any pool that retires idle workers -- anyio's, which is what
-    Starlette runs sync handlers on, and the ThreadPoolExecutor opt.7 would
+    Starlette runs sync handlers on, and any future concurrent pass would
     introduce -- churns threads for the life of the process, so the leak is
     unbounded and ends in EMFILE.
     """
@@ -229,7 +229,7 @@ class TestDeadThreadReaping:
 
 
 class TestConcurrency:
-    """The plan's non-negotiable gate: daemon writing while the CLI reads."""
+    """The gate this change had to clear: daemon writing while the CLI reads."""
 
     def test_writer_and_readers_do_not_hit_database_is_locked(self, db):
         # Mirrors the real shape: the daemon indexes on the watchdog observer

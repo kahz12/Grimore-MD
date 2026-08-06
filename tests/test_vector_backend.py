@@ -85,9 +85,14 @@ class TestRouting:
 
         monkeypatch.setattr(vec_db, "vec_search", fake_vec_search)
         # Ensure the numpy path would explode if called — proves we routed away.
+        # Every loader the matmul path can reach has to be booby-trapped, not
+        # just one: trapping a method the connector no longer calls would make
+        # this assertion pass for the wrong reason.
         def _boom(*_a, **_kw):
             raise AssertionError("matmul path should not run when vec backend is on")
-        monkeypatch.setattr(vec_db, "get_all_embeddings_with_id", _boom)
+        for loader in ("get_embedding_matrix_parts", "get_embedding_vectors",
+                       "get_all_embeddings_with_id"):
+            monkeypatch.setattr(vec_db, loader, _boom)
 
         conn = Connector(vec_db, _StubEmbedder(), vector_backend="auto")
         out = conn.find_similar_notes([0.1, 0.2, 0.3], top_k=3)

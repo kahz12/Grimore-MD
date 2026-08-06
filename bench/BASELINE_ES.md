@@ -92,14 +92,14 @@ Vault generado: 2000 notas · 17.465 chunks · ~9,4 KB por nota.
 
 | Métrica | Media | Min | Max | Dispersión | ±5% | Cuello / opt. |
 |---|---:|---:|---:|---:|:---:|---|
-| `scan_s` | **476,09 s** | 474,94 | 477,25 | 0,48 % | ✅ | B1 · opt. 1, 3 |
-| `scan_db_opens` | **66.396** | 66.396 | 66.396 | 0,00 % | ✅ | **B1 · opt. 1** |
-| `connect_s` | **26,46 s** | 26,37 | 26,54 | 0,63 % | ✅ | B4 · opt. 5 |
-| `connect_db_opens` | **12.003** | 12.003 | 12.003 | 0,00 % | ✅ | B4 · opt. 5 |
-| `load_dense_s` | **0,1122 s** | 0,1103 | 0,1141 | 3,39 % | ✅ | B3 · opt. 4 |
-| `load_dense_peak_mb` | **121,22 MB** | 121,22 | 121,22 | 0,00 % | ✅ | **B3 · opt. 4** |
-| `load_dense_rows` | 17.465 | — | — | 0,00 % | ✅ | contexto |
-| `load_dense_matrix_mb` | 53,65 MB | — | — | 0,00 % | ✅ | contexto |
+| `scan_s` | **476,09 s** | 474,94 | 477,25 | 0,48 % | sí | B1 · opt. 1, 3 |
+| `scan_db_opens` | **66.396** | 66.396 | 66.396 | 0,00 % | sí | **B1 · opt. 1** |
+| `connect_s` | **26,46 s** | 26,37 | 26,54 | 0,63 % | sí | B4 · opt. 5 |
+| `connect_db_opens` | **12.003** | 12.003 | 12.003 | 0,00 % | sí | B4 · opt. 5 |
+| `load_dense_s` | **0,1122 s** | 0,1103 | 0,1141 | 3,39 % | sí | B3 · opt. 4 |
+| `load_dense_peak_mb` | **121,22 MB** | 121,22 | 121,22 | 0,00 % | sí | **B3 · opt. 4** |
+| `load_dense_rows` | 17.465 | — | — | 0,00 % | sí | contexto |
+| `load_dense_matrix_mb` | 53,65 MB | — | — | 0,00 % | sí | contexto |
 
 ### 4.2 `ask` con `top_k=5` — en caliente y en frío
 
@@ -111,14 +111,14 @@ Oracle (B2, opt. 2) vive en el caliente; medirlos juntos no medía ninguno de lo
 
 | Métrica | Media | Dispersión | ±5% | Nota |
 |---|---:|---:|:---:|---|
-| `warm.total_s` | **0,1010 s** | 0,68 % | ✅ | shell / `Session` viva |
-| `warm.retrieve_s` | **0,0894 s** | 0,35 % | ✅ | **gate de la opt. 2** |
-| `warm.embed_s` | 0,0009 s | 1,03 % | ✅ | caché de embeddings |
-| `warm.db_opens` | **13,0** | 0,00 % | ✅ | **gate de la opt. 2** (objetivo: ≤2) |
-| `warm.generate_s` | 0,0026 s | 12,81 % | ❌ | 2,6 ms de stub; ninguna opt. lo toca |
-| `cold.total_s` | 0,2289 s | 16,59 % | ❌ | CLI de un solo uso |
-| `cold.retrieve_s` | 0,2057 s | 18,06 % | ❌ | domina la construcción de matriz |
-| `cold.db_opens` | **15,0** | 0,00 % | ✅ | +2 sobre el caliente: carga de matriz |
+| `warm.total_s` | **0,1010 s** | 0,68 % | sí | shell / `Session` viva |
+| `warm.retrieve_s` | **0,0894 s** | 0,35 % | sí | **gate de la opt. 2** |
+| `warm.embed_s` | 0,0009 s | 1,03 % | sí | caché de embeddings |
+| `warm.db_opens` | **13,0** | 0,00 % | sí | **gate de la opt. 2** (objetivo: ≤2) |
+| `warm.generate_s` | 0,0026 s | 12,81 % | no | 2,6 ms de stub; ninguna opt. lo toca |
+| `cold.total_s` | 0,2289 s | 16,59 % | no | CLI de un solo uso |
+| `cold.retrieve_s` | 0,2057 s | 18,06 % | no | domina la construcción de matriz |
+| `cold.db_opens` | **15,0** | 0,00 % | sí | +2 sobre el caliente: carga de matriz |
 
 **Sobre las cuatro métricas que no cumplen el ±5%**: ninguna es un gate. `warm.generate_s` y
 `cold.rewrite_s` son etapas de milisegundos o de coste cero (sin historial, `_rewrite_query`
@@ -210,7 +210,7 @@ Los 11 tests saltados lo hacen por dependencias ausentes, no por fallo: 5 `e2e` 
 
 ## 8. Registro de optimizaciones
 
-### opt. 8 — Parámetros mágicos → configuración ✅
+### opt. 8 — Parámetros mágicos → configuración
 
 Seis constantes promovidas a claves de `grimore.toml`, todas leídas con
 `getattr(..., default)` siguiendo el patrón de la casa:
@@ -255,7 +255,7 @@ Suite tras el cambio: **925 passed, 11 skipped, 0 failed** · `ruff` limpio.
 
 ---
 
-### opt. 1 — Conexión SQLite reutilizable por hilo ✅
+### opt. 1 — Conexión SQLite reutilizable por hilo
 
 Una conexión por hilo, viva mientras viva el `Database`, con los PRAGMAs y la carga de sqlite-vec
 aplicados **una sola vez** en lugar de en cada una de las 73 rutas de acceso a datos. Añade
@@ -265,10 +265,10 @@ desde `Session.close()` y `daemon.stop()`.
 
 | Métrica | pre-opt.1 | opt.1 | Cambio | Criterio |
 |---|---:|---:|---:|---|
-| `scan_db_opens` | 66.396 | **1** | −100 % | O(1) por hilo ✅ |
-| `connect_db_opens` | 12.003 | **1** | −100 % | ✅ |
-| `scan_s` | 529,75 s | **65,14 s** | **−87,7 %** | −30 % o más ✅ |
-| `connect_s` | 50,89 s | **31,72 s** | **−37,7 %** | (no exigido) ✅ |
+| `scan_db_opens` | 66.396 | **1** | −100 % | O(1) por hilo, cumplido |
+| `connect_db_opens` | 12.003 | **1** | −100 % | cumplido |
+| `scan_s` | 529,75 s | **65,14 s** | **−87,7 %** | −30 % o más, cumplido |
+| `connect_s` | 50,89 s | **31,72 s** | **−37,7 %** | (no exigido) |
 
 Medido A/B en la misma sesión, 2000 notas, 2 corridas cada variante. Ver §9 sobre por qué los
 tiempos se miden así y no contra la tabla del §4.
@@ -333,7 +333,7 @@ Suite tras el cambio: **941 passed, 11 skipped, 0 failed** · `ruff` limpio · `
 
 ---
 
-### opt. 3 — Insert de embeddings por lote ✅
+### opt. 3 — Insert de embeddings por lote
 
 `store_embeddings_bulk` con `executemany` y **una transacción por nota** en lugar de una por chunk.
 `reembed_note` acumula las filas y llama una vez; `store_embedding` (singular) se conserva intacto
@@ -389,7 +389,7 @@ de rollback simplemente le faltaba el equivalente. Cubierto por 3 tests, validad
 Suite tras el cambio: **963 passed, 6 skipped, 0 failed** · `ruff` limpio · `mypy` sin issues.
 Sin sqlite-vec instalado (configuración por defecto de CI): 949 passed, 20 skipped, 0 failed.
 
-### opt. 2 — Matar el N+1 del Oracle ✅
+### opt. 2 — Matar el N+1 del Oracle
 
 La propuesta mínima, extendida también a las anclas: `get_note_titles(ids)` y
 `get_chunk_anchors_bulk(pairs)`. El retrieval no se toca — ni `JOIN`, ni cambio en la semántica de
@@ -459,6 +459,152 @@ Suite tras el cambio: **981 passed, 6 skipped, 0 failed** · `ruff` limpio · `m
 ficheros. `tests/test_batch_metadata.py` añade 13 casos, con las tres mutaciones clave
 (`ORDER BY id` invertido, filtro de pares eliminado, dedup eliminado) verificadas rojo→verde.
 
+### opt. 4 — `_load_dense` ligero + caché de matriz en disco
+
+Dos mitades. **A**: construir la matriz desde una carga solo de vectores en vez de una que además
+arrastra `text_content`. **B**: persistir la matriz construida como `.npy` junto a la base de datos
+y recargarla mapeada en memoria.
+
+#### A — sacar `text_content` del barrido de puntuación
+
+| Métrica | antes | opt. 4A | Cambio |
+|---|---:|---:|---:|
+| `load_dense_peak_mb` | 121,2 MB | **56,29 MB** | **−53,6 %** |
+| `load_dense_resident_mb` | 119,7 MB | **56,28 MB** | **−53,0 %** |
+| sobrecoste sobre la propia matriz | 67,57 MB | **2,63 MB** | **−96 %** |
+| `ask_cold.retrieve_s` | 183,96 ms | 141,50 ms | −23,1 % |
+| `load_dense_s` | 91,5 ms | 76,2 ms | −16,7 % |
+
+**El primer intento solo dio −6,9 %.** `tracemalloc` reporta el pico transitorio, y la versión
+ingenua seguía sosteniendo dos copias completas de los vectores a la vez: la lista de filas del
+`fetchall` y luego el buffer unido. Pasar las filas por *streaming* a un `bytearray` que crece
+—liberando los bytes de cada fila según se anexan— es lo que llevó el pico de 113 MB a 56 MB. La
+métrica `load_dense_resident_mb` se añadió a la vez: el pico es lo que paga una CLI de un solo uso,
+pero lo **residente** es lo que el shell o el daemon sostienen toda su vida, y solo lo segundo
+mejoraba realmente al quitar el texto.
+
+**El caso *ragged* necesita comprobación explícita, no inferida.** Con los vectores concatenados en
+un buffer, una tabla de anchuras mixtas no tiene límites de fila recuperables, así que hay que
+rechazarla en vez de reinterpretarla. Inferir la irregularidad de la longitud del buffer no es
+sólido: las anchuras `[8, 4, 12]` suman exactamente `3 × 8`, así que un test por longitud aceptaría
+datos que debe rechazar. La comprobación de uniformidad va por fila, y el fallback pide los
+vectores per-row por separado, de modo que el camino común nunca paga esa lista.
+
+**Una regresión encontrada y corregida durante el cambio.** Al dejar de viajar con el texto,
+`find_similar_notes` lo pide por llamada — y `connect` la llama una vez por nota, lo que apareció
+como `connect_s` **+15,5 %**. Ni `connect` ni las aristas sugeridas del grafo leen `hit["text"]`;
+usan `note_id` y `score`. Con `with_text=False` en esos dos caminos, `connect_db_queries` queda en
+**1233 → 1233, delta 0**. El +4,8 % que aún se veía en el reloj era deriva de sesión, cosa que el
+contador zanja.
+
+El coste aceptado es `ask.db_queries` **5 → 6**: una consulta por pregunta a cambio de no arrastrar
+500 caracteres por chunk en el barrido.
+
+#### B — la caché `.npy`
+
+Procesos nuevos (que es lo que hace una CLI de un solo uso), 2000 notas, mediana de 5:
+
+| Escenario | Carga | vs sin caché |
+|---|---:|---:|
+| Sin caché (reconstruye siempre) | 72,00 ms | — |
+| Primera vez con caché (construye + escribe 53 MB) | 102,00 ms | +42 % |
+| Acierto de caché (`mmap`) | **33,00 ms** | **−54 %** |
+
+Se amortiza en la segunda invocación: la primera cuesta 30 ms extra y cada posterior ahorra 39 ms.
+
+**El sello que pedía el diseño es inseguro, y es demostrable.** `swap_embedding_migration` instala
+la tabla re-embebida con `INSERT INTO embeddings (id, ...) SELECT id, ... FROM embeddings_migration`,
+preservando cada id. Tras cambiar de modelo de embeddings, el número de filas y el id máximo son
+**idénticos** mientras todos los vectores cambiaron. Para la caché en memoria del Connector eso es
+un riesgo de un proceso; para una que sobrevive a los reinicios serviría los vectores del modelo
+anterior indefinidamente. Tres capas en su lugar:
+
+1. El sello lleva `(count, max_id, total_vector_bytes)` — ningún cambio de dimensión lo sobrevive.
+2. El intercambio de migración llama a `matrix_cache.clear()` — cubre un cambio de modelo a igual
+   dimensión, que ningún sello puede ver.
+3. `load()` revalida la forma de la matriz — cubre un `.npy` truncado bajo un sello aún válido, que
+   una caída entre las dos escrituras puede dejar.
+
+**Una corrección a la afirmación de memoria del diseño.** Sostiene que con `mmap_mode="r"` la RSS
+deja de escalar con el tamaño del vault. Medido, no se cumple para este patrón de acceso:
+`matrix @ q` toca todas las filas, así que el mapeo se pagina entero y la RSS es idéntica
+(+56,3 MB) con y sin caché. Lo que sí compra el mapeo es que esos 51,2 MB queden **respaldados por
+fichero** (confirmado en `/proc/self/smaps`) en vez de en heap anónimo, de modo que el kernel puede
+descartarlos y releerlos bajo presión en lugar de tener que swapear. Ventaja real, pero distinta, e
+invisible en la RSS.
+
+**También corregido: un comentario mío que sobrescribía lo que el código hace.** La revalidación
+optimista del sello antes de escribir la caché estaba documentada como si evitara servir datos
+obsoletos. No lo hace — en ese escenario la firma es idéntica y quien salva es el chequeo de forma.
+Lo único que evita es escribir un fichero condenado a fallar. La tanda de mutaciones fue lo que lo
+destapó: quitar la comprobación no rompía ningún test, señal de que el comentario describía algo no
+probado y falso.
+
+No se engancha a `maintenance run`, y es deliberado. `id` es `INTEGER PRIMARY KEY`, así que VACUUM
+lo preserva y el sello sigue casando después; borrar ahí solo forzaría una reconstrucción inútil.
+Verificado empíricamente, no asumido.
+
+Suite tras el cambio: **1027 passed, 6 skipped, 0 failed** · `ruff` limpio · `mypy` sin issues en 74
+ficheros. `tests/test_dense_loading.py` (22 casos) y `tests/test_matrix_cache.py` (24 casos), con
+siete mutaciones verificadas rojo→verde.
+
+### opt. 5 — `connect` vectorizado
+
+`connect` llamaba a `find_similar_notes` una vez por nota, y cada una de esas llamadas multiplicaba
+la consulta contra todos los chunks del vault: O(notas × chunks) productos emitidos de uno en uno.
+El barrido es ahora un único `Q @ C.T` por bloques.
+
+| Métrica | bucle por nota | barrido por bloques | Cambio |
+|---|---:|---:|---:|
+| `connect_s` | 20,47 s | **3,116 s** | **−84,8 %** |
+| `connect_db_queries` | 6.040 | **4.041** | **−1.999** |
+| `scan_s` (control) | 46,42 s | 46,84 s | +0,9 % |
+
+A/B alternado dentro de la misma sesión, 2000 notas. El A/B aísla el *driver*: el método por lotes y
+la consulta de primer chunk están presentes en ambos brazos, y sólo difiere el bucle de `cli.py`, así
+que nada más puede explicar el delta. El ahorro de consultas es de una por nota —
+`find_similar_notes` lee la firma de embeddings en cada llamada, cosa que el barrido hace una vez.
+
+**La media por nota que propone el diseño habría cambiado los resultados.** Propone una matriz de
+vectores por nota, "la media de sus chunks, o el primer chunk". Aquí no son intercambiables: el
+bucle antiguo recorría la tabla de chunks y se quedaba con la primera fila que encontraba de cada
+nota, así que el vector de consulta era siempre el primer chunk. `get_first_chunk_vectors`
+selecciona exactamente eso, ahora de forma explícita en vez de por suerte del orden de escaneo.
+
+**La paridad bit a bit no es alcanzable, y exigirla era un error mío.** El camino de una consulta es
+un producto matriz-por-vector (gemv); el lote es matriz-por-matriz (gemm). BLAS los acumula en
+distinto orden, así que las puntuaciones difieren en los últimos bits. Medido sobre 200 consultas
+contra 1000 chunks a 768 dimensiones: discrepancia máxima **4,8e-07** (cuatro eps de float32),
+mediana 7,5e-09, y **0 de 200 consultas con un top-20 distinto**. El tamaño de bloque también las
+perturba, así que `block_rows` no es un mando de rendimiento puro. El gate es por tanto el ranking
+— mismas notas, mismo orden — con las puntuaciones comparadas a una tolerancia 20× el peor caso
+medido.
+
+**Por bloques desde el principio, como exigía la cautela** — pero el bloqueo de la primera versión
+no hacía nada, y sólo lo cazó una revisión. Iterar un bloque numpy devuelve *vistas* cuya base es el
+bloque entero, así que guardar una fila por consulta para leer sus puntuaciones después anclaba
+todos los bloques hasta el final del barrido. Medido sobre 400 notas × 2000 chunks: `block_rows=16`
+picaba en 5,04 MB y `block_rows=400` en 4,98 MB — idénticos, cuando el coste por bloque debía ser
+0,13 MB. Ahora los *picks* llevan su puntuación como float en vez de un índice a la fila, así que
+nada retiene el array: la misma medición da 1,83 MB por bloques frente a 4,84 MB sin bloquear. La
+altura de bloque se deriva de un objetivo de 64 MB, así que se adapta en vez de ser una constante
+equivocada en algún extremo del rango.
+
+La lección generaliza: una optimización de memoria cuyos tests sólo comprueban *resultados* pasará
+tan feliz sin hacer nada de lo que dice. Los tests de paridad estuvieron verdes todo el tiempo.
+
+**Dos mutaciones sobrevivieron al principio, y ambas destaparon huecos reales en los tests.** Sacar
+la ventana de sobremuestreo fuera del bucle por consulta no rompía nada, porque el fixture era tan
+pequeño que la ventana cubría la tabla entera — un vault construido a propósito hace ahora
+observable su anchura, con un test que verifica que el fixture sigue distinguiendo las dos.
+Eliminar el filtro de nota propia tampoco rompía nada, porque los tests de paridad comparan dos
+caminos que **comparten** el helper de ensamblado: un bug en ese código común pasa por ambos lados.
+Los tests de comportamiento absoluto (una nota nunca se sugiere a sí misma, el dedupe devuelve cada
+nota una vez, las puntuaciones van descendentes) cubren ahora lo que la paridad no puede.
+
+Suite tras el cambio: **1056 passed, 6 skipped, 0 failed** · `ruff` limpio · `mypy` sin issues.
+`tests/test_connect_sweep.py` añade 29 casos; cinco mutaciones verificadas rojo→verde.
+
 ---
 
 ## 9. Limitación del arnés: los tiempos no son comparables entre sesiones
@@ -500,15 +646,13 @@ densa, así que `connect` arranca sobre un procesador ya caliente.
 
 ## 10. Siguiente paso
 
-Cerradas las opts. 8 → 1 → 3 → 2, el siguiente bloque es una cadena independiente:
+Cerradas las opts. 8 → 1 → 3 → 2 → 4 → 5, queda:
 
-1. **opt. 4** — `_load_dense` sin `text_content` + caché `.npy` con `mmap` (2 d, riesgo bajo).
-   Gate: `load_dense_peak_mb` baja, y la caché se invalida al cambiar el vault.
-2. **opt. 5** — `connect` vectorizado, `M @ M.T` por bloques (1,5 d, riesgo bajo). Depende de la
-   opt. 4 y reutiliza el `get_note_titles(ids)` que acaba de introducir la opt. 2. Gate: los
-   enlaces sugeridos por encima del umbral son **los mismos**.
+1. **opt. 6** — reescritura de consulta condicional. Gate: `eval --history` sin regresión de recall.
+2. **opt. 9** — filtros de recuperación (CLI + API).
+3. **opt. 7** — tagging concurrente. Gate: bench por backend.
 
-La línea base para ambos ya está tomada: `load_dense_peak_mb` y `connect_s` en §4.1.
+La línea base de `connect_s` está en §4.1.
 
 Recordatorio al medir: el vault sintético tiene un vocabulario de 50 palabras, así que la mayor
 parte de las sentencias de un `ask` son internas de FTS5, no de Grimore. El contador ya las separa

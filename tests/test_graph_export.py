@@ -188,7 +188,7 @@ class _FixedConnector:
         self._embeddings_per_note = embeddings_per_note
 
     def find_similar_notes(self, query_vector, top_k, *, exclude_note_id,
-                           dedupe_by_note):
+                           dedupe_by_note, with_text=True):
         # The fixture's _populate_embeddings hands us a note id via the
         # exclude_note_id; we use it as the lookup key.
         self._calls.append(exclude_note_id)

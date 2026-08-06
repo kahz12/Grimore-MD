@@ -26,6 +26,12 @@ grimore.db
 grimore.db-wal
 grimore.db-shm
 grimore.db-journal
+# Dense scoring matrix cache: a rebuildable artifact the size of every
+# vector in the vault, written beside the database.
+*.vecmat.npy
+*.vecmat.sig
+# Orphaned temps if a write is killed mid-flight.
+*.vecmat.*.tmp
 grimore.pid
 grimore.log
 backups/

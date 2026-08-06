@@ -1,4 +1,4 @@
-"""opt.3 regression: a note's chunks are written in one transaction.
+"""Regression: a note's chunks are written in one transaction.
 
 The old re-embed path called store_embedding once per chunk, and each call
 committed. In WAL mode a commit is an fsync, measured at ~7 ms across a
@@ -162,7 +162,7 @@ class TestIncrementalStillWorks:
 
 @requires_vec
 class TestVecMirrorParity:
-    """The plan's gate for opt.3: the vec mirror stays row-for-row consistent."""
+    """The gate for the bulk path: the vec mirror stays row-for-row consistent."""
 
     def _vec_rows(self, db):
         with db._get_connection() as conn:

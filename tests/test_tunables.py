@@ -1,4 +1,4 @@
-"""opt.8 regression: the promoted config keys actually reach their consumers.
+"""Regression: the promoted config keys actually reach their consumers.
 
 tests/test_config.py proves the keys load and default correctly. That is not
 enough on its own: it would pass unchanged if a consumer were never wired up
