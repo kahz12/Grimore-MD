@@ -16,11 +16,13 @@ def _make_oracle():
     o.config.cognition.rrf_k = 60
     o.db.fts_available = False
     o.embedder.embed.return_value = [0.0] * 16
-    o.db.get_note_title.side_effect = lambda nid: f"Note {nid}"
-    # Oracle._build_context calls db.get_chunk_anchors to render
+    o.db.get_note_titles.side_effect = lambda nids: {
+        nid: f"Note {nid}" for nid in nids
+    }
+    # Oracle._build_context calls db.get_chunk_anchors_bulk to render
     # anchor-aware citations. MD-style sources (which is what these tests
-    # construct) have no page/heading, so always return (None, None).
-    o.db.get_chunk_anchors.return_value = (None, None)
+    # construct) have no page/heading, so every pair maps to (None, None).
+    o.db.get_chunk_anchors_bulk.side_effect = lambda pairs: dict.fromkeys(pairs, (None, None))
     return o
 
 

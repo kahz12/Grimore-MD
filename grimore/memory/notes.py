@@ -8,6 +8,11 @@ from typing import Iterable, Optional
 
 from grimore.memory._base import DbBase
 
+# Host parameters per statement. SQLite's own limit is 999 on builds older
+# than 3.32 and 32766 after; 900 clears the lower bound with room for the
+# non-placeholder parameters a query may also carry.
+_MAX_SQL_VARS = 900
+
 
 def _escape_like(text: str) -> str:
     """
@@ -75,6 +80,39 @@ class NotesMixin(DbBase):
                 "SELECT title FROM notes WHERE id = ?", (note_id,)
             ).fetchone()
         return row[0] if row else None
+
+    def get_note_titles(self, note_ids: Iterable[int]) -> dict[int, str]:
+        """Batch form of :py:meth:`get_note_title`: ``{note_id: title}``.
+
+        The Oracle used to call ``get_note_title`` once per retrieved chunk,
+        which is one query (and, before the per-thread connection, one
+        connection) per result. This collapses the whole pool into a single
+        ``IN (...)``.
+
+        Ids missing from the ``notes`` table are simply absent from the result
+        rather than mapping to ``None`` — callers already treat a falsy title
+        as an orphan embedding, so ``.get(note_id)`` reproduces the singular
+        method's contract exactly. Duplicate ids are de-duplicated; order is
+        irrelevant because the result is a mapping.
+        """
+        unique = {int(n) for n in note_ids}
+        if not unique:
+            return {}
+        titles: dict[int, str] = {}
+        ids = list(unique)
+        with self._get_connection() as conn:
+            # Chunked to stay under SQLITE_MAX_VARIABLE_NUMBER (999 on builds
+            # predating 3.32). Retrieval pools are far smaller than this, but
+            # eval sweeps can widen the pool arbitrarily.
+            for start in range(0, len(ids), _MAX_SQL_VARS):
+                batch = ids[start:start + _MAX_SQL_VARS]
+                placeholders = ",".join("?" * len(batch))
+                rows = conn.execute(
+                    f"SELECT id, title FROM notes WHERE id IN ({placeholders})",
+                    tuple(batch),
+                ).fetchall()
+                titles.update({int(i): t for i, t in rows if t is not None})
+        return titles
 
     def get_dashboard_stats(self) -> dict:
         """
