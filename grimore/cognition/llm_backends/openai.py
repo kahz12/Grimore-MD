@@ -70,8 +70,13 @@ class OpenAICompatibleBackend:
             config.cognition, "llm_api_key_env", "GRIMORE_LLM_API_KEY"
         )
         # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        # read_retries=0 for the same reason as the Ollama backend: a read
+        # timeout on an inference call means the model is still working. Here
+        # it also avoids paying twice for a completion that may already have
+        # been billed.
         self.session = build_session(
-            pins=SecurityGuard.loopback_pins(base, allow_remote=allow_remote)
+            pins=SecurityGuard.loopback_pins(base, allow_remote=allow_remote),
+            read_retries=0,
         )
 
     def _headers(self) -> dict:

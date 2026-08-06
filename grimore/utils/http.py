@@ -59,6 +59,7 @@ def build_session(
     total_retries: int = 2,
     backoff: float = 0.5,
     pins: dict[str, list[str]] | None = None,
+    read_retries: int | None = None,
 ) -> requests.Session:
     """
     Creates a requests.Session with bounded retries on connection errors and 5xx status codes.
@@ -67,15 +68,29 @@ def build_session(
     Retries are enabled for both GET and POST requests, which is crucial for
     reliability when the daemon is waiting for Ollama to become available.
 
+    ``read_retries`` overrides the read-timeout budget alone; it defaults to
+    ``total_retries`` so existing callers are unaffected. Pass ``0`` for
+    endpoints where a read timeout means "still working" rather than "transient
+    failure" — inference calls are the case that matters: Ollama holds the
+    socket open through prompt eval, so a retry abandons work in progress,
+    restarts generation from scratch, and queues behind the request it just
+    gave up on. That turns one over-budget call into ``1 + read_retries`` of
+    them and reports the failure ``(1 + read_retries)x`` later than the
+    configured timeout, which reads as a hang.
+
     ``pins`` (a ``{hostname: [ip, ...]}`` map, typically from
     :func:`SecurityGuard.loopback_pins`) pins HTTP requests to those hostnames
     to the given pre-validated loopback IPs — closing the DNS-rebinding TOCTOU
     window (audit I1). When falsy, the session behaves exactly as before.
     """
+    if read_retries is None:
+        read_retries = total_retries
     retry = Retry(
-        total=total_retries,
+        # `total` caps the sum of all retry kinds, so it has to stay high
+        # enough not to mask the per-kind budgets below.
+        total=max(total_retries, read_retries),
         connect=total_retries,
-        read=total_retries,
+        read=read_retries,
         status=total_retries,
         backoff_factor=backoff,
         # Retry on common transient errors
