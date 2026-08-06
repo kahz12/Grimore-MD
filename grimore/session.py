@@ -63,17 +63,34 @@ class Session:
         # and answer-coherence context so follow-ups resolve. The one-shot
         # CLI never populates this, so its behaviour is unchanged.
         self.turns: list[dict] = []
+        # Per-session window, overridable via [shell].max_turns. The class
+        # attribute below stays the default and the public constant: callers
+        # and tests read Session.MAX_TURNS as "the shipped window", while the
+        # instance attribute is what the trimming logic actually honours.
+        self.max_turns = max(0, int(getattr(
+            getattr(self.config, "shell", None), "max_turns", self.MAX_TURNS
+        )))
 
     # Number of prior turns kept for conversational context. Small on
     # purpose — enough to resolve "expand on that" without blowing the
     # local model's context window or leaking the whole session.
     MAX_TURNS = 3
+    # Class-level default so the window resolves even on instances built
+    # without __init__ -- tests exercise the trimming logic against a bare
+    # ``Session.__new__(Session)``. __init__ shadows this with the configured
+    # value.
+    max_turns = MAX_TURNS
 
     def record_turn(self, question: str, answer: str, sources: list[str]) -> None:
         """Append one Q&A turn, trimming to the last :attr:`MAX_TURNS`."""
         self.turns.append({"q": question, "a": answer or "", "sources": list(sources or [])})
-        if len(self.turns) > self.MAX_TURNS:
-            self.turns = self.turns[-self.MAX_TURNS:]
+        # Zero is checked before slicing, not folded into it: turns[-0:] is
+        # turns[0:], so a window of 0 would keep the entire history instead of
+        # disabling conversational memory.
+        if self.max_turns <= 0:
+            self.turns = []
+        elif len(self.turns) > self.max_turns:
+            self.turns = self.turns[-self.max_turns:]
 
     def forget(self) -> None:
         """Drop all conversational state (``/forget``) without touching the
@@ -142,7 +159,7 @@ class Session:
                     "a": row.get("a", ""),
                     "sources": list(row.get("sources") or []),
                 })
-        self.turns = loaded[-self.MAX_TURNS:] if loaded else []
+        self.turns = loaded[-self.max_turns:] if (loaded and self.max_turns > 0) else []
         if self.turns:
             last = self.turns[-1]
             self.last_question = last["q"]
@@ -216,9 +233,16 @@ class Session:
         self._oracle = None
 
     def close(self) -> None:
-        """Idempotent teardown. Database holds no long-lived connection —
-        each call opens one and closes it on exit — so this just drops
-        references."""
+        """Idempotent teardown.
+
+        The Database now keeps one connection per thread for its lifetime
+        instead of opening one per query, so dropping the reference is no
+        longer enough: without an explicit close the file descriptor would
+        survive until GC. Closing before refresh() because refresh() is what
+        drops the handle we need.
+        """
+        if self._db is not None:
+            self._db.close()
         self.refresh()
 
     def __enter__(self) -> "Session":

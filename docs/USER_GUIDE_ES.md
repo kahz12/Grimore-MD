@@ -230,6 +230,18 @@ vector_backend  = "auto"
 llm_backend     = "ollama"
 llm_base_url    = ""              # p. ej. "http://localhost:8080/v1" para llama.cpp server
 llm_api_key_env = "GRIMORE_LLM_API_KEY"   # variable de entorno con el token bearer
+# Ajustes finos. Todos son opcionales: omitirlos reproduce exactamente el
+# comportamiento histórico, que es el valor mostrado aquí.
+chunk_store_chars = 500      # texto del chunk espejado en la tabla embeddings.
+                             # Es lo que ve el re-ranker cross-encoder, así que
+                             # subirlo mejora su precisión a costa de tamaño de
+                             # base y de memoria en cada carga completa.
+context_max_chars = 16000    # tope del contexto unido que se inyecta al LLM.
+                             # Los modelos con ventana grande admiten más.
+embed_batch_size  = 32       # textos por petición a /api/embed. Lotes mayores
+                             # ahorran round-trips en servidores con batching.
+circuit_failure_threshold = 5    # fallos seguidos antes de abrir el circuito
+circuit_cooldown_s        = 120  # segundos de corte antes de reintentar
 
 [ingest]
 # Motor de PDF. "pypdf" es el predeterminado siempre disponible;
@@ -295,6 +307,10 @@ fuzzy_threshold = 55     # 0–100, puntuación rapidfuzz mínima para autocompl
 # defecto vive en ~/.grimore/threads. Las rutas absolutas se usan
 # tal cual.
 threads_dir     = ".grimore/threads"
+# Turnos previos de Q&A que se conservan como contexto conversacional para la
+# reescritura de consulta del Oracle. Cada turno se antepone al prompt, así que
+# una ventana grande cuesta tokens en cada follow-up. 0 desactiva la memoria.
+max_turns       = 3
 
 # Opcional: perfiles de bóveda nombrados. Cada bloque
 # [profiles.<nombre>] se fusiona profundamente con las secciones de
@@ -1349,6 +1365,31 @@ model_llm_local   = "ministral-3:14b"
 request_timeout_s = 180
 stream_timeout_s  = 240
 ```
+
+**Cómo dimensionarlos en vez de adivinar.** El coste lo domina el *prompt
+eval*, no la generación, y escala con el tamaño de la entrada. Mide tu
+combinación real de modelo y máquina una vez:
+
+```bash
+curl -s http://127.0.0.1:11434/api/generate -d '{
+  "model": "TU_MODELO", "prompt": "...", "stream": false
+}' | python3 -c 'import json,sys; d=json.load(sys.stdin); \
+print({k: d[k] for k in ("total_duration","prompt_eval_count", \
+"prompt_eval_duration","eval_count","eval_duration") if k in d})'
+```
+
+Divide `prompt_eval_count / prompt_eval_duration` para obtener tokens/s de
+lectura. `stream_timeout_s` debe cubrir el prompt eval **completo**: con
+`stream: true` Ollama no emite el primer token hasta terminarlo, así que un
+límite por debajo aborta sin haber recibido nada — y el síntoma es un
+Oracle que responde "The Oracle returned no tokens", no un error de
+timeout. Como el Oracle envía hasta `context_max_chars` de contexto,
+`stream_timeout_s` casi siempre tiene que ser el mayor de los dos.
+
+Si el resultado te sale absurdo (varios minutos por nota), el timeout no es
+el arreglo: baja `context_max_chars` o usa un modelo más pequeño para el
+tagger. Un timeout más alto solo hace que esperes más antes del mismo
+resultado.
 
 Algunos modelos de razonamiento (`qwen3.5:0.8b`, familia `deepseek-r1`,
 etc.) emiten una fase de "thinking": Ollama transmite fragmentos con

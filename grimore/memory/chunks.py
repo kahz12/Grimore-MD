@@ -12,7 +12,6 @@ from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-
 class ChunksMixin(DbBase):
     """Embedding rows, vec mirror, and embedding cache for :class:`Database`."""
 
@@ -70,6 +69,129 @@ class ChunksMixin(DbBase):
             self._mirror_vec_insert(conn, new_rowid, vector_blob)
             conn.commit()
 
+    def store_embeddings_bulk(self, note_id: int, rows: list[dict]) -> int:
+        """Insert every chunk of a note in ONE transaction. Returns rows written.
+
+        The per-chunk :meth:`store_embedding` is kept for the callers (and the
+        many tests) that write a single row, and as the rollback path; this is
+        purely additive.
+
+        Why it matters: in WAL mode each commit costs an fsync, and the old
+        re-embed loop committed once per chunk. Measured at 7.17 ms per
+        connection-and-commit across a 2000-note scan, that fsync -- not the
+        SQL -- was the dominant cost of indexing. Collapsing N transactions
+        into one is the whole optimisation; ``executemany`` on top of it just
+        removes the per-row Python overhead.
+
+        Each row is a dict with chunk_index, text_content, vector, page,
+        heading and chunk_hash. ``note_id`` is passed once rather than repeated
+        in every row.
+        """
+        if not rows:
+            return 0
+        with self._get_connection() as conn:
+            conn.executemany(
+                """
+                INSERT INTO embeddings (note_id, chunk_index, text_content, vector,
+                                        page, heading, chunk_hash)
+                VALUES (:note_id, :chunk_index, :text_content, :vector,
+                        :page, :heading, :chunk_hash)
+                """,
+                [{"note_id": note_id, **row} for row in rows],
+            )
+            self._mirror_vec_insert_many(conn, note_id, rows)
+        return len(rows)
+
+    def _mirror_vec_insert_many(self, conn, note_id: int, rows: list[dict]) -> None:
+        """Mirror a bulk insert into ``embeddings_vec`` on the same transaction.
+
+        The rowids are read back rather than derived from ``cursor.lastrowid``.
+        Deriving them (``lastrowid - len(rows) + 1``) assumes the AUTOINCREMENT
+        ids landed contiguously, which holds for one uninterrupted executemany
+        but silently produces wrong mappings the moment anything else writes to
+        the table -- and a wrong mapping here means a vector filed under
+        another chunk's id, which retrieval would surface as a citation
+        pointing at the wrong note.
+
+        The read-back selects by ``note_id`` alone instead of an
+        ``IN (chunk_index, ...)`` list: a large PDF can exceed SQLite's host
+        parameter limit, and the extra rows for chunks that were kept rather
+        than re-embedded are simply ignored by the lookup below.
+        """
+        if not self._vec_available or not rows:
+            return
+
+        dim = len(rows[0]["vector"]) // 4
+        if dim <= 0:
+            return
+        if self._vec_dim is None:
+            self._create_vec_table(conn, dim)
+            self._vec_dim = dim
+
+        id_by_index = {
+            int(chunk_index): int(rowid)
+            for chunk_index, rowid in conn.execute(
+                "SELECT chunk_index, id FROM embeddings WHERE note_id = ?",
+                (note_id,),
+            )
+        }
+        payload = []
+        for row in rows:
+            rowid = id_by_index.get(row["chunk_index"])
+            # Same per-row dim guard as the singular path: a model swap without
+            # a migration must still land the source-of-truth embeddings row,
+            # leaving the connector on numpy until migrate-embeddings runs.
+            if rowid is None or len(row["vector"]) // 4 != self._vec_dim:
+                continue
+            payload.append((rowid, row["vector"]))
+        if not payload:
+            return
+        self._vec_write(
+            conn,
+            "INSERT INTO embeddings_vec(rowid, embedding) VALUES (?, ?)",
+            payload,
+            dim,
+            "vec_bulk_insert_failed",
+            note_id=note_id,
+        )
+
+    def _vec_write(self, conn, sql: str, payload: list, dim: int,
+                   event: str, **context) -> None:
+        """Write to ``embeddings_vec``, recreating the table once if it vanished.
+
+        ``_vec_dim`` is Python state set inside the transaction that creates
+        ``embeddings_vec``. If that transaction later rolls back, the DDL is
+        undone but the attribute survives, so every subsequent write skips
+        creation and inserts into a table that no longer exists. Previously
+        that surfaced as a warning and nothing else: the mirror stayed silently
+        empty for the rest of the process while ``embeddings`` kept filling up,
+        leaving a vault whose vec index answers with a fraction of its chunks.
+
+        Recovery happens inside the same call rather than on the next write,
+        because the vectors of the failing batch would otherwise be lost for
+        good -- their ``embeddings`` rows commit either way, so nothing would
+        ever come back to mirror them. Clearing ``_vec_dim`` first restores the
+        invariant "set only when the table exists"; ``_create_vec_table`` is
+        ``IF NOT EXISTS`` so the retry is safe even when the table was fine and
+        the failure was something else.
+        """
+        try:
+            conn.executemany(sql, payload)
+            return
+        except sqlite3.OperationalError as first_error:
+            self._vec_dim = None
+            try:
+                self._create_vec_table(conn, dim)
+                conn.executemany(sql, payload)
+            except sqlite3.OperationalError as retry_error:
+                # Genuinely unwritable (not just a rolled-back table). Leave
+                # _vec_dim cleared so a later write can try again, and let the
+                # source-of-truth embeddings row stand.
+                logger.warning(event, error=str(retry_error), **context)
+                return
+            self._vec_dim = dim
+            logger.info("vec_table_recreated", dim=dim, after=str(first_error), **context)
+
     def _mirror_vec_insert(self, conn, rowid: int, vector_blob: bytes) -> None:
         """Insert the freshly-stored vector into ``embeddings_vec``.
 
@@ -92,13 +214,14 @@ class ChunksMixin(DbBase):
             # lands; the connector falls back to numpy until migrate-embeddings
             # rebuilds the vec table.
             return
-        try:
-            conn.execute(
-                "INSERT INTO embeddings_vec(rowid, embedding) VALUES (?, ?)",
-                (rowid, vector_blob),
-            )
-        except sqlite3.OperationalError as e:  # pragma: no cover - defensive
-            logger.warning("vec_insert_failed", rowid=rowid, error=str(e))
+        self._vec_write(
+            conn,
+            "INSERT INTO embeddings_vec(rowid, embedding) VALUES (?, ?)",
+            [(rowid, vector_blob)],
+            dim,
+            "vec_insert_failed",
+            rowid=rowid,
+        )
 
     def _delete_embeddings_for_note(self, conn, note_id: int) -> None:
         """Delete a note's embeddings (and their vec mirror) on an existing

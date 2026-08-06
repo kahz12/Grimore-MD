@@ -341,7 +341,12 @@ def scan(
                         note, clean_content, embedder, config,
                     )
                     if candidate_chunks:
-                        result = reembed_note(db, embedder, note_id, candidate_chunks)
+                        result = reembed_note(
+                            db, embedder, note_id, candidate_chunks,
+                            text_truncation=getattr(
+                                config.cognition, "chunk_store_chars", 500
+                            ),
+                        )
                         stats["chunks"] += result.embedded
 
                 stats["processed"] += 1

@@ -140,6 +140,26 @@ class CognitionConfig:
     llm_backend: str = "ollama"
     llm_base_url: str | None = None
     llm_api_key_env: str = "GRIMORE_LLM_API_KEY"
+    # How much of each chunk's text is mirrored into the embeddings table.
+    # This is the column the cross-encoder re-ranker and the Oracle context
+    # builder read, so 500 is a floor on how much a re-ranker can actually
+    # see of a 1500-char chunk. Raising it costs DB size and memory on every
+    # full-table load; lowering it starves the re-ranker.
+    chunk_store_chars: int = 500
+    # Hard cap on the joined context handed to the LLM. Sized for a 32k-token
+    # window with room for the question, the template and the answer. Models
+    # with larger windows can afford more; very small local models need less.
+    context_max_chars: int = 16_000
+    # Texts per /api/embed request. Bounds per-request work and memory. Larger
+    # batches cut round-trips on a batching server (vLLM) but raise the cost of
+    # a single failed sub-batch, which falls back to serial embedding.
+    embed_batch_size: int = 32
+    # Circuit breaker around the LLM backend: after this many back-to-back
+    # failures, calls short-circuit for the cooldown instead of hammering a
+    # backend that is down. Lower the threshold to fail faster on flaky
+    # hardware; raise the cooldown when the backend takes long to recover.
+    circuit_failure_threshold: int = 5
+    circuit_cooldown_s: int = 120
 
 @dataclass
 class IngestConfig:
@@ -259,6 +279,11 @@ class ShellConfig:
     vi_mode: bool = False
     fuzzy_threshold: int = 55
     threads_dir: str = ".grimore/threads"
+    # Prior Q&A turns kept as conversational context for the Oracle's query
+    # rewrite. Small on purpose: every turn is prepended to the rewrite prompt,
+    # so a long window costs tokens on each follow-up and can push a small
+    # local model's context window.
+    max_turns: int = 3
 
 
 @dataclass

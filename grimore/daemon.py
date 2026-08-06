@@ -219,6 +219,14 @@ class GrimoreDaemon:
             self.db.wal_checkpoint()
         except Exception as e:  # pragma: no cover - defensive only
             logger.warning("db_checkpoint_failed", error=str(e))
+        # Release the per-thread connections. The daemon indexes on the
+        # watchdog observer thread, so there is one here and one on the main
+        # thread; close() reaches both. Ordered after the checkpoint, which
+        # needs a live connection.
+        try:
+            self.db.close()
+        except Exception as e:  # pragma: no cover - defensive only
+            logger.warning("db_close_failed", error=str(e))
         if self._pid_lock_fd is not None:
             release_pid_lock(self._pid_lock_fd, self.pid_file)
             self._pid_lock_fd = None
@@ -347,7 +355,12 @@ class GrimoreDaemon:
                     note, clean_content, self.embedder, self.config,
                 )
                 if candidate_chunks:
-                    result = reembed_note(self.db, self.embedder, note_id, candidate_chunks)
+                    result = reembed_note(
+                        self.db, self.embedder, note_id, candidate_chunks,
+                        text_truncation=getattr(
+                            self.config.cognition, "chunk_store_chars", 500
+                        ),
+                    )
                     chunk_count = result.stored
                     logger.info(
                         "file_embedded", path=rel,
