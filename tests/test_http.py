@@ -105,3 +105,43 @@ def test_pin_adapter_raises_last_error_when_all_fail(monkeypatch):
 
     with pytest.raises(requests.exceptions.ConnectionError):
         adapter.send(_prep("http://localhost:11434/api/tags"))
+
+
+class TestRetryBudgets:
+    """A read timeout on an inference call means "still generating", not
+    "transient failure". Retrying it multiplies the wall cost of every
+    over-budget call, so the LLM backends opt out of read retries while
+    keeping the connect ones (the daemon may start before Ollama is up).
+    """
+
+    @staticmethod
+    def _retry(session, scheme="http://"):
+        return session.adapters[scheme].max_retries
+
+    def test_read_retries_default_to_total(self):
+        # Callers that don't care keep the historical behaviour.
+        retry = self._retry(build_session(total_retries=2))
+        assert retry.read == 2
+        assert retry.connect == 2
+
+    def test_read_retries_can_be_disabled_independently(self):
+        retry = self._retry(build_session(total_retries=2, read_retries=0))
+        assert retry.read == 0
+        # Connect retries survive: they're what lets the daemon wait for Ollama.
+        assert retry.connect == 2
+
+    def test_total_does_not_mask_a_larger_read_budget(self):
+        # urllib3 caps every retry kind at `total`, so a read budget above
+        # total_retries would be silently truncated.
+        retry = self._retry(build_session(total_retries=1, read_retries=4))
+        assert retry.total >= 4
+
+    def test_read_retries_applied_to_both_schemes(self):
+        session = build_session(read_retries=0)
+        assert self._retry(session, "http://").read == 0
+        assert self._retry(session, "https://").read == 0
+
+    def test_pin_adapter_also_carries_the_retry_budget(self):
+        session = build_session(pins={"localhost": ["127.0.0.1"]}, read_retries=0)
+        assert isinstance(session.adapters["http://"], _LoopbackPinAdapter)
+        assert self._retry(session, "http://").read == 0

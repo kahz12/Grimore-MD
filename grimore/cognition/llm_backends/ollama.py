@@ -40,8 +40,14 @@ class OllamaBackend:
             raw_host, allow_remote=allow_remote
         )
         # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        # read_retries=0: a read timeout here means the model is still doing
+        # prompt eval or generation, not that the request failed. Retrying
+        # throws that work away and re-queues behind it, so the connect-error
+        # retries (which do help when the daemon starts before Ollama is up)
+        # are kept and the read ones are not.
         self.session = build_session(
-            pins=SecurityGuard.loopback_pins(raw_host, allow_remote=allow_remote)
+            pins=SecurityGuard.loopback_pins(raw_host, allow_remote=allow_remote),
+            read_retries=0,
         )
 
     def complete(
