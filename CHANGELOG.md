@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Six previously hard-coded constants are now `grimore.toml` keys, all read
+  with defaults so existing configs behave identically: `chunk_store_chars`,
+  `context_max_chars`, `embed_batch_size`, `circuit_failure_threshold`,
+  `circuit_cooldown_s` (`[cognition]`) and `max_turns` (`[shell]`). Setting
+  `max_turns = 0` disables conversation memory outright.
+- `grimore.toml.example` — a documented template replacing the tracked
+  `grimore.toml`, which carried one machine's vault path, model names and
+  timeouts. Copy it and edit your copy; the real file is now gitignored.
+- `bench/` — a benchmark harness for the persistence and retrieval paths:
+  a seeded deterministic vault generator, an Ollama-shaped LLM stub, and a
+  measurement script that counts SQLite connections and statements as well as
+  timing scan / ask / connect / dense-matrix load. `bench/BASELINE_EN.md` and
+  `bench/BASELINE_ES.md` record the numbers behind every change below.
+
+### Changed
+- `Database` now keeps **one SQLite connection per thread** for its lifetime
+  instead of opening and closing one per operation, applying the PRAGMAs and
+  the sqlite-vec load once rather than on each of the 73 data-access paths.
+  It also enables `busy_timeout`, `cache_size` and `mmap_size`, which a
+  connection discarded microseconds later could never benefit from. Measured
+  on a 2000-note vault: 66,396 connection opens drop to 1 per thread and scan
+  wall-clock falls 87.7%, because at 7.17 ms per connection the WAL `fsync`
+  on every commit was the dominant cost of indexing. `Database.close()`
+  reclaims connections opened on other threads, and is called from
+  `Session.close()` and `daemon.stop()`.
+- Embeddings for a note are written in **one transaction** instead of one per
+  chunk (`store_embeddings_bulk`), for a further 16.2% off scan on a 600-note
+  vault. The single-row `store_embedding` is unchanged.
+- The Oracle resolves the titles and citation anchors for a whole result set
+  in **two queries instead of two per retrieved chunk** (`get_note_titles`,
+  `get_chunk_anchors_bulk`): 10 metadata queries per warm `ask` become 2.
+  Retrieval itself is untouched, so answers and citations are byte-identical.
+- HTTP read timeouts are no longer retried on inference calls. A read timeout
+  on `/api/generate` means the model is still working, so retrying discarded
+  work in progress and turned one over-budget call into three, reporting the
+  failure 3x later than the configured timeout. Connection retries are kept —
+  those are what let the daemon start before Ollama is up.
+- EN/ES user guides document the new config keys, and explain how to **size**
+  `request_timeout_s` / `stream_timeout_s` from a measurement rather than by
+  guessing. `stream_timeout_s` in particular has to cover the entire prompt
+  eval: Ollama emits no first token until it finishes, so a budget below that
+  aborts having received nothing, which surfaces as the Oracle answering
+  "returned no tokens" rather than as a timeout.
+
+### Fixed
+- The sqlite-vec mirror could break silently. `_create_vec_table` set the
+  cached dimension inside the transaction that creates `embeddings_vec`, so a
+  rollback undid the DDL but left the attribute pointing at a table that no
+  longer existed. Every later write then inserted into nothing, was downgraded
+  to a warning, and the scan carried on — `embeddings` kept saving while no
+  vector was mirrored, leaving a vec index that answers with a fraction of the
+  vault. Recovery now happens within the same call, since the failing batch's
+  rows commit either way.
+
 ## [3.2.0] - 2026-07-21
 
 ### Added

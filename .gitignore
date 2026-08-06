@@ -25,16 +25,38 @@ wheels/
 grimore.db
 grimore.db-wal
 grimore.db-shm
+grimore.db-journal
 grimore.pid
 grimore.log
 backups/
 test_vault/
+
+# Your local config: vault path, model names and timeouts are all
+# machine-specific. Copy grimore.toml.example and edit that instead.
+grimore.toml
+
+# Project config. settings.json and agents/ ARE tracked on
+# purpose -- the security-redteam agent and the commit/push denials are
+# project rules, not personal ones. Only per-developer overrides are local.
+.claude/settings.local.json
+
+# Benchmark artifacts. The harness scripts are tracked; the vault it
+# generates, its throwaway workspace and the measured numbers are not --
+# make_vault.py reproduces the vault byte-for-byte from its seed.
+bench/vault/
+bench/work/
+bench/results*.json
+
+# Internal planning notes.
+GRI/
 
 # Tooling caches
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # IDE
@@ -43,6 +65,8 @@ htmlcov/
 
 # Environment and Secrets
 .env
+.env.local
+.env.*.local
 .venv
 venv/
 ENV/
