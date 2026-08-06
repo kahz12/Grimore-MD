@@ -1,0 +1,86 @@
+# Grimore configuration.
+#
+#   cp grimore.toml.example grimore.toml
+#
+# Every key below is optional: omit it and the built-in default applies, so a
+# file containing nothing but [vault].path is a valid config. The values here
+# are the defaults unless a comment says otherwise.
+
+[vault]
+# The directory Grimore reads. Everything else is derived from it.
+path = "./vault"
+ignored_dirs = [".obsidian", ".trash", ".git", "Templates"]
+
+[cognition]
+# Ollama model names as `ollama list` prints them. Pick the largest pair your
+# hardware answers with in reasonable time -- see the timeout notes below.
+model_llm_local = "qwen2.5:3b"
+model_embeddings_local = "nomic-embed-text"
+
+# Local-first: when false, no remote LLM backend can be selected even if one is
+# configured. Leave it false unless you deliberately want calls leaving the
+# machine.
+allow_remote = false
+
+# Hybrid retrieval -- fuse BM25 (FTS5) with cosine similarity via RRF.
+hybrid_search = true
+rrf_k = 60
+
+# Minimum cosine similarity for `grimore connect` to propose a wikilink.
+connect_threshold = 0.7
+# Minimum cosine similarity for `grimore dedupe` to report a near-duplicate.
+dedupe_threshold = 0.90
+
+# HTTP timeouts (seconds) for Ollama. THESE ARE MACHINE-SPECIFIC -- the
+# defaults suit a 3B-class model on a machine that answers quickly, and a
+# larger model or a CPU-only box will blow through them.
+#
+# Size them from a measurement rather than by guessing. Prompt eval, not
+# generation, dominates the cost and scales with input length:
+#
+#   curl -s http://127.0.0.1:11434/api/generate \
+#     -d '{"model":"YOUR_MODEL","prompt":"...","stream":false}' | \
+#     python3 -c 'import json,sys; d=json.load(sys.stdin); print(d)'
+#
+# Divide prompt_eval_count by prompt_eval_duration for read tokens/s. As a
+# reference point, ministral-3:8b on a CPU-only i7-6500U measured 5.7 tok/s
+# prompt eval and 1.4 tok/s generation -- a single tagging call took 319 s,
+# which needs request_timeout_s = 600.
+#
+# stream_timeout_s must cover the WHOLE prompt eval: with stream=true Ollama
+# emits no first token until it finishes, so a budget under that aborts having
+# received nothing. The symptom is the Oracle answering "returned no tokens",
+# not a timeout error. Since the Oracle sends up to context_max_chars of
+# context, this is almost always the larger of the two.
+request_timeout_s = 60   # /api/generate, JSON path
+stream_timeout_s  = 120  # /api/generate, streaming path
+embed_timeout_s   = 30   # /api/embeddings
+
+# Tunables you rarely need to touch. Shown with their defaults.
+# chunk_store_chars         = 500     # chars of chunk text kept in the DB
+# context_max_chars         = 16000   # hard cap on the context sent to the LLM
+# embed_batch_size          = 32      # texts per /api/embeddings request
+# circuit_failure_threshold = 5       # consecutive failures that open the breaker
+# circuit_cooldown_s        = 120     # how long it stays open
+
+[memory]
+db_path = "grimore.db"
+
+[shell]
+# max_turns = 3   # conversation turns kept as Oracle context; 0 disables memory
+
+[output]
+# dry_run = true is the default ON PURPOSE: a scan writes tags, summaries and
+# categories into your notes' frontmatter. Run once with it on to see what
+# would change, then set it to false (or pass --no-dry-run) once you trust it.
+dry_run = true
+# Commit vault changes to Git before writing, when the vault is a repo.
+auto_commit = true
+
+[maintenance]
+# Periodic housekeeping run from the daemon: VACUUM, WAL checkpoint, tag purge.
+enabled = true
+interval_hours = 24
+vacuum = true
+purge_tags = true
+wal_checkpoint = true
