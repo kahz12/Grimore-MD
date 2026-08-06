@@ -7,6 +7,7 @@ idempotent migrations that upgrade an existing vault DB in place.
 """
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Optional
 
@@ -44,24 +45,30 @@ class SchemaMixin(DbBase):
             probe.close()
         return True
 
-    @contextmanager
-    def _get_connection(self):
-        """Yields a new SQLite connection with optimized settings for concurrency.
+    def _new_connection(self) -> sqlite3.Connection:
+        """Open and tune one connection. Called once per thread, not per query.
 
-        Context manager: commit on clean exit, rollback on exception —
-        the same transactional semantics as sqlite3's own ``with conn:``
-        — plus a guaranteed ``close()``, which the bare Connection context
-        manager does NOT do. Before this, every call site leaked its
-        connection to the GC; harmless in short-lived CLI runs but a
-        steady FD drip in the long-running daemon.
+        ``check_same_thread=False`` is safe here only because the connection is
+        handed out through :meth:`_thread_conn`, which keeps exactly one per
+        thread in thread-local storage. The flag exists so :meth:`close` can
+        reclaim a connection from a thread other than the one that opened it
+        during teardown.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         # WAL (Write-Ahead Logging) lets the daemon write while the CLI reads.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        # Load sqlite-vec on every connection so its virtual tables and
-        # MATCH operator are visible. Cheap (~tens of µs) once the .so is
-        # cached in the OS page cache.
+        # Wait for a writer instead of failing instantly. WAL allows N readers
+        # plus one writer, so with the daemon indexing while the CLI queries,
+        # the loser of a write race previously surfaced as "database is
+        # locked". Five seconds is far longer than any single statement here.
+        conn.execute("PRAGMA busy_timeout=5000")
+        # 16 MB page cache and a 256 MB mmap window. Both are per-connection
+        # and were pointless when every query opened its own connection --
+        # a cache that is discarded microseconds later never gets a hit.
+        conn.execute("PRAGMA cache_size=-16000")
+        conn.execute("PRAGMA mmap_size=268435456")
+        # Load sqlite-vec so its virtual tables and MATCH operator are visible.
         if self._vec_available:
             try:
                 import sqlite_vec  # type: ignore[import-not-found]
@@ -72,11 +79,100 @@ class SchemaMixin(DbBase):
                 # Flip the flag off so we don't keep retrying every call.
                 logger.warning("sqlite_vec_load_failed", error=str(e))
                 self._vec_available = False
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+        return conn
+
+    def _thread_conn(self) -> sqlite3.Connection:
+        """Return this thread's connection, opening it on first use.
+
+        The generation counter is what makes reuse-after-close correct. A
+        connection lives in the owning thread's local storage, so :meth:`close`
+        -- which may run on a different thread -- cannot clear another thread's
+        slot. Bumping the generation instead invalidates every cached handle at
+        once, and each thread notices on its next call and reopens.
+        """
+        tl = self._local
+        conn = getattr(tl, "conn", None)
+        if conn is not None and getattr(tl, "generation", None) == self._generation:
+            return conn
+        conn = self._new_connection()
+        tl.conn = conn
+        tl.generation = self._generation
+        with self._conn_lock:
+            # Reap before inserting. A dead thread's local storage is gone, but
+            # the registry still holds a strong reference, so without this the
+            # connection and its file descriptor would live until close().
+            # Thread pools that retire idle workers -- anyio's, which is what
+            # Starlette runs sync handlers on -- churn threads for the life of
+            # the process, so the leak is unbounded and ends in EMFILE.
+            # Reaping here and not on every call keeps it off the hot path:
+            # this branch runs once per thread, not once per query.
+            self._reap_dead_locked()
+            self._connections[threading.get_ident()] = (
+                threading.current_thread(), conn,
+            )
+        return conn
+
+    def _reap_dead_locked(self) -> None:
+        """Close connections whose owning thread has exited. Caller holds the lock.
+
+        Liveness is checked against the stored Thread object rather than the
+        ident key: idents are recycled by the OS, so a new thread can inherit a
+        dead one's ident and would otherwise look alive.
+        """
+        dead = [
+            ident for ident, (thread, _conn) in self._connections.items()
+            if not thread.is_alive()
+        ]
+        for ident in dead:
+            _thread, conn = self._connections.pop(ident)
+            try:
+                conn.close()
+            except sqlite3.Error as e:  # pragma: no cover - defensive
+                logger.warning("db_reap_failed", error=str(e))
+
+    @contextmanager
+    def _get_connection(self):
+        """Yields this thread's SQLite connection, wrapped in a transaction.
+
+        Context manager: commit on clean exit, rollback on exception — the
+        same transactional semantics as sqlite3's own ``with conn:``. What
+        changed is that the connection is no longer opened and closed per
+        call. It used to be: every one of the 73 data-access methods paid a
+        ``sqlite3.connect`` plus ``PRAGMA journal_mode=WAL`` (which rewrites
+        the DB header) plus a fresh ``sqlite_vec.load``. ``store_embedding``
+        runs once per chunk, so indexing 2000 notes opened 66396 connections
+        and paid a WAL fsync on each commit -- the dominant cost of a scan.
+
+        Reusing the connection is only safe because ``_get_connection`` is
+        never re-entered while already held: nesting would let the inner
+        ``with conn:`` commit the outer block's transaction early. That
+        invariant is enforced by tests/test_connection_reuse.py.
+
+        Lifetime is now explicit rather than automatic: whoever builds the
+        Database must call :meth:`close` (Session.close and daemon.stop do).
+        """
+        conn = self._thread_conn()
+        with conn:
+            yield conn
+
+    def close(self) -> None:
+        """Close every connection this Database opened, from any thread.
+
+        Idempotent, and safe to call while other threads still hold handles:
+        they see the bumped generation and reopen on next use. The daemon's
+        observer thread and the main thread each own one, so teardown has to
+        reach across threads -- hence the registry rather than just clearing
+        the caller's own thread-local slot.
+        """
+        with self._conn_lock:
+            connections = [conn for _thread, conn in self._connections.values()]
+            self._connections = {}
+            self._generation += 1
+        for conn in connections:
+            try:
+                conn.close()
+            except sqlite3.Error as e:  # pragma: no cover - defensive
+                logger.warning("db_close_failed", error=str(e))
 
     def _init_db(self):
         """Initializes the database schema if it doesn't exist."""

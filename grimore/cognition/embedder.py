@@ -54,6 +54,13 @@ class Embedder:
             pins=SecurityGuard.loopback_pins(raw_host, allow_remote=allow_remote)
         )
         self.cache = cache
+        # Sub-batch size for /api/embed. getattr keeps stand-in configs and
+        # pre-existing TOMLs on the historical 32. Floored at 1: a zero or
+        # negative value would make the batching loop below advance by zero
+        # and spin forever.
+        self.batch_size = max(1, int(getattr(
+            config.cognition, "embed_batch_size", _EMBED_BATCH_SIZE
+        )))
 
     def _cache_key(self, text: str) -> str:
         """Generates a unique cache key based on the model name and input text."""
@@ -166,9 +173,9 @@ class Embedder:
             pending_idx.append(i)
             pending_txt.append(t)
 
-        for start in range(0, len(pending_txt), _EMBED_BATCH_SIZE):
-            sub_idx = pending_idx[start:start + _EMBED_BATCH_SIZE]
-            sub_txt = pending_txt[start:start + _EMBED_BATCH_SIZE]
+        for start in range(0, len(pending_txt), self.batch_size):
+            sub_idx = pending_idx[start:start + self.batch_size]
+            sub_txt = pending_txt[start:start + self.batch_size]
             raw_vecs = self._embed_many_remote(sub_txt)
             if raw_vecs is None:
                 # Endpoint unavailable / errored → serial fallback (still caches).
