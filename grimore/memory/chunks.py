@@ -12,6 +12,16 @@ from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Host parameters per statement; see the note on notes._MAX_SQL_VARS.
+_MAX_SQL_VARS = 900
+
+
+def _batched(items: list, size: int) -> Iterable[list]:
+    """Yield ``items`` in consecutive slices of at most ``size``."""
+    for start in range(0, len(items), size):
+        yield items[start:start + size]
+
+
 class ChunksMixin(DbBase):
     """Embedding rows, vec mirror, and embedding cache for :class:`Database`."""
 
@@ -37,6 +47,60 @@ class ChunksMixin(DbBase):
         if not row:
             return (None, None)
         return (row[0], row[1])
+
+    def get_chunk_anchors_bulk(
+        self, pairs: Iterable[tuple[int, str]],
+    ) -> dict[tuple[int, str], tuple[Optional[int], Optional[str]]]:
+        """Batch form of :py:meth:`get_chunk_anchors`.
+
+        Takes ``(note_id, text_content)`` pairs and returns them mapped to
+        ``(page, heading)``. The Oracle resolves one anchor per cited chunk;
+        done singly that is a query each, and each one scans ``text_content``,
+        which has no index of its own (only ``idx_embeddings_note_id`` bounds
+        it). One statement for the whole citation set costs the same scan work
+        but pays the per-statement overhead once.
+
+        Selection is ``note_id IN (...) AND text_content IN (...)`` — a
+        superset of the requested pairs, since it also matches cross
+        combinations — and the pairing is re-established in Python. That keeps
+        the note_id index usable; restricting to exact pairs would need an
+        ``OR`` chain that SQLite plans far worse.
+
+        Tie-breaking matches the singular method: ``LIMIT 1`` with no
+        ``ORDER BY`` returns the first row the scan reaches, which for this
+        index-bounded plan is the lowest ``id``. Ordering by ``id`` and
+        keeping the first occurrence per key reproduces that. Pairs with no
+        matching row are absent from the result, so ``.get(key, (None, None))``
+        gives the singular contract.
+        """
+        wanted = {(int(n), t) for n, t in pairs}
+        if not wanted:
+            return {}
+
+        note_ids = sorted({n for n, _ in wanted})
+        texts = sorted({t for _, t in wanted})
+        anchors: dict[tuple[int, str], tuple[Optional[int], Optional[str]]] = {}
+
+        with self._get_connection() as conn:
+            # Both IN lists ride in the same statement, so the chunk size has
+            # to bound their sum, not each separately.
+            for n_batch in _batched(note_ids, _MAX_SQL_VARS // 2):
+                for t_batch in _batched(texts, _MAX_SQL_VARS // 2):
+                    rows = conn.execute(
+                        "SELECT note_id, text_content, page, heading "
+                        "FROM embeddings "
+                        f"WHERE note_id IN ({','.join('?' * len(n_batch))}) "
+                        f"AND text_content IN ({','.join('?' * len(t_batch))}) "
+                        "ORDER BY id",
+                        tuple(n_batch) + tuple(t_batch),
+                    ).fetchall()
+                    for note_id, text, page, heading in rows:
+                        key = (int(note_id), text)
+                        # Cross-product rows for pairs nobody asked about, and
+                        # the 2nd+ duplicate of a key, are both dropped here.
+                        if key in wanted and key not in anchors:
+                            anchors[key] = (page, heading)
+        return anchors
 
     def store_embedding(
         self,

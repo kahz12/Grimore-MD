@@ -42,8 +42,10 @@ class TestOracleContextCap:
         o.config = config
         o.system_prompt_template = "TEMPLATE: {context}"
         o.db.fts_available = False
-        o.db.get_note_title.side_effect = lambda nid: f"Note {nid}"
-        o.db.get_chunk_anchors.return_value = (None, None)
+        o.db.get_note_titles.side_effect = lambda nids: {
+            nid: f"Note {nid}" for nid in nids
+        }
+        o.db.get_chunk_anchors_bulk.side_effect = lambda pairs: dict.fromkeys(pairs, (None, None))
         o.embedder.embed.return_value = [0.0] * 16
         o.context_max_chars = config.cognition.context_max_chars
         return o

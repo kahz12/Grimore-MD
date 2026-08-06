@@ -304,6 +304,24 @@ class Oracle:
         )
         return block[: self._HISTORY_MAX_CHARS]
 
+    def _titles_for(self, items) -> dict:
+        """``{note_id: title}`` for the retrieved set, in one query.
+
+        No per-note fallback: ``self.db`` is a :class:`Database`, which always
+        carries the batch methods. Duck-typing the capability here would be
+        worse than useless — a ``MagicMock`` stand-in answers ``getattr`` with
+        a mock that silently returns a mock instead of a mapping, so the
+        "compatible" branch would be the one that breaks.
+        """
+        return self.db.get_note_titles([it['note_id'] for it in items])
+
+    def _anchors_for(self, items) -> dict:
+        """``{(note_id, text): (page, heading)}`` for the cited chunks, in one
+        query."""
+        return self.db.get_chunk_anchors_bulk(
+            [(it['note_id'], it['text']) for it in items]
+        )
+
     def _build_context(self, question: str, top_k: int, extra_sources=None,
                        retrieval_k: "int | None" = None,
                        timings: "dict | None" = None):
@@ -385,8 +403,15 @@ class Oracle:
                 (title, f"--- Source: [[{title}]] (pinned) ---\n{safe_text}")
             )
 
+        # Metadata for the whole result set in two statements instead of two
+        # per chunk. Titles cover the full ranking pool (``retrieved`` spans
+        # it); anchors only the head that actually reaches the context, since
+        # that's all that gets cited.
+        titles = self._titles_for(similar)
+        anchors = self._anchors_for(similar[:top_k])
+
         for rank_pos, item in enumerate(similar):
-            title = self.db.get_note_title(item['note_id'])
+            title = titles.get(item['note_id'])
             if not title:
                 logger.warning("orphan_embedding", note_id=item['note_id'])
                 continue
@@ -404,7 +429,9 @@ class Oracle:
             # the ranking pool (e.g. MRR@10 behind a top-5 answer).
             if rank_pos >= top_k:
                 continue
-            page, heading = self.db.get_chunk_anchors(item['note_id'], item['text'])
+            page, heading = anchors.get(
+                (item['note_id'], item['text']), (None, None)
+            )
             label = _format_source_label(title, page, heading)
             safe_text = SecurityGuard.wrap_untrusted(
                 SecurityGuard.sanitize_prompt(item['text']),
