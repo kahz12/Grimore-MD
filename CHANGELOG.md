@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-08-11
+
 ### Added
 - Six previously hard-coded constants are now `grimore.toml` keys, all read
   with defaults so existing configs behave identically: `chunk_store_chars`,
@@ -16,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `grimore.toml.example` — a documented template replacing the tracked
   `grimore.toml`, which carried one machine's vault path, model names and
   timeouts. Copy it and edit your copy; the real file is now gitignored.
+- Retrieval filters. `grimore ask` takes `--category`, `--tag` and `--format`,
+  and `POST /api/search` the matching `category` / `tags` / `formats` keys, so
+  a question can be aimed at one folder, one topic or one document type. They
+  combine with AND, repeated `--tag` included, and `--category` covers
+  descendants. Narrowing also makes retrieval faster: on 18k chunks a filter
+  selecting 1% of notes runs 86% quicker than searching everything, and the
+  whole selectivity range comes out at or below the unfiltered cost. A filter
+  matching nothing returns nothing rather than falling back to the whole
+  vault, and a malformed one on the API is a 400.
+- `[cognition].conditional_rewrite` (default on) and
+  `[cognition].rewrite_timeout_s` (default 60). A follow-up is now only
+  rewritten into a standalone search query when it actually points at the
+  previous turn — a pronoun, a demonstrative, an opening conjunction, or fewer
+  than five words. A question that names its own subject retrieves the same
+  documents either way, so the LLM round-trip is skipped: 30% off total rewrite
+  time on the eval set, with Hit@1 and MRR unchanged. Set `conditional_rewrite`
+  false to rewrite on every turn that has history.
 - `[cognition].vec_matrix_cache` (default on) — the dense scoring matrix is
   stored as a `.npy` beside the database and reloaded memory-mapped, so a
   one-shot `grimore ask` no longer rebuilds it from the whole embeddings table.
@@ -64,6 +83,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work in progress and turned one over-budget call into three, reporting the
   failure 3x later than the configured timeout. Connection retries are kept —
   those are what let the daemon start before Ollama is up.
+- The follow-up rewrite no longer inherits `request_timeout_s`. It runs before
+  retrieval with nothing on screen, so a budget sized for answer generation
+  (600 s is a plausible setting) made a slow rewrite look like a hang; it now
+  has its own, and falls back to the original question on expiry.
 - `migrate-embeddings` now drops the matrix cache on its final swap. The swap
   re-inserts every row under its original id, so the row count and max id come
   out identical even though every vector changed — nothing the cache seals on
@@ -76,6 +99,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "returned no tokens" rather than as a timeout.
 
 ### Fixed
+- An optional LLM call could disable the LLM for everything else. The
+  follow-up rewrite runs on a deliberately tight deadline, and its timeouts
+  counted toward the shared circuit breaker — five of them opened it, after
+  which both further rewrites *and* answer generation were cancelled outright.
+  `LLMRouter.complete(optional=True)` marks calls whose failure is not evidence
+  of an unhealthy backend; they neither trip the breaker nor are blocked by it.
+- `daemon stop` exited non-zero with a traceback after successfully stopping
+  the daemon. The daemon unlinks its own PID file on the way out, so by the
+  time the stopper saw the process gone the file was usually already missing
+  and the removal raised FileNotFoundError. Present since before 3.2.0.
+- The version reported by `/api/*` and by the MCP `serverInfo` had drifted to
+  2.4.0 while the package shipped 3.2.0. Both now read it from the package, so
+  they cannot diverge again.
+- `LLMRouter`'s circuit-breaker counters are now guarded by a lock. Not a fix
+  for an observed failure: a GIL build lost no increments across 160,000
+  concurrent updates, so this is forward-compatibility for free-threaded
+  builds on a path that already makes network calls.
 - The sqlite-vec mirror could break silently. `_create_vec_table` set the
   cached dimension inside the transaction that creates `embeddings_vec`, so a
   rollback undid the DDL but left the attribute pointing at a table that no
