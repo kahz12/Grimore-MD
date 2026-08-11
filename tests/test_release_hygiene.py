@@ -101,3 +101,40 @@ class TestVersionIsSingleSourced:
             for line in src.splitlines():
                 if re.search(r'(_API_VERSION|"version")\s*[:=]\s*"\d+\.\d+', line):
                     pytest.fail(f"{mod} restates a version literal: {line.strip()}")
+
+
+class TestFirstRunOnAMissingVault:
+    """`grimore preflight` is the first command the README tells a new user to
+    run, and at that point the vault often does not exist yet. It used to die
+    with a GitPython traceback instead of the check that exists precisely to
+    explain the problem.
+    """
+
+    def test_git_guard_survives_a_vault_that_does_not_exist(self, tmp_path):
+        from grimore.output.git_guard import GitGuard
+        guard = GitGuard(str(tmp_path / "definitely-not-here"))
+        assert guard.repo is None
+        assert guard.is_repo_ready() is False
+
+    def test_git_guard_still_handles_a_directory_that_is_not_a_repo(self, tmp_path):
+        from grimore.output.git_guard import GitGuard
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        guard = GitGuard(str(plain))
+        assert guard.repo is None
+        assert guard.is_repo_ready() is False
+
+    def test_preflight_reports_the_missing_vault_instead_of_raising(self, tmp_path):
+        from grimore.utils.config import (
+            CognitionConfig, Config, MemoryConfig, VaultConfig,
+        )
+        from grimore.utils.preflight import PreflightChecker
+        cfg = Config(
+            vault=VaultConfig(path=str(tmp_path / "no-vault")),
+            cognition=CognitionConfig(),
+            memory=MemoryConfig(db_path=str(tmp_path / "g.db")),
+        )
+        report = PreflightChecker(cfg).run(check_git=True)   # must not raise
+        vault = [c for c in report.checks if c.name == "vault_accessible"]
+        assert vault and not vault[0].ok
+        assert "does not exist" in vault[0].message

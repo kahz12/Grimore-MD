@@ -12,7 +12,7 @@
 
 **An automated knowledge engine for your document vault**
 
-[![Version](https://img.shields.io/badge/version-3.2.0-6B4BCB?style=for-the-badge)](#) [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![Local-First](https://img.shields.io/badge/Privacy-Local--First-2EA043?style=for-the-badge&logo=ollama&logoColor=white)](https://ollama.com/) [![License](https://img.shields.io/badge/License-MIT-E2B100?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/version-3.3.0-6B4BCB?style=for-the-badge)](#) [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![Local-First](https://img.shields.io/badge/Privacy-Local--First-2EA043?style=for-the-badge&logo=ollama&logoColor=white)](https://ollama.com/) [![License](https://img.shields.io/badge/License-MIT-E2B100?style=for-the-badge)](LICENSE)
 
 <br>
 
@@ -85,13 +85,34 @@ cd Grimore-MD
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
+cp grimore.toml.example grimore.toml                    # then set [vault].path
 grimore preflight                                       # validate config + adapters
-grimore scan --vault-path /path/to/vault --no-dry-run   # first full pass
+grimore scan --no-dry-run                               # first full pass
 grimore daemon start                                    # keep the index live
 grimore shell                                           # conversational mode
 ```
 
+`grimore.toml` is yours and is not tracked — `grimore.toml.example` is the
+annotated template, and every key in it is optional bar `[vault].path`. Note
+that `[output].dry_run` ships **on**: a scan writes tags, summaries and
+categories into your notes' frontmatter, so the first run shows you what it
+would change and nothing else.
+
 Supported on **Linux**, **Windows**, and **Termux/Android** (heavy engines like PyMuPDF / OCR stay opt-in to keep the mobile install lean).
+
+### Narrowing a question
+
+`ask` can be pointed at part of the vault instead of all of it:
+
+```bash
+grimore ask "retention policy?" --category infra          # and its descendants
+grimore ask "retention policy?" --tag compliance --tag security
+grimore ask "what do the PDFs say?" --format pdf
+```
+
+Filters combine with AND, repeated `--tag` included, and restrict what is
+searched at all — so the Oracle can only cite from what survives them. The same
+narrowing is available on `POST /api/search` as `category` / `tags` / `formats`.
 
 ## Beyond the terminal
 

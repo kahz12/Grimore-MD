@@ -22,6 +22,13 @@ class GitGuard:
         except git.InvalidGitRepositoryError:
             logger.warning("git_not_found", path=str(self.vault_path))
             self.repo = None
+        except git.NoSuchPathError:
+            # The vault directory does not exist at all. Callers already
+            # report that themselves -- preflight has a check for it with a
+            # fix hint -- so raising here only replaced a clear message with a
+            # traceback, which is what a new user hit on their first command.
+            logger.warning("git_vault_missing", path=str(self.vault_path))
+            self.repo = None
 
     def commit_pre_change(self, file_path: str, reason: str = "grimore: pre-change snapshot"):
         """
