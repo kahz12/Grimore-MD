@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-08-11
+
+### Fixed
+- `grimore preflight` crashed with a GitPython traceback when the vault path
+  did not exist — which is the state a new user is in when they run it, since
+  the quick start puts it before creating a vault. `GitGuard` caught
+  `InvalidGitRepositoryError` but not `NoSuchPathError`, so the failure buried
+  the `vault_accessible` check that exists to explain the problem and suggest
+  the fix. Present since before 3.2.0.
+- The README sent readers from `pip install -e .` straight to `preflight` with
+  no mention of where the config comes from, a dead end since `grimore.toml`
+  stopped being tracked in 3.3.0. The quick start now copies
+  `grimore.toml.example`, and says that `dry_run` ships on so a first scan
+  shows what it would write rather than writing it.
+
 ## [3.3.0] - 2026-08-11
 
 ### Added
