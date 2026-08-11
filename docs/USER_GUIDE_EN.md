@@ -236,6 +236,21 @@ embed_batch_size  = 32       # texts per /api/embed request. Larger batches cut
                              # round-trips on a batching server.
 circuit_failure_threshold = 5    # back-to-back failures before the breaker opens
 circuit_cooldown_s        = 120  # seconds to short-circuit before retrying
+conditional_rewrite = true   # rewrite a follow-up into a standalone search
+                             # query ONLY when it points at the previous turn
+                             # (pronouns, demonstratives, an opening
+                             # conjunction, or fewer than 5 words). A question
+                             # that names its own subject retrieves the same
+                             # documents either way, so the round-trip is
+                             # skipped. Set false to rewrite whenever there is
+                             # history.
+rewrite_timeout_s = 60       # budget for that rewrite alone. It runs before
+                             # retrieval with nothing on screen, so it must not
+                             # inherit request_timeout_s. On expiry the
+                             # original question is used. Its failures do not
+                             # count toward the circuit breaker: it is optional
+                             # work, and opening the breaker would cancel
+                             # answer generation too.
 vec_matrix_cache  = true     # store the dense scoring matrix as a .npy beside
                              # the database and reload it memory-mapped.
                              # Without it every one-shot `grimore ask` rebuilds
@@ -517,6 +532,25 @@ Hallucinated citations (titles the model invents that weren't in the
 retrieved context) are stripped from the rendered answer and logged at
 `oracle_citation_hallucinated`. The returned source list always
 reflects the *retrieved* notes, not whatever the model claimed.
+
+Narrow what gets searched with `--category`, `--tag` and `--format`:
+
+```bash
+grimore ask "retention policy?" --category infra
+grimore ask "retention policy?" --tag compliance --tag security   # both tags
+grimore ask "what do the PDFs say?" --format pdf
+```
+
+The filters restrict which notes are searched at all, so the Oracle can only
+cite from what survives them. They combine with AND, and so do repeated
+`--tag`. `--category` includes descendants, so `infra` also covers
+`infra/networking`. When nothing matches, the command says so and stops rather
+than quietly answering from the whole vault.
+
+There is no date filter. The only timestamps on a note record when the scanner
+last touched it, not anything about the document, so after one scan every note
+shares a timestamp — a "modified after" filter built on that would sort by scan
+order.
 
 ### `eval`
 
@@ -812,7 +846,7 @@ Boots a read-only HTTP API + minimal vanilla-JS browser UI on
 |---|---|
 | `GET /api/health` | Version + preflight summary. |
 | `POST /api/ask` | `{question, top_k?, stream?}`. SSE streaming when `stream: true`. |
-| `POST /api/search` | `{query, top_k?}` → hybrid hits with snippets. |
+| `POST /api/search` | `{query, top_k?, category?, tags?, formats?}` → hybrid hits with snippets. The filter keys narrow which notes are searched; a malformed one is a 400 rather than a silently unfiltered search. |
 | `GET /api/notes/{id}` | Note metadata + on-disk body. |
 | `GET /api/categories` | Vault-wide counts. |
 | `GET /` | The web UI. |

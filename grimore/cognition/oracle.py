@@ -5,6 +5,7 @@ This module combines semantic search (via the Connector) with LLM completion
 """
 import re
 import time
+import unicodedata
 from pathlib import Path
 from typing import Iterator
 
@@ -24,6 +25,17 @@ logger = get_logger(__name__)
 # and the model's own answer space (B-07).
 _ORACLE_CONTEXT_MAX_CHARS = 16_000
 _CONTEXT_SEPARATOR = "\n\n"
+
+# Default budget for the follow-up rewrite. It is optional work that blocks
+# retrieval with nothing on screen, so it gets its own deadline rather than
+# the generation-sized request timeout (600 s is a plausible setting there).
+#
+# Sized from measurement, not taste: on the slowest configuration to hand
+# (ministral-3:8b, CPU-only) rewrites ran 14.3-42.7 s, median 19.3 s. A 20 s
+# budget killed 43% of them; 45 s killed none. 60 s keeps headroom above that
+# worst case while still bounding the wait an order of magnitude below the
+# request timeout. On hardware where a rewrite takes a second, it never fires.
+_REWRITE_TIMEOUT_S = 60
 
 # Matches a single ``[[wikilink]]`` citation; group 1 is the inner label.
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
@@ -54,6 +66,8 @@ class Oracle:
     # ``Oracle.__new__(Oracle)`` to isolate it from the LLM and the DB.
     # __init__ shadows this with the configured value.
     context_max_chars = _ORACLE_CONTEXT_MAX_CHARS
+    conditional_rewrite = True
+    rewrite_timeout_s = _REWRITE_TIMEOUT_S
 
     def __init__(self, config, db: Database, router: LLMRouter, embedder: Embedder):
         self.config = config
@@ -77,6 +91,12 @@ class Oracle:
         self.context_max_chars = int(getattr(
             config.cognition, "context_max_chars", _ORACLE_CONTEXT_MAX_CHARS
         ))
+        self.conditional_rewrite = bool(getattr(
+            config.cognition, "conditional_rewrite", True
+        ))
+        self.rewrite_timeout_s = int(getattr(
+            config.cognition, "rewrite_timeout_s", _REWRITE_TIMEOUT_S
+        ))
         self.system_prompt_template = self._load_prompt()
 
     def _load_prompt(self):
@@ -86,7 +106,8 @@ class Oracle:
             return f.read()
 
     def ask(self, question: str, top_k: int = 5, extra_sources=None, history=None,
-            retrieval_k: "int | None" = None) -> dict:
+            retrieval_k: "int | None" = None,
+            filter_note_ids: "set[int] | None" = None) -> dict:
         """
         Main RAG entry point:
         1. Generates an embedding for the user's question.
@@ -111,6 +132,7 @@ class Oracle:
         full_context, sources, retrieved = self._build_context(
             retrieval_query, top_k, extra_sources=extra_sources,
             retrieval_k=retrieval_k, timings=timings,
+            filter_note_ids=filter_note_ids,
         )
         if full_context is None:
             timings["generate_s"] = 0.0
@@ -152,7 +174,8 @@ class Oracle:
         }
 
     def retrieve(self, question: str, top_k: int = 10, history=None,
-                 timings: "dict | None" = None) -> list[dict]:
+                 timings: "dict | None" = None,
+                 filter_note_ids: "set[int] | None" = None) -> list[dict]:
         """Retrieval-only path: rank the top-``top_k`` sources for a question
         *without* generating an answer.
 
@@ -178,7 +201,10 @@ class Oracle:
             timings["rewrite_s"] = time.perf_counter() - t_rewrite
         # ``top_k`` here is the ranking depth; the discarded context is built
         # at the same depth, which is fine — we only want ``retrieved``.
-        _, _, retrieved = self._build_context(retrieval_query, top_k, timings=timings)
+        _, _, retrieved = self._build_context(
+            retrieval_query, top_k, timings=timings,
+            filter_note_ids=filter_note_ids,
+        )
         return retrieved
 
     @staticmethod
@@ -246,6 +272,81 @@ class Oracle:
                 turns.append({"q": q, "a": a})
         return turns
 
+    # Words that point at something said earlier rather than naming it. Only
+    # third-person and demonstrative forms: "you" and "I" refer to the speaker,
+    # not to a previous turn, so "What does a Kotlin data class generate for
+    # you?" is self-contained and must not match.
+    #
+    # Spanish needs care that English does not. "la", "los" and "las" are
+    # articles far more often than pronouns, and "otro"/"mismo" are ordinary
+    # adjectives, so none of them are listed -- a false positive here costs a
+    # needless LLM round-trip, which is the entire thing being removed.
+    _REFERENTIAL_WORDS = frozenset("""
+        it its itself they them their theirs he him his she her hers
+        that this these those there then such same one ones former latter
+        ella ellos ellas eso esto esa ese esas esos aquel aquella aquello
+        su sus le les ahi alli alla entonces
+    """.split())
+
+    # Matched *before* accent folding, because folding destroys the only thing
+    # that separates them from an everyday word: "él" (pronoun) becomes "el"
+    # (definite article), which appears in almost any Spanish sentence. That
+    # collision made "¿Qué es el método mayéutico de Sócrates?" -- a fully
+    # self-contained question -- look like a follow-up needing resolution.
+    _REFERENTIAL_ACCENTED = frozenset({"él", "aquí", "ahí", "allí", "allá"})
+
+    # A question opening with a coordinating conjunction is a continuation of
+    # the previous turn almost by definition ("And what else is in it?",
+    # "¿Y cuáles son sus desventajas?").
+    _CONTINUATION_OPENERS = frozenset({"and", "y", "but", "pero", "or", "o",
+                                       "so", "then", "entonces", "también",
+                                       "tambien"})
+
+    # Below this many words a question rarely carries enough of its own topic
+    # to retrieve on ("¿Por qué?", "Expand on that"). Deliberately small: the
+    # cost of guessing wrong in this direction is one round-trip, while
+    # guessing wrong the other way loses the answer.
+    _SHORT_QUESTION_WORDS = 5
+
+    @classmethod
+    def _needs_rewrite(cls, question: str, history) -> bool:
+        """Whether this question can be retrieved on without its history.
+
+        The rewrite costs a full LLM round-trip, and most follow-ups do not
+        need it: a question that names its own subject retrieves the same
+        documents either way. What genuinely needs resolving is a question
+        that *points* at the previous turn instead of restating it.
+
+        Three signals, any of which is enough:
+
+        * a referential word (pronoun, demonstrative, possessive);
+        * an opening conjunction, which marks a continuation;
+        * fewer than :py:attr:`_SHORT_QUESTION_WORDS` words, too little to
+          retrieve on regardless of vocabulary.
+
+        Biased towards rewriting on purpose. A false positive wastes one
+        round-trip; a false negative retrieves against an unresolved pronoun
+        and can lose the answer entirely, so the asymmetry decides every
+        borderline call.
+        """
+        if not history:
+            return False
+        words = re.findall(r"[^\W\d_]+", question.lower(), flags=re.UNICODE)
+        if not words:
+            return True
+        if len(words) < cls._SHORT_QUESTION_WORDS:
+            return True
+        if words[0] in cls._CONTINUATION_OPENERS:
+            return True
+        if set(words) & cls._REFERENTIAL_ACCENTED:
+            return True
+        # Fold for the rest, so an unaccented "ahi" still matches.
+        folded = {
+            unicodedata.normalize("NFKD", w).encode("ascii", "ignore").decode()
+            for w in words
+        }
+        return bool(folded & cls._REFERENTIAL_WORDS)
+
     def _rewrite_query(self, question: str, history) -> str:
         """Condense a follow-up + recent turns into one standalone retrieval
         query, resolving pronouns/references ("expand on that" → the topic).
@@ -256,6 +357,9 @@ class Oracle:
         conversation memory existed.
         """
         if not history:
+            return question
+        if self.conditional_rewrite and not self._needs_rewrite(question, history):
+            logger.debug("oracle_query_rewrite_skipped", question=question)
             return question
         convo = "\n".join(
             f"Q: {t.get('q', '').strip()}\nA: {(t.get('a', '') or '').strip()[:300]}"
@@ -273,6 +377,11 @@ class Oracle:
                 prompt=prompt,
                 system_prompt="You rewrite follow-up questions into standalone search queries.",
                 json_format=True,
+                timeout_s=self.rewrite_timeout_s,
+                # Best-effort work on a tight deadline: its timeouts say
+                # nothing about backend health, and letting them open the
+                # circuit breaker would disable answer generation too.
+                optional=True,
             )
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("oracle_query_rewrite_failed", error=str(e))
@@ -326,7 +435,8 @@ class Oracle:
 
     def _build_context(self, question: str, top_k: int, extra_sources=None,
                        retrieval_k: "int | None" = None,
-                       timings: "dict | None" = None):
+                       timings: "dict | None" = None,
+                       filter_note_ids: "set[int] | None" = None):
         """Run retrieval + context-cap and return (full_context, sources, retrieved).
 
         Returns ``(None, [], retrieved)`` when no context is usable, so the
@@ -363,6 +473,7 @@ class Oracle:
                 query_text=question,
                 query_vector=query_vector,
                 top_k=n_retrieve,
+                filter_note_ids=filter_note_ids,
                 rrf_k=getattr(self.config.cognition, "rrf_k", 60),
                 rerank=getattr(self.config.cognition, "rerank", False),
                 rerank_pool=getattr(self.config.cognition, "rerank_pool", 20),
@@ -370,7 +481,8 @@ class Oracle:
             )
             rerank_s = search_timings.get("rerank_s", 0.0)
         elif query_vector:
-            similar = self.connector.find_similar_notes(query_vector, top_k=n_retrieve)
+            similar = self.connector.find_similar_notes(
+                query_vector, top_k=n_retrieve, filter_note_ids=filter_note_ids)
         else:
             similar = []
         # "retrieve" is dense + BM25 + fusion; the optional rerank is subtracted
@@ -473,7 +585,9 @@ class Oracle:
 
         return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources)), retrieved
 
-    def ask_stream(self, question: str, top_k: int = 5, extra_sources=None, history=None) -> Iterator[dict]:
+    def ask_stream(self, question: str, top_k: int = 5, extra_sources=None,
+                   history=None,
+                   filter_note_ids: "set[int] | None" = None) -> Iterator[dict]:
         """Streaming variant of :meth:`ask`.
 
         Yields events::
@@ -493,7 +607,10 @@ class Oracle:
         logger.info("oracle_query_stream", question=question)
         history = self._normalize_history(history)
         retrieval_query = self._rewrite_query(question, history)
-        full_context, sources, retrieved = self._build_context(retrieval_query, top_k, extra_sources=extra_sources)
+        full_context, sources, retrieved = self._build_context(
+            retrieval_query, top_k, extra_sources=extra_sources,
+            filter_note_ids=filter_note_ids,
+        )
         if full_context is None:
             yield {"type": "done", "sources": [], "retrieved": retrieved, "dropped_citations": 0}
             return

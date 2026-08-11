@@ -67,6 +67,7 @@ def _do_ask(
     stream: bool = False,
     extra_sources: Optional[list[tuple[str, str]]] = None,
     history: Optional[list[dict]] = None,
+    filter_note_ids: Optional[set[int]] = None,
 ) -> dict:
     """Body of ``grimore ask``.
 
@@ -107,7 +108,8 @@ def _do_ask(
         sources: list[str] = []
         dropped_citations = 0
         stream_iter = session.oracle.ask_stream(
-            question, top_k=top_k, **extra_kw
+            question,
+            filter_note_ids=filter_note_ids, top_k=top_k, **extra_kw
         )
 
         # Reasoning models (qwen3.5, deepseek-r1, …) often spend tens of
@@ -161,7 +163,8 @@ def _do_ask(
             "[grimore.mystic]The Oracle listens to the whispers...[/]",
             spinner="dots12",
         ):
-            result = session.oracle.ask(question, top_k=top_k, **extra_kw)
+            result = session.oracle.ask(question,
+            filter_note_ids=filter_note_ids, top_k=top_k, **extra_kw)
         console.print()
         console.print(ui.oracle_panel(result["answer"]))
 

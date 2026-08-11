@@ -594,6 +594,154 @@ suggests itself, dedupe returns each note once, scores descend) now cover what p
 Suite after the change: **1056 passed, 6 skipped, 0 failed** · `ruff` clean · `mypy` no issues.
 `tests/test_connect_sweep.py` adds 29 cases; five mutations verified red→green.
 
+### opt. 6 — Conditional query rewrite
+
+A follow-up used to be rewritten into a standalone search query on every turn that arrived with
+history, at the cost of a full LLM round-trip before retrieval even starts. It is now only rewritten
+when it actually points at the previous turn.
+
+**Gate: `eval --retrieval-only --compare` against the recorded baseline.** This is a quality change,
+not a performance one, so the acceptance criterion is Hit@k / MRR, not the clock.
+
+| | baseline | conditional |
+|---|---:|---:|
+| hit@1 | 1.0000 | 1.0000 |
+| MRR | 1.0000 | 1.0000 |
+| rewrites skipped | 0 / 14 | 4 / 14 |
+| total rewrite time | 292.9 s | 204.6 s (**−30.1%**) |
+
+`--compare` exits 0 with 0 regressions. The −30.1% is bounded by the golden set's composition (4 of
+its 14 follow-ups are self-contained); real traffic depends on how users actually phrase follow-ups.
+
+**The heuristic.** Three signals, any of which is enough: a referential word (pronoun,
+demonstrative, possessive), an opening conjunction, or fewer than five words. Biased towards
+rewriting on purpose — a false positive wastes one round-trip, a false negative retrieves against an
+unresolved pronoun and can lose the answer, so every borderline call goes the safe way. It scores
+14/14 on the golden set's follow-ups and fires on none of the 14 root questions.
+
+**A trap in the Spanish side.** Accent-folding to catch unaccented input turns `él` (pronoun) into
+`el` (definite article), which appears in almost any Spanish sentence, and made a fully
+self-contained question look like a follow-up. The accented forms are matched before folding.
+
+**Two failures the gate caught, both introduced by this change.**
+
+The rewrite was given its own 20 s budget, chosen without measuring. Rewrites on the slowest
+configuration to hand run 14.3–42.7 s (median 19.3 s), so it killed 43% of them: hit@1 fell to 0.92
+and `--compare` exited non-zero. Re-sized from the measured distribution — 30 s kills 1 in 14, 45 s
+kills none — to 60 s, which keeps headroom over the worst case and is still an order of magnitude
+under `request_timeout_s`.
+
+Worse, and only visible because of the first: those timeouts opened the **shared circuit breaker**.
+Five failures tripped it, and the next five rewrites were cancelled outright — but the breaker also
+guards answer generation, so a tight budget on an optional call was disabling the LLM for
+everything. `LLMRouter.complete(optional=True)` now marks calls whose failure is not evidence of an
+unhealthy backend; they neither open the breaker nor are blocked by it.
+
+**Widening the golden set came first.** It had 2 follow-ups, both requiring a rewrite, which cannot
+distinguish a working heuristic from one that fires indiscriminately. It now has 14, split between
+questions that *need* resolution and questions that are already self-contained, with the
+distinction documented in the file's own header.
+
+**The gate's power is limited, and worth knowing.** Disabling the rewrite entirely drops hit@1 from
+1.0 to 0.92 — only 2 of 25 positive turns depend on it. On a 10-note vault of disjoint topics a
+follow-up lands correctly on a single topical word; only questions with no content words at all
+("Which company created it?") actually need the rewrite to retrieve. The gate catches a
+catastrophic heuristic, not a subtle one.
+
+Suite after the change: **1106 passed, 6 skipped, 0 failed** · `ruff` clean · `mypy` no issues.
+`tests/test_conditional_rewrite.py` adds 47 cases; four mutations verified red→green.
+
+### opt. 9 — Retrieval filters
+
+`ask` and `/api/search` can now be narrowed to a subset of the vault by category, tag or format.
+`resolve_note_filter` turns the criteria into a note-id set in one query, which is threaded through
+`find_hybrid`, `find_similar_notes` and `fts_search`.
+
+**Gate 1 — the filter is respected.** Retrieval returns nothing outside the set, verified on the
+real vault: unfiltered, a "biology and composition" query ranks the frogs note first; with
+`--tag apple-chemistry` it returns the apples note and nothing else.
+
+**Gate 2 — an empty match is not "no filter".** `None` means search everything; an empty set means a
+filter was asked for and matched nothing, which must return nothing. Silently searching the whole
+vault there would answer from notes the caller explicitly excluded. The CLI says so and stops, the
+API returns an empty result, and a malformed filter is a 400 rather than an unfiltered search.
+
+**Gate 3 — the filter must not cost latency.** It took two redesigns to get there.
+
+The first version scored every row and masked the losers. That is the obvious implementation and it
+is the wrong one: masking still multiplies every vector in the vault. Measured on 18k chunks with a
+filter selecting 5% of notes, it ran **48.8% slower** than no filter at all -- a narrowing feature
+that makes things slower.
+
+The second scored only the selected rows. Better where it matters, but a filter keeping 90% of notes
+copies almost the whole matrix out of itself through fancy indexing, and ran **392% slower**.
+
+The shipped version picks by selectivity: restrict the matrix when the filter removes enough to pay
+for the copy, otherwise multiply the contiguous matrix once and blank the losers. 18k chunks, 2000
+notes, median of 80 runs after warm-up:
+
+| Filter | Latency | vs unfiltered |
+|---|---:|---:|
+| none | 13.76 ms | — |
+| 1% of notes | **1.92 ms** | **−86.1%** |
+| 5% | 6.55 ms | −52.4% |
+| 10% | 5.51 ms | −60.0% |
+| 25% | 12.11 ms | −12.0% |
+| 50% | 13.68 ms | −0.6% |
+| 90% | 10.78 ms | −21.6% |
+
+Faster across the whole range, and dramatically so where a filter is worth using.
+
+**No date filter, deliberately.** The design called for `after`, but the only timestamps on a note
+are `last_seen` and `last_tagged`, both recording when the *scanner* touched the row. On this vault
+all ten notes share a single day and differ only by the minutes the scan took, so "modified after X"
+would rank by scan order. It needs a real document date on the schema first; shipping a filter that
+quietly answers the wrong question is worse than not shipping it.
+
+Repeated `--tag` is AND, not OR: narrowing is the point.
+
+Suite after the change: **1137 passed, 6 skipped, 0 failed** · `ruff` clean · `mypy` no issues.
+`tests/test_retrieval_filters.py` adds 27 cases across the resolver, both retrieval paths, FTS and
+the HTTP API; four mutations verified red→green.
+
+### opt. 7 — Concurrent tagging: measured, not shipped
+
+The proposal was a `ThreadPoolExecutor` over the tagging phase of `scan`, on the theory that
+overlapping LLM calls would cut wall-clock. Its own acceptance criteria were a measurable speed-up
+on a batching backend and *no regression* on local Ollama. The second one is what decided it.
+
+**Ollama serialises.** Measured directly against the running instance, `ministral-3:8b`:
+
+| Test | Result |
+|---|---|
+| 4 concurrent `/api/generate` | 20.36 s vs 21.7 s serial — **1.07x** |
+| 4 concurrent embeddings | **1.33x** |
+| `generate` + `embed` at once | 5.07 s vs 5.52 s serial — **1.09x** |
+
+The ceiling for the whole feature on this configuration is about 8%, and less than that in a real
+scan where parsing and disk writes also take turns.
+
+**What it would have cost.** The tagging loop (`cli.py:228-380`) is the code that writes to the
+user's notes and makes the pre-change git commits. Splitting it into prepare/commit phases is an
+invasive change to the most safety-critical path in the program — and, given the measurement, it
+would have shipped disabled by default. Concurrent code that neither the user nor CI ever exercises
+is a liability, not a feature.
+
+So the concurrency is deliberately not implemented. This is the one item of the ten where the work
+does not pay for itself. The measurement is recorded here rather than in a commit message so that
+anyone running vLLM or an OpenAI-compatible server with continuous batching — where the premise
+*does* hold — can pick it up knowing exactly what was and was not tested.
+
+**One change did come out of it.** `LLMRouter`'s breaker counters are shared state on a router the
+daemon and the API use simultaneously, and `_record_failure` is a check-then-act. It now takes a
+lock.
+
+That lock is **not** a fix for an observed bug, and the first version of this entry said it was.
+Checked before claiming it: a GIL build lost no increments across 160,000 concurrent `+= 1` calls
+with the switch interval forced to 1 ns, and the accompanying tests pass with the lock removed. It
+is forward-compatibility for free-threaded builds, on a path that already makes network calls, and
+the tests say so rather than pretending to demonstrate a race they cannot produce.
+
 ---
 
 ## 9. Harness limitation: timings are not comparable across sessions
@@ -634,13 +782,20 @@ spend 476 s waiting on `fsync` with a cool CPU, and now does the same work in 65
 
 ## 10. Next step
 
-With opt. 8 → 1 → 3 → 2 → 4 → 5 closed, what remains:
+The optimisation pass is finished. Eight of the ten shipped (opts. 1, 2, 3, 4, 5, 6, 8, 9);
+opt. 7 was measured and rejected, with the numbers in §8; opt. 10 (typing and coverage) ran
+alongside every step rather than as an item — `mypy` gates `grimore.memory.*` and
+`grimore.utils.*`, and the suite grew from 907 to 1141 tests.
 
-1. **opt. 6** — conditional query rewrite. Gate: `eval --history` with no recall regression.
-2. **opt. 9** — retrieval filters (CLI + API).
-3. **opt. 7** — concurrent tagging. Gate: per-backend bench.
+What is worth doing next is not on this list, and comes out of what the work exposed:
 
-The `connect_s` baseline is in §4.1.
+1. **A document date on the schema.** Its absence is what blocked the `after` filter in opt. 9:
+   the only timestamps record when the scanner ran, so anything time-based sorts by scan order.
+2. **A larger, denser eval vault.** The gate for opt. 6 can only catch a catastrophic heuristic,
+   because 10 notes on disjoint topics let a follow-up land correctly on one topical word. Every
+   future retrieval-quality change inherits that blind spot.
+3. **opt. 7 on a batching backend**, if one ever enters the picture. The premise holds there; §8
+   records exactly what was and was not tested.
 
 A reminder when measuring: the synthetic vault has a 50-word vocabulary, so most of an `ask`'s
 statements are FTS5-internal, not Grimore's. The counter already separates them (`db_queries` vs

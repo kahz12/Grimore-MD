@@ -62,6 +62,8 @@ embed_timeout_s   = 30   # /api/embeddings
 # embed_batch_size          = 32      # texts per /api/embeddings request
 # circuit_failure_threshold = 5       # consecutive failures that open the breaker
 # circuit_cooldown_s        = 120     # how long it stays open
+# conditional_rewrite       = true    # only rewrite follow-ups that need it
+# rewrite_timeout_s         = 60      # budget for that rewrite alone
 
 [memory]
 db_path = "grimore.db"

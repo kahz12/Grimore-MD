@@ -42,6 +42,69 @@ class NotesMixin(DbBase):
             ).fetchone()
         return row[0] if row else None
 
+    def resolve_note_filter(
+        self,
+        *,
+        category: Optional[str] = None,
+        tags: Optional[Iterable[str]] = None,
+        formats: Optional[Iterable[str]] = None,
+    ) -> Optional[set[int]]:
+        """Note ids matching every supplied criterion, or ``None`` for no filter.
+
+        ``None`` and an empty set mean different things and callers depend on
+        the difference: ``None`` is "no filter was asked for, search
+        everything", while an empty set is "a filter was asked for and nothing
+        matched", which must yield no results rather than silently searching
+        the whole vault.
+
+        Criteria combine with AND, and so do multiple ``tags`` -- the point of
+        the feature is to narrow a pool, so ``--tag a --tag b`` means notes
+        carrying both. Category matching is recursive: ``infra`` also selects
+        ``infra/networking``, matching :py:meth:`get_notes_by_category`.
+        Formats are compared lowercase, and a NULL ``format`` column (rows
+        predating the multiformat migration) counts as ``md``.
+
+        There is deliberately no date criterion. The only timestamps on a note
+        are ``last_seen`` and ``last_tagged``, both of which record when the
+        *scanner* touched the row, not anything about the document: after one
+        scan every note in the vault shares a timestamp to the minute. A
+        "modified after" filter built on that would rank by scan order, so it
+        needs a real document date on the schema first.
+        """
+        clauses: list[str] = []
+        params: list = []
+
+        if category:
+            clauses.append("(category = ? OR category LIKE ? ESCAPE '\\')")
+            params += [category, _escape_like(category + "/") + "%"]
+
+        fmt_list = [str(f).lower().lstrip(".") for f in (formats or []) if f]
+        if fmt_list:
+            placeholders = ",".join("?" * len(fmt_list))
+            # COALESCE so legacy NULL rows behave as the Markdown they were.
+            clauses.append(f"LOWER(COALESCE(format, 'md')) IN ({placeholders})")
+            params += fmt_list
+
+        tag_list = [str(t).strip() for t in (tags or []) if str(t).strip()]
+        for tag in tag_list:
+            # One EXISTS per tag rather than IN + HAVING COUNT: it expresses
+            # the AND directly and needs no grouping over the outer query.
+            clauses.append(
+                "EXISTS (SELECT 1 FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
+                "WHERE nt.note_id = notes.id AND LOWER(t.name) = ?)"
+            )
+            params.append(tag.lower())
+
+        if not clauses:
+            return None
+
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM notes WHERE {' AND '.join(clauses)}",
+                tuple(params),
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
     def get_note_targets(
         self, note_ids: Iterable[int],
     ) -> dict[int, tuple[str, str, str, Optional[str]]]:

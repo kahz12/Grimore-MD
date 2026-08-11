@@ -242,6 +242,21 @@ embed_batch_size  = 32       # textos por petición a /api/embed. Lotes mayores
                              # ahorran round-trips en servidores con batching.
 circuit_failure_threshold = 5    # fallos seguidos antes de abrir el circuito
 circuit_cooldown_s        = 120  # segundos de corte antes de reintentar
+conditional_rewrite = true   # reescribe una pregunta de seguimiento en una
+                             # consulta autónoma SÓLO cuando apunta al turno
+                             # anterior (pronombres, demostrativos, una
+                             # conjunción inicial, o menos de 5 palabras). Una
+                             # pregunta que nombra su propio tema recupera lo
+                             # mismo con o sin reescritura, así que se ahorra
+                             # el round-trip. Ponla en false para reescribir
+                             # siempre que haya historial.
+rewrite_timeout_s = 60       # presupuesto sólo para esa reescritura. Corre
+                             # antes de recuperar, con la pantalla en blanco,
+                             # así que no debe heredar request_timeout_s. Al
+                             # expirar se usa la pregunta original. Sus fallos
+                             # no cuentan para el circuit breaker: son trabajo
+                             # opcional y abrirlo cancelaría también la
+                             # generación de respuestas.
 vec_matrix_cache  = true     # guarda la matriz de puntuación densa como .npy
                              # junto a la base de datos y la recarga mapeada en
                              # memoria. Sin ella, cada `grimore ask` de un solo
@@ -542,6 +557,24 @@ estaban en el contexto recuperado) se eliminan del cuerpo
 renderizado y quedan registradas en `oracle_citation_hallucinated`.
 La lista de fuentes devuelta refleja siempre las notas *recuperadas*,
 no lo que afirmara el modelo.
+
+Acota qué se busca con `--category`, `--tag` y `--format`:
+
+```bash
+grimore ask "¿política de retención?" --category infra
+grimore ask "¿política de retención?" --tag compliance --tag security   # ambos
+grimore ask "¿qué dicen los PDF?" --format pdf
+```
+
+Los filtros restringen qué notas se buscan siquiera, así que el Oracle sólo
+puede citar lo que sobreviva. Se combinan con AND, y los `--tag` repetidos
+también. `--category` incluye descendientes, de modo que `infra` cubre además
+`infra/networking`. Si no casa nada, el comando lo dice y para, en vez de
+responder en silencio desde todo el vault.
+
+No hay filtro por fecha. Los únicos sellos de tiempo de una nota registran
+cuándo la tocó el escáner, no nada del documento: tras un scan todas comparten
+sello, así que un filtro "modificado después de" ordenaría por orden de escaneo.
 
 ### `eval`
 
@@ -861,7 +894,7 @@ Arranca un servidor ASGI Starlette de solo lectura en
 |---|---|
 | `GET /api/health` | Versión + resumen del preflight. |
 | `POST /api/ask` | `{question, top_k?, stream?}`. Streaming SSE cuando `stream: true`. |
-| `POST /api/search` | `{query, top_k?}` → hits híbridos con fragmentos. |
+| `POST /api/search` | `{query, top_k?, category?, tags?, formats?}` → hits híbridos con fragmentos. |
 | `GET /api/notes/{id}` | Metadatos + cuerpo en disco de la nota. |
 | `GET /api/categories` | Conteos por categoría en toda la bóveda. |
 | `GET /` | La UI web. |

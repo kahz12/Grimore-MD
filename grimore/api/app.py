@@ -59,7 +59,10 @@ _STATIC_DIR = _HERE / "static"
 _TEMPLATES_DIR = _HERE / "templates"
 _INDEX_HTML = _TEMPLATES_DIR / "index.html"
 
-_API_VERSION = "2.4.0"
+# Read from the package rather than restated here: this constant had drifted
+# to 2.4.0 while the package was at 3.2.0, and a client reading the API version
+# has no way to notice.
+from grimore import __version__ as _API_VERSION  # noqa: E402
 
 
 # ── auth ──────────────────────────────────────────────────────────────
@@ -298,6 +301,33 @@ def _build_routes(session: Session) -> list:
             "dropped_citations": int(result.get("dropped_citations") or 0),
         })
 
+    def _resolve_search_filter(session, body):
+        """Translate the optional filter keys into a note-id set.
+
+        Raises ValueError on a malformed value so the caller can answer 400
+        rather than silently ignoring a filter the client believes is applied
+        -- returning unfiltered results to a request that asked for a filter
+        is the dangerous failure here, not an error response.
+        """
+        def _str_list(key):
+            raw = body.get(key)
+            if raw is None:
+                return None
+            if isinstance(raw, str):
+                raw = [raw]
+            if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+                raise ValueError(f"{key} must be a string or a list of strings")
+            return raw
+
+        category = body.get("category")
+        if category is not None and not isinstance(category, str):
+            raise ValueError("category must be a string")
+        return session.db.resolve_note_filter(
+            category=category,
+            tags=_str_list("tags"),
+            formats=_str_list("formats"),
+        )
+
     async def search(request: Request) -> Response:
         try:
             body = await request.json()
@@ -312,6 +342,16 @@ def _build_routes(session: Session) -> list:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
+        # Optional narrowing. Absent keys mean "search everything"; a filter
+        # that matches nothing returns nothing rather than falling back to the
+        # whole vault, which would answer from notes the caller excluded.
+        try:
+            filter_note_ids = _resolve_search_filter(session, body)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if filter_note_ids is not None and not filter_note_ids:
+            return JSONResponse({"hits": []})
+
         query_vector = session.embedder.embed(query)
         use_hybrid = (
             getattr(session.config.cognition, "hybrid_search", True)
@@ -320,9 +360,11 @@ def _build_routes(session: Session) -> list:
         if use_hybrid:
             hits = session.oracle.connector.find_hybrid(
                 query_text=query, query_vector=query_vector, top_k=top_k,
+                filter_note_ids=filter_note_ids,
             )
         elif query_vector:
-            hits = session.oracle.connector.find_similar_notes(query_vector, top_k=top_k)
+            hits = session.oracle.connector.find_similar_notes(
+                query_vector, top_k=top_k, filter_note_ids=filter_note_ids)
         else:
             hits = []
 

@@ -34,6 +34,8 @@ from grimore.session import Session
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
 
+from grimore import __version__ as _pkg_version
+
 logger = get_logger(__name__)
 
 # MCP protocol version we advertise in the initialize response. Picked
@@ -41,7 +43,9 @@ logger = get_logger(__name__)
 # 2025; the field is informational, mismatching client/server versions
 # still work as long as both speak JSON-RPC 2.0.
 _MCP_PROTOCOL_VERSION = "2024-11-05"
-_SERVER_INFO = {"name": "grimore", "version": "2.4.0"}
+# Version comes from the package; hard-coding it here let it drift to 2.4.0
+# while the package shipped 3.2.0, and an MCP client reads this field.
+_SERVER_INFO = {"name": "grimore", "version": _pkg_version}
 
 
 # ── JSON-RPC framing ───────────────────────────────────────────────────

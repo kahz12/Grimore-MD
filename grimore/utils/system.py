@@ -318,6 +318,22 @@ def _send_kill(pid: int) -> None:
         os.kill(pid, 9)
 
 
+def _clear_pid_file(pid_file: str) -> None:
+    """Remove the PID file, tolerating its absence.
+
+    A graceful shutdown races here by design: the daemon unlinks its own PID
+    file on the way out, so by the time _wait_for_exit reports success the file
+    is usually already gone. Treating that as an error made `daemon stop` exit
+    non-zero with a traceback even though it had done exactly what was asked.
+    """
+    try:
+        os.remove(pid_file)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"Could not remove PID file {pid_file}: {e}")
+
+
 def stop_daemon(pid_file: str):
     """
     Stops a running daemon by sending the platform's graceful-shutdown signal
@@ -331,7 +347,7 @@ def stop_daemon(pid_file: str):
     pid = _read_pid(pid_file)
     if pid is None:
         print("PID file is corrupt; refusing to send signals.")
-        os.remove(pid_file)
+        _clear_pid_file(pid_file)
         return
 
     if not _is_grimore_process(pid):
@@ -339,7 +355,7 @@ def stop_daemon(pid_file: str):
             f"PID {pid} does not look like a grimore process; refusing to kill. "
             "Removing stale PID file."
         )
-        os.remove(pid_file)
+        _clear_pid_file(pid_file)
         return
 
     try:
@@ -349,7 +365,7 @@ def stop_daemon(pid_file: str):
         return
 
     if _wait_for_exit(pid, timeout=5.0):
-        os.remove(pid_file)
+        _clear_pid_file(pid_file)
         print(f"Stopped daemon (PID: {pid})")
         return
 
@@ -360,7 +376,7 @@ def stop_daemon(pid_file: str):
     except OSError:
         pass
     if _wait_for_exit(pid, timeout=2.0):
-        os.remove(pid_file)
+        _clear_pid_file(pid_file)
         print(f"Force-killed daemon (PID: {pid})")
     else:
         print(

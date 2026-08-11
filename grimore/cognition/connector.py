@@ -70,6 +70,7 @@ class Connector:
         self._cache_sig: Optional[tuple] = None
         self._cache_keys: Optional[list] = None
         self._cache_blobs: Optional[list] = None
+        self._cache_rows_by_note: dict = {}
         self._cache_matrix = None
         # Second-stage re-ranker. ``reranker`` (explicit injection) is
         # for tests / advanced wiring; otherwise build one from the
@@ -129,6 +130,20 @@ class Connector:
             self._cache_keys = keys
             self._cache_matrix = matrix
             self._cache_blobs = blobs
+            # note_ids as an array so a filter mask is one vectorised call
+            # instead of a Python loop over every row -- the loop costs more
+            # than the matmul it is supposed to be narrowing.
+            # note_id -> row indices, built once per matrix. A filter then
+            # costs one dict lookup per allowed note instead of a scan over
+            # every row, and lets the scoring skip the excluded rows entirely
+            # rather than scoring them and throwing the result away.
+            rows_by_note: dict = {}
+            for row, (_eid, note_id) in enumerate(keys):
+                rows_by_note.setdefault(note_id, []).append(row)
+            self._cache_rows_by_note = {
+                n: (_np.asarray(r, dtype=_np.int64) if _np is not None else r)
+                for n, r in rows_by_note.items()
+            }
             self._cache_sig = sig
         return self._cache_keys, self._cache_matrix, self._cache_blobs
 
@@ -211,6 +226,59 @@ class Connector:
             for b in blobs
         ]
 
+    def _candidate_scores(self, query_vector, keys, matrix, blobs,
+                          filter_note_ids):
+        """Return ``(rows, scores)`` for the candidates worth ranking.
+
+        ``rows`` is ``None`` when every row is a candidate, and ``scores`` is
+        then aligned to ``keys``. With a filter, ``rows`` holds the indices of
+        the allowed rows and ``scores`` covers only those, so the caller maps
+        position ``p`` back with ``rows[p]``.
+
+        Scoring the subset rather than scoring everything and masking is the
+        difference between a filter that costs and one that pays: masking
+        still multiplies every vector in the vault, then throws most of the
+        result away. Measured on 18k chunks with a filter selecting 5% of the
+        notes, masking ran 48.8% slower than no filter at all; restricting the
+        matrix first runs faster than no filter, which is what a narrowing
+        feature ought to do.
+        """
+        if filter_note_ids is None:
+            return None, self._scores_for(query_vector, matrix, blobs)
+
+        by_note = self._cache_rows_by_note or {}
+        present = [by_note[n] for n in filter_note_ids if n in by_note]
+        if not present:
+            return [], []
+        if _np is not None and matrix is not None:
+            rows = _np.sort(_np.concatenate(present))
+            q = _np.asarray(query_vector, dtype=_np.float32)
+            if q.shape[0] == matrix.shape[1]:
+                # Which strategy is cheaper depends on how much the filter
+                # actually removes. Restricting copies the selected rows out
+                # of the matrix, so a filter that keeps almost everything pays
+                # to duplicate almost the whole matrix -- measured at nearly
+                # 5x the unfiltered time when 90% of notes pass. Above the
+                # threshold it is cheaper to multiply the contiguous matrix
+                # once and blank the few rows that lost.
+                if len(rows) > len(keys) * self._RESTRICT_MAX_FRACTION:
+                    scores = _np.asarray(matrix @ q, dtype=_np.float32)
+                    keep = _np.zeros(len(keys), dtype=bool)
+                    keep[rows] = True
+                    scores[~keep] = -_np.inf
+                    return None, scores
+                return rows, matrix[rows] @ q
+        # No matrix (or a width mismatch): fall back to the per-row path over
+        # the allowed rows only.
+        rows = sorted(int(r) for arr in present for r in arr)
+        if not blobs:
+            blobs = self.db.get_embedding_vectors()
+        return rows, [
+            Embedder.dot_product(query_vector,
+                                 Embedder.deserialize_vector(blobs[r]))
+            for r in rows
+        ]
+
     @staticmethod
     def _topk_indices(scores, k: int) -> list[int]:
         """Indices of the top ``k`` scores, descending. Ties broken by index.
@@ -247,6 +315,7 @@ class Connector:
         exclude_note_id: int = None,
         dedupe_by_note: bool = False,
         with_text: bool = True,
+        filter_note_ids: "set[int] | None" = None,
     ):
         """
         Finds the top_k most similar chunks in the database compared to a query vector.
@@ -270,16 +339,24 @@ class Connector:
         # sqlite-vec fast path: let SQLite do the ranking and skip the
         # all-vectors load entirely. Same oversample math as the numpy path
         # so post-filters keep the final set behaviour-identical.
+        if filter_note_ids is not None and not filter_note_ids:
+            return []
+
         if self._use_vec_backend():
             needed = top_k + (1 if exclude_note_id is not None else 0)
             if dedupe_by_note:
                 needed = max(needed * 5, needed + 10)
+            # sqlite-vec ranks inside SQLite with no predicate hook, so the
+            # filter is a post-pass over an oversampled page here.
+            if filter_note_ids is not None:
+                needed = max(needed * 4, needed + 20)
             hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
             # with_text is honoured here too: the flag is a contract about the
             # returned shape, not an artefact of how the numpy path fetches.
             similarities = [
                 {"note_id": nid, "text": text if with_text else "", "score": score}
                 for _eid, nid, text, score in hits
+                if filter_note_ids is None or nid in filter_note_ids
             ]
             if dedupe_by_note:
                 seen: set[int] = set()
@@ -293,8 +370,9 @@ class Connector:
             return similarities[:top_k]
 
         keys, matrix, blobs = self._load_dense()
-        scores = self._scores_for(query, matrix, blobs)
-        if not scores:
+        rows, scores = self._candidate_scores(
+            query, keys, matrix, blobs, filter_note_ids)
+        if len(scores) == 0:
             return []
 
         # Oversample headroom for the post-filters: ``exclude_note_id`` may
@@ -310,7 +388,12 @@ class Connector:
 
         # Text for the winners only -- one query instead of carrying every
         # chunk's 500 chars through the scoring pass.
-        picks = [(keys[i][0], keys[i][1], float(scores[i])) for i in top_idx]
+        # top_idx indexes `scores`; with a filter that is the subset, so the
+        # key it refers to is rows[p].
+        picks = [(keys[rows[p]][0] if rows is not None else keys[p][0],
+                  keys[rows[p]][1] if rows is not None else keys[p][1],
+                  float(scores[p]))
+                 for p in top_idx]
         texts = (
             self.db.get_chunk_texts([eid for eid, _nid, _s in picks])
             if with_text else {}
@@ -362,6 +445,12 @@ class Connector:
     # sweep is one or two passes over the matrix, small enough that the score
     # buffer never approaches the size of the matrix itself.
     _BLOCK_TARGET_BYTES = 64 * 1024 * 1024
+
+    # Above this fraction of rows surviving, restricting the matrix costs
+    # more than scoring it whole and blanking the losers. Measured
+    # crossover on 18k chunks sits between 25% and 90%; 0.5 is inside
+    # the flat part of that curve at both ends.
+    _RESTRICT_MAX_FRACTION = 0.5
 
     def find_similar_notes_batch(
         self,
@@ -466,12 +555,17 @@ class Connector:
         query_vector: List[float],
         limit: int,
         exclude_note_id: Optional[int] = None,
+        filter_note_ids: "set[int] | None" = None,
     ) -> list[dict]:
         """Return ranked dense-similarity candidates keyed by embedding id."""
+        if filter_note_ids is not None and not filter_note_ids:
+            return []
         query = list(query_vector)
 
         if self._use_vec_backend():
             needed = limit + (1 if exclude_note_id is not None else 0)
+            if filter_note_ids is not None:
+                needed = max(needed * 4, needed + 20)
             hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
             return [
                 {
@@ -481,11 +575,13 @@ class Connector:
                     "score": score,
                 }
                 for eid, nid, text, score in hits
+                if filter_note_ids is None or nid in filter_note_ids
             ][:limit]
 
         keys, matrix, blobs = self._load_dense()
-        scores = self._scores_for(query, matrix, blobs)
-        if not scores:
+        rows, scores = self._candidate_scores(
+            query, keys, matrix, blobs, filter_note_ids)
+        if len(scores) == 0:
             return []
 
         # Same +1 headroom as find_similar_notes: the excluded row could be
@@ -494,7 +590,9 @@ class Connector:
         needed = limit + (1 if exclude_note_id is not None else 0)
         top_idx = self._topk_indices(scores, needed)
 
-        picks = [(keys[i][0], keys[i][1], i) for i in top_idx]
+        picks = [(keys[rows[p]][0] if rows is not None else keys[p][0],
+                  keys[rows[p]][1] if rows is not None else keys[p][1], p)
+                 for p in top_idx]
         texts = self.db.get_chunk_texts([eid for eid, _nid, _i in picks])
 
         scored: list[dict] = []
@@ -519,6 +617,7 @@ class Connector:
         rerank: bool = False,
         rerank_pool: int = 20,
         timings: Optional[dict] = None,
+        filter_note_ids: "set[int] | None" = None,
     ) -> list[dict]:
         """
         Fuse dense retrieval and FTS5 BM25 with Reciprocal Rank Fusion.
@@ -538,15 +637,21 @@ class Connector:
         when ``timings`` is supplied, records the second-stage rerank duration
         under ``timings["rerank_s"]`` so eval can bucket latency by stage.
         """
+        if filter_note_ids is not None and not filter_note_ids:
+            return []
+
         pool = max(top_k * 4, 20)
 
         dense: list[dict] = []
         if query_vector:
             dense = self._vector_candidates(
-                query_vector, limit=pool, exclude_note_id=exclude_note_id
+                query_vector, limit=pool, exclude_note_id=exclude_note_id,
+                filter_note_ids=filter_note_ids,
             )
 
-        sparse_rows = self.db.fts_search(query_text, limit=pool) if query_text else []
+        sparse_rows = self.db.fts_search(
+            query_text, limit=pool, filter_note_ids=filter_note_ids,
+        ) if query_text else []
         sparse: list[dict] = [
             {"embedding_id": eid, "note_id": nid, "text": text, "bm25": bm25}
             for eid, nid, text, bm25 in sparse_rows

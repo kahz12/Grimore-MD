@@ -1,0 +1,1013 @@
+{
+  "top_k": 5,
+  "n": 28,
+  "positives_n": 25,
+  "negatives_n": 3,
+  "aggregate": {
+    "hit_at_1": 1.0,
+    "hit_at_3": 1.0,
+    "recall_at_k": 1.0,
+    "mrr": 1.0,
+    "faithfulness": null,
+    "keyword_recall": null,
+    "latency_p50": 14.335961487000077,
+    "latency_p95": 27.625091021000117,
+    "stage_latency": {
+      "rewrite_s": 10.460321218142829,
+      "embed_s": 0.16443411221431298,
+      "retrieve_s": 0.002076674250052487,
+      "rerank_s": 0.0
+    },
+    "answer_relevance": null,
+    "judged_n": 0,
+    "abstention_rate": 0.0,
+    "negatives_n": 3,
+    "outcomes": {
+      "ok": 25,
+      "na": 3
+    },
+    "pass_rate": 1.0
+  },
+  "by_category": {
+    "multi-hop": {
+      "n": 4,
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "mrr": 1.0
+    },
+    "single-hop": {
+      "n": 21,
+      "hit_at_1": 1.0,
+      "hit_at_3": 1.0,
+      "mrr": 1.0
+    }
+  },
+  "failures": [],
+  "turns": [
+    {
+      "case_id": "gothic-origin",
+      "turn_index": 0,
+      "question": "Where and when did Gothic architecture originate?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.008727939999971568,
+      "retrieved": [
+        "gothic_architecture"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "gothic_architecture"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 1.3220001164881978e-06,
+        "embed_s": 0.000233020999985456,
+        "retrieve_s": 0.0039636569999856874,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "ai-hype-cycles",
+      "turn_index": 0,
+      "question": "How is the history of AI described — what cyclical pattern did it follow?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.004641717000140488,
+      "retrieved": [
+        "🤖 The Evolution of Artificial Intelligence: From Symbolic Logic to Generative Foundations",
+        "🏛️ The Roman Empire: An Exhaustive Historical and Structural Analysis"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Artificial Intelligence"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 1.1910001376236323e-06,
+        "embed_s": 8.726899977773428e-05,
+        "retrieve_s": 0.0035094279996883415,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "apple-main-component",
+      "turn_index": 0,
+      "question": "What is an apple mostly composed of by weight?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.0026310610001019086,
+      "retrieved": [
+        "🍎 The Chemical Biology and Molecular Composition of Apples (*Malus domestica*)"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Apples Malus"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.699998837371822e-07,
+        "embed_s": 5.749299998569768e-05,
+        "retrieve_s": 0.0017146039999715867,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "apple-what-else-referential",
+      "turn_index": 1,
+      "question": "And what else is in it?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 43.09747137899967,
+      "retrieved": [
+        "🍎 The Chemical Biology and Molecular Composition of Apples (*Malus domestica*)",
+        "🏛️ The Roman Empire: An Exhaustive Historical and Structural Analysis"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Apples"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 42.68649354299987,
+        "embed_s": 0.4076565400000618,
+        "retrieve_s": 0.0024475130003338563,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "kotlin-intro",
+      "turn_index": 0,
+      "question": "What is Kotlin, who created it, and what safety guarantee is it known for?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002658161999988806,
+      "retrieved": [
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Kotlin Fundamentals"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.259998943074606e-07,
+        "embed_s": 5.3219000164972385e-05,
+        "retrieve_s": 0.001792455000213522,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "kotlin-creator-followup",
+      "turn_index": 1,
+      "question": "Which company created it?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 14.335961487000077,
+      "retrieved": [
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide",
+        "🤖 The Evolution of Artificial Intelligence: From Symbolic Logic to Generative Foundations",
+        "gothic_architecture"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Kotlin"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 14.330175260000033,
+        "embed_s": 0.0029041909997431503,
+        "retrieve_s": 0.0019205390003662615,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "kotlin-dataclass-standalone",
+      "turn_index": 2,
+      "question": "What does a Kotlin data class generate for you?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 20.159347586999957,
+      "retrieved": [
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide",
+        "🤖 The Evolution of Artificial Intelligence: From Symbolic Logic to Generative Foundations"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Kotlin"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 19.74775541400004,
+        "embed_s": 0.4084313540001858,
+        "retrieve_s": 0.0022851519997857395,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "social-engineering-definition",
+      "turn_index": 0,
+      "question": "What is social engineering in information security?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002553655000156141,
+      "retrieved": [
+        "🛡️ Defensive Guide to Social Engineering: Principles, Taxonomy, and Organizational Mitigation"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Social Engineering"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 7.570001798740122e-07,
+        "embed_s": 5.631400017591659e-05,
+        "retrieve_s": 0.001702457999726903,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "social-authority-followup",
+      "turn_index": 1,
+      "question": "Which psychological principle does it exploit when the attacker poses as a manager?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 18.367803471000116,
+      "retrieved": [
+        "🛡️ Defensive Guide to Social Engineering: Principles, Taxonomy, and Organizational Mitigation"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Social Engineering"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 17.954392681999707,
+        "embed_s": 0.4106701340001564,
+        "retrieve_s": 0.0019101830002909992,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "social-pretexting-standalone",
+      "turn_index": 2,
+      "question": "What is pretexting in social engineering?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 18.802941015000215,
+      "retrieved": [
+        "🛡️ Defensive Guide to Social Engineering: Principles, Taxonomy, and Organizational Mitigation",
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Social Engineering"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 18.38861383099993,
+        "embed_s": 0.41115657000000283,
+        "retrieve_s": 0.002266841999698954,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "socrates-focus",
+      "turn_index": 0,
+      "question": "¿Hacia qué dirigió Sócrates la investigación filosófica?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.0026170729997829767,
+      "retrieved": [
+        "🏛️ Biografía Exhaustiva de Sócrates: El Padre de la Filosofía Moral"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Sócrates"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.460001375467982e-07,
+        "embed_s": 9.001300031741266e-05,
+        "retrieve_s": 0.0016436649998468056,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "socrates-war-followup",
+      "turn_index": 1,
+      "question": "¿En qué guerra sirvió él como hoplita?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 20.280559427999833,
+      "retrieved": [
+        "🏛️ Biografía Exhaustiva de Sócrates: El Padre de la Filosofía Moral"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Sócrates"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 20.27779402499982,
+        "embed_s": 8.117200013657566e-05,
+        "retrieve_s": 0.0018123060003745195,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "socrates-maieutics-standalone",
+      "turn_index": 2,
+      "question": "¿Qué es el método mayéutico de Sócrates?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 20.838576559000103,
+      "retrieved": [
+        "🏛️ Biografía Exhaustiva de Sócrates: El Padre de la Filosofía Moral"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Sócrates"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 20.452702041000066,
+        "embed_s": 0.3831316499999957,
+        "retrieve_s": 0.0019088799999735784,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "socrates-birthplace-referential",
+      "turn_index": 3,
+      "question": "¿Y dónde nació él?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 15.306634326000221,
+      "retrieved": [
+        "🏛️ Biografía Exhaustiva de Sócrates: El Padre de la Filosofía Moral"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Sócrates"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 14.945985285999996,
+        "embed_s": 0.3582210780000423,
+        "retrieve_s": 0.0015484640002796368,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "astronomia-objeto",
+      "turn_index": 0,
+      "question": "¿Qué estudia la astronomía?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002368728999954328,
+      "retrieved": [
+        "🌌 Astronomía General: Del Sistema Solar a la Cosmología Física",
+        "🏛️ Biografía Exhaustiva de Sócrates: El Padre de la Filosofía Moral"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Astronomía"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.2699988373206e-07,
+        "embed_s": 4.894700032309629e-05,
+        "retrieve_s": 0.0014932449998923403,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "astronomia-herramienta-referential",
+      "turn_index": 1,
+      "question": "¿Y con qué se observa?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 21.099589598999955,
+      "retrieved": [
+        "🌌 Astronomía General: Del Sistema Solar a la Cosmología Física"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Astronomía"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 20.68003973299983,
+        "embed_s": 0.4166719390000253,
+        "retrieve_s": 0.00199603200007914,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "arquitectura-monolito",
+      "turn_index": 0,
+      "question": "¿Qué caracteriza a un monolito tradicional en la arquitectura de software?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002853229999800533,
+      "retrieved": [
+        "🏛️ Guía Completa y Exhaustiva de Tipos de Arquitectura de Software",
+        "🏛️ Biografía Exhaustiva de Sócrates: El Padre de la Filosofía Moral"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Arquitectura de Software"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.439997039502487e-07,
+        "embed_s": 6.012999983795453e-05,
+        "retrieve_s": 0.0018826229998012423,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "arquitectura-contras-referential",
+      "turn_index": 1,
+      "question": "¿Y cuáles son sus desventajas?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 19.34133106499985,
+      "retrieved": [
+        "🏛️ Guía Completa y Exhaustiva de Tipos de Arquitectura de Software"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Arquitectura"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 18.937582063000264,
+        "embed_s": 0.40088257599973076,
+        "retrieve_s": 0.002066302999992331,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "ranas-orden",
+      "turn_index": 0,
+      "question": "¿A qué orden taxonómico pertenecen las ranas?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002633392999996431,
+      "retrieved": [
+        "🐸 Biología de las Ranas: Un Análisis Exhaustivo de los Anuros"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Ranas"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 7.329999789362773e-07,
+        "embed_s": 5.296500012264005e-05,
+        "retrieve_s": 0.0016787839999778953,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "ranas-piel-followup",
+      "turn_index": 1,
+      "question": "¿Y qué distingue su piel de la de los reptiles?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 18.750615135000317,
+      "retrieved": [
+        "🐸 Biología de las Ranas: Un Análisis Exhaustivo de los Anuros"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Ranas"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 18.32999588199982,
+        "embed_s": 0.4174665330001517,
+        "retrieve_s": 0.002286181000272336,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "ranas-metamorfosis-standalone",
+      "turn_index": 2,
+      "question": "¿Qué etapas atraviesa la metamorfosis de los anuros?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 27.625091021000117,
+      "retrieved": [
+        "🐸 Biología de las Ranas: Un Análisis Exhaustivo de los Anuros"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "single-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Ranas"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 27.13927502200022,
+        "embed_s": 0.4827785509996829,
+        "retrieve_s": 0.0020981249999749707,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "gothic-trilogy",
+      "turn_index": 0,
+      "question": "What three structural innovations defined Gothic cathedrals?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.0022596979997615563,
+      "retrieved": [
+        "gothic_architecture"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "multi-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "gothic_architecture"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.399997462518513e-07,
+        "embed_s": 5.3791000027558766e-05,
+        "retrieve_s": 0.0014489250002043264,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "gothic-trilogy-followup",
+      "turn_index": 1,
+      "question": "Which one carried the lateral thrust outward?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 15.266328836999946,
+      "retrieved": [
+        "gothic_architecture"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "multi-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "gothic_architecture"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 15.262978161999854,
+        "embed_s": 0.00011278800002401113,
+        "retrieve_s": 0.0023817289998078195,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "roman-republic-fall",
+      "turn_index": 0,
+      "question": "How did Rome transition from the Republic to the Empire?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002835957000115741,
+      "retrieved": [
+        "🏛️ The Roman Empire: An Exhaustive Historical and Structural Analysis"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "multi-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Roman Empire"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 6.589998520212248e-07,
+        "embed_s": 5.54489997739438e-05,
+        "retrieve_s": 0.0018766590001177974,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "roman-warlords-followup",
+      "turn_index": 1,
+      "question": "Which early warlord generals concentrated military power in that period?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 24.262799558000097,
+      "retrieved": [
+        "🏛️ The Roman Empire: An Exhaustive Historical and Structural Analysis"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "multi-hop",
+      "negative": false,
+      "abstained": null,
+      "outcome": "ok",
+      "expected_sources": [
+        "Roman Empire"
+      ],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 23.755201617999774,
+        "embed_s": 0.5029899450000812,
+        "retrieve_s": 0.0032487729999957082,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "negative-sourdough",
+      "turn_index": 0,
+      "question": "What's the recipe for a sourdough bread starter?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.003037546000086877,
+      "retrieved": [
+        "🛡️ Defensive Guide to Social Engineering: Principles, Taxonomy, and Organizational Mitigation",
+        "🍎 The Chemical Biology and Molecular Composition of Apples (*Malus domestica*)",
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide",
+        "🤖 The Evolution of Artificial Intelligence: From Symbolic Logic to Generative Foundations",
+        "gothic_architecture"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "negative",
+      "negative": true,
+      "abstained": null,
+      "outcome": "na",
+      "expected_sources": [],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 6.270001904340461e-07,
+        "embed_s": 5.8166000144410646e-05,
+        "retrieve_s": 0.0020193450000078883,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "negative-bitcoin-price",
+      "turn_index": 0,
+      "question": "What is today's Bitcoin price?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002339144999950804,
+      "retrieved": [
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide",
+        "🤖 The Evolution of Artificial Intelligence: From Symbolic Logic to Generative Foundations",
+        "🛡️ Defensive Guide to Social Engineering: Principles, Taxonomy, and Organizational Mitigation"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "negative",
+      "negative": true,
+      "abstained": null,
+      "outcome": "na",
+      "expected_sources": [],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 4.880002961726859e-07,
+        "embed_s": 4.776400010086945e-05,
+        "retrieve_s": 0.001391587000398431,
+        "rerank_s": 0.0
+      }
+    },
+    {
+      "case_id": "negative-change-tire",
+      "turn_index": 0,
+      "question": "How do I change a flat car tire step by step?",
+      "answer": "",
+      "sources": [],
+      "dropped_citations": 0,
+      "total_citations": 0,
+      "recall_at_k": 1.0,
+      "mrr": 1.0,
+      "faithfulness": null,
+      "keyword_recall": null,
+      "answer_relevance": null,
+      "latency_s": 0.002813265999975556,
+      "retrieved": [
+        "gothic_architecture",
+        "☕ Kotlin Fundamentals: A Comprehensive Reference Guide",
+        "🛡️ Defensive Guide to Social Engineering: Principles, Taxonomy, and Organizational Mitigation",
+        "🤖 The Evolution of Artificial Intelligence: From Symbolic Logic to Generative Foundations",
+        "🐸 Biología de las Ranas: Un Análisis Exhaustivo de los Anuros",
+        "🏛️ The Roman Empire: An Exhaustive Historical and Structural Analysis"
+      ],
+      "source_hit_at_1": true,
+      "source_hit_at_3": true,
+      "category": "negative",
+      "negative": true,
+      "abstained": null,
+      "outcome": "na",
+      "expected_sources": [],
+      "missing_keywords": [],
+      "timings": {
+        "rewrite_s": 5.160000000614673e-07,
+        "embed_s": 4.558000000542961e-05,
+        "retrieve_s": 0.0018524220004110248,
+        "rerank_s": 0.0
+      }
+    }
+  ]
+}

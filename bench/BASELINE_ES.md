@@ -605,6 +605,158 @@ nota una vez, las puntuaciones van descendentes) cubren ahora lo que la paridad 
 Suite tras el cambio: **1056 passed, 6 skipped, 0 failed** · `ruff` limpio · `mypy` sin issues.
 `tests/test_connect_sweep.py` añade 29 casos; cinco mutaciones verificadas rojo→verde.
 
+### opt. 6 — Reescritura de consulta condicional
+
+Una pregunta de seguimiento se reescribía en una consulta autónoma en **todo** turno que llegara con
+historial, al coste de un round-trip completo al LLM antes siquiera de empezar a recuperar. Ahora
+sólo se reescribe cuando de verdad apunta al turno anterior.
+
+**Gate: `eval --retrieval-only --compare` contra la línea base registrada.** Es un cambio de
+calidad, no de rendimiento, así que el criterio de aceptación es Hit@k / MRR, no el reloj.
+
+| | línea base | condicional |
+|---|---:|---:|
+| hit@1 | 1,0000 | 1,0000 |
+| MRR | 1,0000 | 1,0000 |
+| reescrituras saltadas | 0 / 14 | 4 / 14 |
+| tiempo total de reescritura | 292,9 s | 204,6 s (**−30,1 %**) |
+
+`--compare` sale con 0 y 0 regresiones. El −30,1 % está acotado por la composición del golden set
+(4 de sus 14 follow-ups son autocontenidos); el tráfico real depende de cómo formule la gente sus
+seguimientos.
+
+**La heurística.** Tres señales, cualquiera basta: una palabra referencial (pronombre, demostrativo,
+posesivo), una conjunción inicial, o menos de cinco palabras. Sesgada hacia reescribir a propósito —
+un falso positivo desperdicia un round-trip, un falso negativo recupera contra un pronombre sin
+resolver y puede perder la respuesta, así que todo caso dudoso se decide por el lado seguro. Acierta
+14/14 en los follow-ups del golden set y no dispara en ninguna de las 14 preguntas raíz.
+
+**Una trampa del lado español.** Plegar acentos para aceptar texto sin tildes convierte `él`
+(pronombre) en `el` (artículo), que aparece en casi cualquier frase, y hacía que una pregunta
+plenamente autocontenida pareciera un seguimiento. Las formas acentuadas se comparan antes de plegar.
+
+**Dos fallos que cazó el gate, ambos introducidos por este cambio.**
+
+A la reescritura se le dio un presupuesto propio de 20 s, elegido sin medir. En la configuración más
+lenta disponible las reescrituras tardan 14,3–42,7 s (mediana 19,3 s), así que mataba el 43 %:
+hit@1 cayó a 0,92 y `--compare` salió distinto de cero. Redimensionado desde la distribución medida
+—30 s mata 1 de 14, 45 s no mata ninguna— a 60 s, que deja margen sobre el peor caso y sigue siendo
+un orden de magnitud por debajo de `request_timeout_s`.
+
+Peor, y visible sólo gracias al primero: esos timeouts abrían el **circuit breaker compartido**.
+Cinco fallos lo disparaban y las cinco reescrituras siguientes se cancelaban — pero el breaker
+protege también la generación de respuestas, así que un presupuesto agresivo en una llamada
+opcional estaba desactivando el LLM para todo. `LLMRouter.complete(optional=True)` marca ahora las
+llamadas cuyo fallo no es evidencia de un backend enfermo; ni abren el breaker ni las bloquea.
+
+**Ampliar el golden set fue lo primero.** Tenía 2 follow-ups, ambos exigiendo reescritura, lo que no
+permite distinguir una heurística que funciona de una que dispara indiscriminadamente. Ahora tiene
+14, repartidos entre preguntas que **necesitan** resolución y preguntas ya autocontenidas, con la
+distinción documentada en la cabecera del propio fichero.
+
+**El poder del gate es limitado, y conviene saberlo.** Desactivar la reescritura por completo baja
+hit@1 de 1,0 a 0,92 — sólo 2 de 25 turnos positivos dependen de ella. En un vault de 10 notas sobre
+temas disjuntos, un seguimiento acierta con una sola palabra temática; sólo las preguntas sin
+ninguna palabra de contenido ("Which company created it?") necesitan de verdad la reescritura para
+recuperar. El gate caza una heurística catastrófica, no una sutil.
+
+Suite tras el cambio: **1106 passed, 6 skipped, 0 failed** · `ruff` limpio · `mypy` sin issues.
+`tests/test_conditional_rewrite.py` añade 47 casos; cuatro mutaciones verificadas rojo→verde.
+
+### opt. 9 — Filtros de recuperación
+
+`ask` y `/api/search` pueden acotarse ahora a un subconjunto del vault por categoría, tag o formato.
+`resolve_note_filter` convierte los criterios en un conjunto de ids en una sola consulta, que se
+propaga por `find_hybrid`, `find_similar_notes` y `fts_search`.
+
+**Gate 1 — el filtro se respeta.** La recuperación no devuelve nada fuera del conjunto, verificado
+sobre el vault real: sin filtro, una consulta de "biología y composición" pone las ranas primero;
+con `--tag apple-chemistry` devuelve las manzanas y nada más.
+
+**Gate 2 — un conjunto vacío no es "sin filtro".** `None` significa buscar en todo; un conjunto
+vacío significa que se pidió un filtro y no casó nada, y debe devolver nada. Buscar ahí en todo el
+vault respondería desde notas que quien preguntó excluyó explícitamente. La CLI lo dice y para, la
+API devuelve resultado vacío, y un filtro malformado es un 400 en vez de una búsqueda sin filtrar.
+
+**Gate 3 — el filtro no debe costar latencia.** Hicieron falta dos rediseños.
+
+La primera versión puntuaba todas las filas y enmascaraba las perdedoras. Es la implementación
+obvia y es la equivocada: enmascarar sigue multiplicando todos los vectores del vault. Medido sobre
+18k chunks con un filtro que selecciona el 5 % de las notas, corría un **48,8 % más lento** que sin
+filtro — una función de acotar que hace las cosas más lentas.
+
+La segunda puntuaba sólo las filas seleccionadas. Mejor donde importa, pero un filtro que conserva
+el 90 % copia casi toda la matriz sobre sí misma con indexación avanzada, y corría un **392 % más
+lento**.
+
+La versión final elige según la selectividad: restringe la matriz cuando el filtro quita lo
+suficiente para pagar la copia, y si no multiplica la matriz contigua una vez y borra a los
+perdedores. 18k chunks, 2000 notas, mediana de 80 corridas tras calentar:
+
+| Filtro | Latencia | vs sin filtro |
+|---|---:|---:|
+| ninguno | 13,76 ms | — |
+| 1 % de las notas | **1,92 ms** | **−86,1 %** |
+| 5 % | 6,55 ms | −52,4 % |
+| 10 % | 5,51 ms | −60,0 % |
+| 25 % | 12,11 ms | −12,0 % |
+| 50 % | 13,68 ms | −0,6 % |
+| 90 % | 10,78 ms | −21,6 % |
+
+Más rápido en todo el rango, y mucho más donde un filtro merece la pena.
+
+**Sin filtro por fecha, deliberadamente.** El diseño pedía `after`, pero los únicos sellos de tiempo
+de una nota son `last_seen` y `last_tagged`, que registran cuándo la tocó el **escáner**. En este
+vault las diez notas comparten día y sólo difieren en los minutos que tardó el scan, así que
+"modificado después de X" ordenaría por orden de escaneo. Necesita antes una fecha real del
+documento en el esquema; publicar un filtro que responde en silencio a otra pregunta es peor que no
+publicarlo.
+
+Los `--tag` repetidos son AND, no OR: acotar es el objetivo.
+
+Suite tras el cambio: **1137 passed, 6 skipped, 0 failed** · `ruff` limpio · `mypy` sin issues.
+`tests/test_retrieval_filters.py` añade 27 casos entre el resolutor, ambos caminos de recuperación,
+FTS y la API HTTP; cuatro mutaciones verificadas rojo→verde.
+
+### opt. 7 — Tagging concurrente: medida y descartada
+
+La propuesta era un `ThreadPoolExecutor` sobre la fase de tagging del `scan`, bajo la teoría de que
+solapar llamadas al LLM recortaría el reloj. Sus propios criterios de aceptación eran una mejora
+medible en un backend con batching y **ninguna regresión** en Ollama local. Lo segundo fue lo que
+lo decidió.
+
+**Ollama serializa.** Medido directamente contra la instancia en marcha, `ministral-3:8b`:
+
+| Prueba | Resultado |
+|---|---|
+| 4 `/api/generate` concurrentes | 20,36 s vs 21,7 s en serie — **1,07x** |
+| 4 embeddings concurrentes | **1,33x** |
+| `generate` + `embed` a la vez | 5,07 s vs 5,52 s en serie — **1,09x** |
+
+El techo de toda la función en esta configuración ronda el 8 %, y menos aún en un scan real donde
+el parseo y las escrituras a disco también se turnan.
+
+**Lo que habría costado.** El bucle de tagging (`cli.py:228-380`) es el código que escribe en las
+notas del usuario y hace los commits previos de git. Partirlo en fases prepare/commit es un cambio
+invasivo en la ruta más crítica del programa — y, dada la medición, se habría publicado apagado por
+defecto. Código concurrente que ni el usuario ni el CI ejercitan nunca es un pasivo, no una función.
+
+Así que la concurrencia no se implementa, deliberadamente. Es el único de los diez puntos donde el
+trabajo no se paga solo. La medición queda aquí y no en un mensaje de commit para que quien use
+vLLM o un servidor compatible con OpenAI y batching continuo —donde la premisa **sí** se cumple—
+pueda retomarlo sabiendo exactamente qué se probó y qué no.
+
+**Un cambio sí salió de aquí.** Los contadores del breaker de `LLMRouter` son estado compartido en
+un router que el daemon y la API usan a la vez, y `_record_failure` es un check-then-act. Ahora toma
+un lock.
+
+Ese lock **no** arregla un bug observado, y la primera versión de esta entrada decía que sí.
+Comprobado antes de afirmarlo: un build con GIL no perdió ni un incremento en 160.000 `+= 1`
+concurrentes con el switch interval forzado a 1 ns, y los tests que lo acompañan pasan con el lock
+quitado. Es compatibilidad hacia adelante para builds *free-threaded*, en un camino que ya hace
+llamadas de red, y los tests lo dicen en vez de fingir que demuestran una carrera que no pueden
+producir.
+
 ---
 
 ## 9. Limitación del arnés: los tiempos no son comparables entre sesiones
@@ -646,13 +798,22 @@ densa, así que `connect` arranca sobre un procesador ya caliente.
 
 ## 10. Siguiente paso
 
-Cerradas las opts. 8 → 1 → 3 → 2 → 4 → 5, queda:
+La tanda de optimización está terminada. Ocho de las diez se publicaron (opts. 1, 2, 3, 4, 5,
+6, 8, 9); la opt. 7 se midió y se descartó, con las cifras en el §8; la opt. 10 (tipado y cobertura)
+acompañó cada paso en vez de ser un punto — `mypy` gatea `grimore.memory.*` y `grimore.utils.*`, y
+la suite pasó de 907 a 1141 tests.
 
-1. **opt. 6** — reescritura de consulta condicional. Gate: `eval --history` sin regresión de recall.
-2. **opt. 9** — filtros de recuperación (CLI + API).
-3. **opt. 7** — tagging concurrente. Gate: bench por backend.
+Lo que merece la pena hacer a continuación no está en esa lista, y sale de lo que el trabajo
+destapó:
 
-La línea base de `connect_s` está en §4.1.
+1. **Una fecha del documento en el esquema.** Su ausencia es lo que bloqueó el filtro `after` de la
+   opt. 9: los únicos sellos registran cuándo corrió el escáner, así que cualquier cosa temporal
+   ordena por orden de escaneo.
+2. **Un vault de eval más grande y denso.** El gate de la opt. 6 sólo puede cazar una heurística
+   catastrófica, porque 10 notas sobre temas disjuntos permiten que un seguimiento acierte con una
+   sola palabra temática. Todo cambio futuro de calidad de recuperación hereda ese punto ciego.
+3. **La opt. 7 sobre un backend con batching**, si alguna vez entra en escena. Allí la premisa se
+   cumple; el §8 registra exactamente qué se probó y qué no.
 
 Recordatorio al medir: el vault sintético tiene un vocabulario de 50 palabras, así que la mayor
 parte de las sentencias de un `ask` son internas de FTS5, no de Grimore. El contador ya las separa

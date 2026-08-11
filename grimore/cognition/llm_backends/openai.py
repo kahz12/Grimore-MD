@@ -105,6 +105,7 @@ class OpenAICompatibleBackend:
         system_prompt: str = "",
         model_override: Optional[str] = None,
         json_format: bool = True,
+        timeout_s: Optional[int] = None,
     ) -> Any:
         model = model_override or self.config.cognition.model_llm_local
         try:
@@ -121,7 +122,7 @@ class OpenAICompatibleBackend:
                 url,
                 json=payload,
                 headers=self._headers(),
-                timeout=self.config.cognition.request_timeout_s,
+                timeout=timeout_s or self.config.cognition.request_timeout_s,
             )
             response.raise_for_status()
             data = response.json()

@@ -24,7 +24,13 @@
 #   are safest). Ask in the note's language so the answer's language matches
 #   your keywords (the Spanish notes below use Spanish questions + keywords).
 # * `follow_ups` — chained through the same session, exercising the
-#   conversation rewrite + history. Score like any other turn.
+#   conversation rewrite + history. Score like any other turn. Two kinds, and
+#   the set needs both: those that CANNOT be understood alone (pronouns,
+#   deictics — "which one", "in that period") and those that are already
+#   self-contained despite following a turn. The first kind catches a rewrite
+#   that stopped resolving references; the second catches one that fires when
+#   it did not need to. A set with only the first kind cannot tell a working
+#   rewrite from one that rewrites indiscriminately.
 # * `negative: true` — a question with no answer in the vault. Omit
 #   `expected_sources` (the loader rejects a negative that lists any). Scored by
 #   whether the Oracle abstains, not by ranking.
@@ -52,42 +58,97 @@ questions:
     category: single-hop
     expected_sources: ["Apples Malus"]
     expected_keywords: ["water"]
+    follow_ups:
+      - id: apple-what-else-referential
+        question: "And what else is in it?"
+        expected_sources: ["Apples"]
+        expected_keywords: ["pectin"]
 
   - id: kotlin-intro
     question: "What is Kotlin, who created it, and what safety guarantee is it known for?"
     category: single-hop
     expected_sources: ["Kotlin Fundamentals"]
     expected_keywords: ["jetbrains", "null"]
+    follow_ups:
+      - id: kotlin-creator-followup
+        question: "Which company created it?"
+        expected_sources: ["Kotlin"]
+        expected_keywords: ["jetbrains"]
+      - id: kotlin-dataclass-standalone
+        question: "What does a Kotlin data class generate for you?"
+        expected_sources: ["Kotlin"]
+        expected_keywords: ["data class"]
 
   - id: social-engineering-definition
     question: "What is social engineering in information security?"
     category: single-hop
     expected_sources: ["Social Engineering"]
     expected_keywords: ["human", "manipulat"]
+    follow_ups:
+      - id: social-authority-followup
+        question: "Which psychological principle does it exploit when the attacker poses as a manager?"
+        expected_sources: ["Social Engineering"]
+        expected_keywords: ["authority"]
+      - id: social-pretexting-standalone
+        question: "What is pretexting in social engineering?"
+        expected_sources: ["Social Engineering"]
+        expected_keywords: ["pretexting"]
 
   - id: socrates-focus
     question: "¿Hacia qué dirigió Sócrates la investigación filosófica?"
     category: single-hop
     expected_sources: ["Sócrates"]
     expected_keywords: ["virtud", "moral"]
+    follow_ups:
+      - id: socrates-war-followup
+        question: "¿En qué guerra sirvió él como hoplita?"
+        expected_sources: ["Sócrates"]
+        expected_keywords: ["peloponeso"]
+      - id: socrates-maieutics-standalone
+        question: "¿Qué es el método mayéutico de Sócrates?"
+        expected_sources: ["Sócrates"]
+        expected_keywords: ["mayéutica"]
+      - id: socrates-birthplace-referential
+        question: "¿Y dónde nació él?"
+        expected_sources: ["Sócrates"]
+        expected_keywords: ["alopece"]
 
   - id: astronomia-objeto
     question: "¿Qué estudia la astronomía?"
     category: single-hop
     expected_sources: ["Astronomía"]
     expected_keywords: ["cuerpos celestes"]
+    follow_ups:
+      - id: astronomia-herramienta-referential
+        question: "¿Y con qué se observa?"
+        expected_sources: ["Astronomía"]
+        expected_keywords: ["telescopio"]
 
   - id: arquitectura-monolito
     question: "¿Qué caracteriza a un monolito tradicional en la arquitectura de software?"
     category: single-hop
     expected_sources: ["Arquitectura de Software"]
     expected_keywords: ["monolito"]
+    follow_ups:
+      - id: arquitectura-contras-referential
+        question: "¿Y cuáles son sus desventajas?"
+        expected_sources: ["Arquitectura"]
+        expected_keywords: ["escalar"]
 
   - id: ranas-orden
     question: "¿A qué orden taxonómico pertenecen las ranas?"
     category: single-hop
     expected_sources: ["Ranas"]
     expected_keywords: ["anura"]
+    follow_ups:
+      - id: ranas-piel-followup
+        question: "¿Y qué distingue su piel de la de los reptiles?"
+        expected_sources: ["Ranas"]
+        expected_keywords: ["escamas"]
+      - id: ranas-metamorfosis-standalone
+        question: "¿Qué etapas atraviesa la metamorfosis de los anuros?"
+        expected_sources: ["Ranas"]
+        expected_keywords: ["metamorfosis"]
 
   # ── multi-hop: needs synthesis across facts, plus conversational turns ───
   - id: gothic-trilogy

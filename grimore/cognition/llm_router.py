@@ -15,6 +15,7 @@ the same public surface.
 """
 import json
 import re
+import threading
 import time
 from typing import Any, Iterator, Optional
 
@@ -130,6 +131,15 @@ class LLMRouter:
         self.session = getattr(self.backend, "session", None)
         self._consecutive_failures = 0
         self._open_until = 0.0
+        # The breaker is shared mutable state on a router the daemon and the
+        # API use at the same time. _record_failure is a check-then-act
+        # (read the count, compare, then write _open_until), which is racy by
+        # construction even though a GIL build makes it very hard to observe:
+        # 160k concurrent increments lost none, even at a 1 ns switch
+        # interval. The lock is here for free-threaded builds, where it stops
+        # being theoretical, and it costs nothing on a path that already makes
+        # network calls. It is not a fix for a bug seen in the wild.
+        self._breaker_lock = threading.Lock()
         # Instance-level breaker settings, defaulting to the class constants
         # so the historical behaviour is unchanged and the class attributes
         # stay valid as the documented defaults. Floored at 1 failure: a
@@ -148,21 +158,39 @@ class LLMRouter:
 
     def _record_failure(self) -> None:
         """Records a failure and potentially opens the circuit."""
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.failure_threshold and not self._circuit_open():
-            self._open_until = time.monotonic() + self.cooldown_s
+        with self._breaker_lock:
+            self._consecutive_failures += 1
+            failures = self._consecutive_failures
+            opening = (failures >= self.failure_threshold
+                       and time.monotonic() >= self._open_until)
+            if opening:
+                self._open_until = time.monotonic() + self.cooldown_s
+        # Logged outside the lock: it is the only slow thing in here and
+        # nothing below reads the state again.
+        if opening:
             logger.warning(
                 "llm_circuit_open",
                 cooldown_s=self.cooldown_s,
-                failures=self._consecutive_failures,
+                failures=failures,
             )
 
     def _record_success(self) -> None:
         """Resets the failure counter upon a successful call."""
-        if self._consecutive_failures or self._open_until:
+        with self._breaker_lock:
+            was_tripped = bool(self._consecutive_failures or self._open_until)
+            self._consecutive_failures = 0
+            self._open_until = 0.0
+        if was_tripped:
             logger.info("llm_circuit_closed")
-        self._consecutive_failures = 0
-        self._open_until = 0.0
+        # The breaker is shared mutable state on a router the daemon and the
+        # API use at the same time. _record_failure is a check-then-act
+        # (read the count, compare, then write _open_until), which is racy by
+        # construction even though a GIL build makes it very hard to observe:
+        # 160k concurrent increments lost none, even at a 1 ns switch
+        # interval. The lock is here for free-threaded builds, where it stops
+        # being theoretical, and it costs nothing on a path that already makes
+        # network calls. It is not a fix for a bug seen in the wild.
+        self._breaker_lock = threading.Lock()
 
     def complete(
         self,
@@ -170,8 +198,22 @@ class LLMRouter:
         system_prompt: str = "",
         model_override: str = None,
         json_format: bool = True,
+        timeout_s: "int | None" = None,
+        optional: bool = False,
     ) -> Any:
         """One-shot completion via the active backend.
+
+        ``timeout_s`` overrides the configured request budget for this call
+        only. Used by callers whose result is optional and whose latency the
+        user feels directly -- the follow-up query rewrite spends the budget
+        before retrieval even starts, so it cannot be allowed to inherit a
+        timeout sized for answer generation.
+
+        ``optional`` marks a call whose failure is not evidence that the
+        backend is unhealthy, so it neither trips nor is blocked by the
+        circuit breaker. A best-effort call on a deliberately tight deadline
+        would otherwise open the breaker with its own timeouts and take answer
+        generation down with it.
 
         Returns:
             * the raw answer string when ``json_format`` is False,
@@ -180,7 +222,7 @@ class LLMRouter:
             * ``None`` on circuit-open, network failure, or unparseable
               JSON.
         """
-        if self._circuit_open():
+        if not optional and self._circuit_open():
             logger.warning("llm_skipped_circuit_open")
             return None
 
@@ -189,9 +231,11 @@ class LLMRouter:
             system_prompt=system_prompt,
             model_override=model_override,
             json_format=json_format,
+            timeout_s=timeout_s,
         )
         if raw is None:
-            self._record_failure()
+            if not optional:
+                self._record_failure()
             return None
 
         if json_format:

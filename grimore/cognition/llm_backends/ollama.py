@@ -56,6 +56,7 @@ class OllamaBackend:
         system_prompt: str = "",
         model_override: Optional[str] = None,
         json_format: bool = True,
+        timeout_s: Optional[int] = None,
     ) -> Any:
         model = model_override or self.config.cognition.model_llm_local
         try:
@@ -70,7 +71,7 @@ class OllamaBackend:
                 payload["format"] = "json"
 
             response = self.session.post(
-                url, json=payload, timeout=self.config.cognition.request_timeout_s
+                url, json=payload, timeout=timeout_s or self.config.cognition.request_timeout_s
             )
             response.raise_for_status()
             result = response.json()

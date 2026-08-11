@@ -533,6 +533,18 @@ def ask(
     question: str = typer.Argument(..., help="The question to ask the Oracle"),
     top_k: int = typer.Option(5, "--top-k", "-k", help="Context fragments to retrieve"),
     export: Path = typer.Option(None, "--export", "-e", help="Save the answer as a markdown note"),
+    category: str = typer.Option(
+        None, "--category", "-c",
+        help="Only search notes in this category (descendants included).",
+    ),
+    tag: list[str] = typer.Option(
+        None, "--tag", "-t",
+        help="Only search notes carrying this tag. Repeat to require several.",
+    ),
+    fmt: list[str] = typer.Option(
+        None, "--format", "-f",
+        help="Only search notes of this format (md, pdf, …). Repeat to allow several.",
+    ),
 ):
     """
     🔮 Consult the Grimore Oracle about your vault's knowledge.
@@ -540,6 +552,10 @@ def ask(
     This is a Retrieval-Augmented Generation (RAG) system. It searches for relevant
     note fragments, provides them as context to the LLM, and generates an answer
     with citations to your own notes.
+
+    The filters narrow which notes are searched at all, so the Oracle can only
+    cite from what survives them. They combine with AND, including repeated
+    --tag: "--tag a --tag b" means notes carrying both.
     """
     setup_logger()
     config = load_config()
@@ -550,7 +566,24 @@ def ask(
     _preflight_or_exit(config, check_git=False)
 
     session = Session(config)
-    _do_ask(session, question, top_k=top_k, export=export)
+    filter_note_ids = session.db.resolve_note_filter(
+        category=category, tags=tag, formats=fmt,
+    )
+    if filter_note_ids is not None and not filter_note_ids:
+        # An empty result is not the same as no filter: searching the whole
+        # vault here would silently answer from notes the user excluded.
+        console.print(ui.warn_panel(
+            "No notes match those filters, so there is nothing to search.",
+            title="Empty filter",
+        ))
+        return
+    if filter_note_ids is not None:
+        console.print(Text.assemble(
+            ("  ◆ ", "grimore.rune"),
+            (f"Searching {len(filter_note_ids)} filtered note(s)", "grimore.muted"),
+        ))
+    _do_ask(session, question, top_k=top_k, export=export,
+            filter_note_ids=filter_note_ids)
 
 
 @app.command(rich_help_panel="Knowledge ops")

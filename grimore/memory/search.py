@@ -12,6 +12,10 @@ from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Note ids bindable in one IN list. Above this the filter is applied
+# after the query instead; see fts_search.
+_MAX_FILTER_IDS = 900
+
 # Upper bound on the number of OR-ed terms in an FTS5 MATCH expression, so a
 # pathological (e.g. multi-kilobyte) query can't build an unbounded query tree.
 _FTS_MAX_TERMS = 50
@@ -25,7 +29,9 @@ class SearchMixin(DbBase):
         """Whether FTS5 is compiled in and wired up on this database."""
         return bool(getattr(self, "_fts_available", False))
 
-    def fts_search(self, query: str, limit: int = 20) -> list[tuple[int, int, str, float]]:
+    def fts_search(self, query: str, limit: int = 20,
+                   filter_note_ids: "set[int] | None" = None,
+                   ) -> list[tuple[int, int, str, float]]:
         """
         BM25 full-text search over embeddings.text_content.
 
@@ -33,7 +39,16 @@ class SearchMixin(DbBase):
         sorted by relevance (lower BM25 = more relevant; SQLite's bm25()
         returns negative values where smaller is better). Safe no-op when
         FTS5 isn't available.
+
+        ``filter_note_ids`` restricts the search to those notes. It is applied
+        inside the query, before ``LIMIT``, so a narrow filter still returns a
+        full page of its own best matches -- post-filtering the top ``limit``
+        rows would return almost nothing whenever the filter excludes the
+        globally strongest hits. An empty set means "nothing matched the
+        filter" and short-circuits to no results.
         """
+        if filter_note_ids is not None and not filter_note_ids:
+            return []
         if not self.fts_available or not query or not query.strip():
             return []
         # FTS5 match string. Tokenise on whitespace and OR the terms so we get
@@ -47,6 +62,20 @@ class SearchMixin(DbBase):
         tokens = [t for t in query.split() if t][:_FTS_MAX_TERMS]
         if not tokens:
             return []
+        # Beyond the host-parameter budget an IN list cannot be bound, so the
+        # filter moves to a post-pass over an oversampled page. Recall is a
+        # little softer there, but a filter that wide is barely a filter.
+        note_clause = ""
+        note_params: tuple[int, ...] = ()
+        post_filter: "set[int] | None" = None
+        if filter_note_ids is not None:
+            if len(filter_note_ids) <= _MAX_FILTER_IDS:
+                ids = sorted(filter_note_ids)
+                note_clause = f" AND e.note_id IN ({','.join('?' * len(ids))})"
+                note_params = tuple(ids)
+            else:
+                post_filter = filter_note_ids
+                limit = limit * 4
         match = " OR ".join('"' + t.replace('"', '""') + '"' for t in tokens)
         with self._get_connection() as conn:
             try:
@@ -55,16 +84,19 @@ class SearchMixin(DbBase):
                     SELECT e.id, e.note_id, e.text_content, bm25(embeddings_fts) AS score
                     FROM embeddings_fts
                     JOIN embeddings e ON e.id = embeddings_fts.rowid
-                    WHERE embeddings_fts MATCH ?
+                    WHERE embeddings_fts MATCH ?{note_clause}
                     ORDER BY score ASC
                     LIMIT ?
-                    """,
-                    (match, limit),
+                    """.format(note_clause=note_clause),
+                    (match, *note_params, limit),
                 ).fetchall()
             except sqlite3.OperationalError as e:
                 logger.warning("fts_query_failed", error=str(e))
                 return []
-        return [(r[0], r[1], r[2], float(r[3])) for r in rows]
+        out = [(r[0], r[1], r[2], float(r[3])) for r in rows]
+        if post_filter is not None:
+            out = [r for r in out if r[1] in post_filter]
+        return out
 
     # ── sqlite-vec search ─────────────────────────────────────────────────
 

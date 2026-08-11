@@ -159,6 +159,16 @@ class CognitionConfig:
     # it from the whole embeddings table. Set false to restore the previous
     # always-rebuild behaviour.
     vec_matrix_cache: bool = True
+    # Only rewrite a follow-up into a standalone search query when it actually
+    # points at the previous turn (pronouns, demonstratives, an opening
+    # conjunction, or too few words to retrieve on). False rewrites every
+    # question that arrives with history, which is the older behaviour.
+    conditional_rewrite: bool = True
+    # Budget for the follow-up query rewrite alone. It runs before retrieval,
+    # so the user waits for it with nothing on screen; inheriting
+    # request_timeout_s (sized for answer generation) makes a slow rewrite look
+    # like a hang. On expiry the original question is used unchanged.
+    rewrite_timeout_s: int = 60
     # Circuit breaker around the LLM backend: after this many back-to-back
     # failures, calls short-circuit for the cooldown instead of hammering a
     # backend that is down. Lower the threshold to fail faster on flaky

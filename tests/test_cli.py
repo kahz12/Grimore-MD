@@ -59,7 +59,7 @@ class _FakeOracle:
     def __init__(self, *args, **kwargs):
         pass
 
-    def ask(self, question, top_k=5):
+    def ask(self, question, top_k=5, filter_note_ids=None):
         return {
             "answer": "An exported response from the Oracle.",
             "sources": ["Note Alpha", "Note Beta"],
@@ -74,7 +74,13 @@ def _patch_ask_dependencies(monkeypatch, config):
     """
     monkeypatch.setattr("grimore.cli.load_config", lambda: config)
     monkeypatch.setattr("grimore.cli._preflight_or_exit", lambda *a, **k: None)
-    monkeypatch.setattr("grimore.session.Database", lambda *a, **k: object())
+    # The ask command resolves an (absent) note filter before running, so
+    # the stand-in DB has to model that call. None = "no filter asked for".
+    class _FakeDB:
+        def resolve_note_filter(self, **_kw):
+            return None
+
+    monkeypatch.setattr("grimore.session.Database", lambda *a, **k: _FakeDB())
     monkeypatch.setattr("grimore.session.LLMRouter", lambda *a, **k: object())
     monkeypatch.setattr("grimore.session.Embedder", lambda *a, **k: object())
     monkeypatch.setattr("grimore.session.Oracle", _FakeOracle)
