@@ -23,34 +23,104 @@ Security defaults:
 """
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
+import queue
 import secrets
+import threading
 import time
+from functools import partial
 from pathlib import Path
 from typing import Optional
 
 from starlette.applications import Starlette
-from starlette.concurrency import iterate_in_threadpool
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from starlette.responses import (
-    FileResponse,
     JSONResponse,
     PlainTextResponse,
     Response,
     StreamingResponse,
 )
-from starlette.routing import Mount, Route
-from starlette.staticfiles import StaticFiles
+from starlette.routing import Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from grimore.session import Session
+from grimore.ingest.parser import read_document_text
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
+
+# Starlette's AnyIO bridge has had compatibility gaps on newly released
+# Python versions. Bounded, short-lived workers keep model/SQLite work off the
+# event loop without relying on an executor whose idle threads outlive loops.
+_API_WORKER_SLOTS = threading.BoundedSemaphore(8)
+
+
+async def _acquire_worker_slot() -> None:
+    while not _API_WORKER_SLOTS.acquire(blocking=False):
+        await asyncio.sleep(0.005)
+
+
+async def _run_blocking(func, *args, **kwargs):
+    await _acquire_worker_slot()
+    result_queue: queue.Queue = queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            result_queue.put((True, partial(func, *args, **kwargs)()))
+        except BaseException as exc:
+            result_queue.put((False, exc))
+        finally:
+            _API_WORKER_SLOTS.release()
+
+    threading.Thread(
+        target=_worker, name="grimore-api-worker", daemon=True,
+    ).start()
+    while True:
+        try:
+            ok, result = result_queue.get_nowait()
+            break
+        except queue.Empty:
+            await asyncio.sleep(0.005)
+    if ok:
+        return result
+    raise result
+
+
+async def _iterate_blocking(iterator):
+    """Bridge one synchronous iterator with one bounded producer thread."""
+    await _acquire_worker_slot()
+    event_queue: queue.Queue = queue.Queue()
+    done = object()
+
+    def _producer() -> None:
+        try:
+            for item in iterator:
+                event_queue.put((True, item))
+        except BaseException as exc:
+            event_queue.put((False, exc))
+        finally:
+            event_queue.put((True, done))
+            _API_WORKER_SLOTS.release()
+
+    threading.Thread(
+        target=_producer, name="grimore-api-stream", daemon=True,
+    ).start()
+    while True:
+        try:
+            ok, item = event_queue.get_nowait()
+        except queue.Empty:
+            await asyncio.sleep(0.005)
+            continue
+        if not ok:
+            raise item
+        if item is done:
+            break
+        yield item
 
 # Discovered relative to this file so editable installs and packaged
 # installs both pick the right asset path.
@@ -142,13 +212,10 @@ async def _send_429(send: Send, retry_after: int) -> None:
 class _TokenAuthMiddleware:
     """Gate every ``/api/*`` route behind the bearer token.
 
-    Closes the broken-access-control hole (audit H1): the previous
-    per-handler check ran only on POSTs, leaving the GET note / category
-    / health routes — i.e. the actual data — open to any host that could
-    reach the port. Enforcing it here, in one place, means a route added
-    later can't forget the check. Loopback callers are exempt so the
-    local browser UI (which sends no token) keeps working; remote callers
-    need the token for *all* methods, GET included.
+    Authentication lives in middleware so every current and future API route
+    follows the same access policy. Loopback callers are exempt so the local
+    browser UI (which sends no token) keeps working; remote callers need the
+    token for *all* methods, GET included.
 
     Only attached when a token is configured, so the no-token loopback
     deployment is byte-for-byte unchanged.
@@ -264,10 +331,14 @@ def _build_routes(session: Session) -> list:
     async def ask(request: Request) -> Response:
         try:
             body = await request.json()
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse({"error": "body must be JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": "body must be a JSON object"}, status_code=400,
+            )
 
-        question = (body or {}).get("question", "")
+        question = body.get("question", "")
         if not isinstance(question, str) or not question.strip():
             return JSONResponse(
                 {"error": "question is required"}, status_code=400,
@@ -281,20 +352,20 @@ def _build_routes(session: Session) -> list:
 
         if stream:
             async def event_stream():
-                # Oracle.ask_stream is a sync generator; wrap it via
-                # Starlette's iterate_in_threadpool so a long Ollama
-                # token wait doesn't block the event loop and stall
-                # other in-flight requests.
+                # Oracle.ask_stream is a sync generator. Advance it in a
+                # bounded worker so model I/O never blocks the ASGI event loop.
                 gen = session.oracle.ask_stream(
                     question, top_k=top_k, history=history,
                 )
-                async for event in iterate_in_threadpool(gen):
+                async for event in _iterate_blocking(gen):
                     payload = json.dumps(event, ensure_ascii=False)
                     yield f"data: {payload}\n\n".encode("utf-8")
 
             return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-        result = session.oracle.ask(question, top_k=top_k, history=history)
+        result = await _run_blocking(
+            session.oracle.ask, question, top_k=top_k, history=history,
+        )
         return JSONResponse({
             "answer": result.get("answer", ""),
             "sources": list(result.get("sources") or []),
@@ -331,10 +402,14 @@ def _build_routes(session: Session) -> list:
     async def search(request: Request) -> Response:
         try:
             body = await request.json()
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             return JSONResponse({"error": "body must be JSON"}, status_code=400)
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {"error": "body must be a JSON object"}, status_code=400,
+            )
 
-        query = (body or {}).get("query", "")
+        query = body.get("query", "")
         if not isinstance(query, str) or not query.strip():
             return JSONResponse({"error": "query is required"}, status_code=400)
         try:
@@ -346,40 +421,51 @@ def _build_routes(session: Session) -> list:
         # that matches nothing returns nothing rather than falling back to the
         # whole vault, which would answer from notes the caller excluded.
         try:
-            filter_note_ids = _resolve_search_filter(session, body)
+            filter_note_ids = await _run_blocking(
+                _resolve_search_filter, session, body,
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         if filter_note_ids is not None and not filter_note_ids:
             return JSONResponse({"hits": []})
 
-        query_vector = session.embedder.embed(query)
-        use_hybrid = (
-            getattr(session.config.cognition, "hybrid_search", True)
-            and session.db.fts_available
-        )
-        if use_hybrid:
-            hits = session.oracle.connector.find_hybrid(
-                query_text=query, query_vector=query_vector, top_k=top_k,
-                filter_note_ids=filter_note_ids,
+        def _search_rows():
+            query_vector = session.embedder.embed(query)
+            use_hybrid = (
+                getattr(session.config.cognition, "hybrid_search", True)
+                and session.db.fts_available
             )
-        elif query_vector:
-            hits = session.oracle.connector.find_similar_notes(
-                query_vector, top_k=top_k, filter_note_ids=filter_note_ids)
-        else:
-            hits = []
+            if use_hybrid:
+                hits = session.oracle.connector.find_hybrid(
+                    query_text=query, query_vector=query_vector, top_k=top_k,
+                    filter_note_ids=filter_note_ids,
+                )
+            elif query_vector:
+                hits = session.oracle.connector.find_similar_notes(
+                    query_vector, top_k=top_k, filter_note_ids=filter_note_ids,
+                )
+            else:
+                hits = []
 
-        rows = []
-        for hit in hits:
-            note_id = hit.get("note_id")
-            title = session.db.get_note_title(note_id) or ""
-            text = hit.get("text") or ""
-            snippet = text[:200] + ("…" if len(text) > 200 else "")
-            rows.append({
-                "note_id": int(note_id),
-                "title": title,
-                "snippet": snippet,
-                "score": float(hit.get("score") or 0.0),
-            })
+            titles = session.db.get_note_titles(
+                hit.get("note_id") for hit in hits
+                if hit.get("note_id") is not None
+            )
+            rows = []
+            for hit in hits:
+                note_id = hit.get("note_id")
+                title = titles.get(int(note_id), "")
+                text = hit.get("text") or ""
+                snippet = text[:200] + ("…" if len(text) > 200 else "")
+                rows.append({
+                    "note_id": int(note_id),
+                    "title": title,
+                    "snippet": snippet,
+                    "score": float(hit.get("score") or 0.0),
+                })
+            return rows
+
+        rows = await _run_blocking(_search_rows)
         return JSONResponse({"hits": rows})
 
     async def get_note(request: Request) -> Response:
@@ -390,7 +476,7 @@ def _build_routes(session: Session) -> list:
         except (ValueError, KeyError):
             return JSONResponse({"error": "note_id must be an integer"}, status_code=400)
 
-        loc = session.db.get_note_location(note_id)
+        loc = await _run_blocking(session.db.get_note_location, note_id)
         if loc is None:
             return JSONResponse({"error": "not found"}, status_code=404)
         path, title = loc
@@ -405,8 +491,13 @@ def _build_routes(session: Session) -> list:
             return JSONResponse({"error": "not found"}, status_code=404)
         body_text = ""
         try:
-            body_text = resolved.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
+            body_text = await _run_blocking(
+                read_document_text,
+                resolved,
+                vault_root=session.vault_root,
+                config=session.config,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
             logger.warning("api_note_read_failed", path=path, error=str(exc))
         return JSONResponse({
             "note_id": note_id,
@@ -416,7 +507,7 @@ def _build_routes(session: Session) -> list:
         })
 
     async def categories(request: Request) -> Response:
-        rows = session.db.get_category_frequency()
+        rows = await _run_blocking(session.db.get_category_frequency)
         return JSONResponse({
             "categories": [
                 {"category": cat, "count": int(n)} for cat, n in rows
@@ -431,7 +522,26 @@ def _build_routes(session: Session) -> list:
                 "Grimore web UI assets missing. Reinstall the serve extra.",
                 status_code=500,
             )
-        return FileResponse(_INDEX_HTML, media_type="text/html; charset=utf-8")
+        try:
+            body = await _run_blocking(_INDEX_HTML.read_bytes)
+        except OSError:
+            return PlainTextResponse("Grimore web UI asset unreadable.", status_code=500)
+        return Response(body, media_type="text/html; charset=utf-8")
+
+    async def static_asset(request: Request) -> Response:
+        asset = request.path_params.get("asset", "")
+        media_types = {
+            "app.js": "text/javascript; charset=utf-8",
+            "grimore.css": "text/css; charset=utf-8",
+        }
+        media_type = media_types.get(asset)
+        if media_type is None:
+            return PlainTextResponse("not found", status_code=404)
+        try:
+            body = await _run_blocking((_STATIC_DIR / asset).read_bytes)
+        except OSError:
+            return PlainTextResponse("not found", status_code=404)
+        return Response(body, media_type=media_type)
 
     routes = [
         Route("/api/health", health, methods=["GET"]),
@@ -442,7 +552,7 @@ def _build_routes(session: Session) -> list:
         Route("/", index, methods=["GET"]),
     ]
     if _STATIC_DIR.exists():
-        routes.append(Mount("/static", app=StaticFiles(directory=_STATIC_DIR), name="static"))
+        routes.append(Route("/static/{asset:path}", static_asset, methods=["GET"]))
     return routes
 
 

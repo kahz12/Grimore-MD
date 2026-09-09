@@ -242,6 +242,7 @@ class NotesMixin(DbBase):
         file_hash: Optional[str] = None,
         sidecar_path: Optional[str] = None,
         size_bytes: Optional[int] = None,
+        mtime_ns: Optional[int] = None,
     ) -> Optional[int]:
         """Inserts or updates a note record. Returns the internal note ID.
 
@@ -254,8 +255,9 @@ class NotesMixin(DbBase):
             now = datetime.now().isoformat()
             cursor = conn.execute("""
                 INSERT INTO notes (path, title, content_hash, last_seen,
-                                   format, file_hash, sidecar_path, size_bytes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                   format, file_hash, sidecar_path, size_bytes,
+                                   mtime_ns)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                     title        = excluded.title,
                     content_hash = excluded.content_hash,
@@ -263,10 +265,11 @@ class NotesMixin(DbBase):
                     format       = excluded.format,
                     file_hash    = COALESCE(excluded.file_hash, notes.file_hash),
                     sidecar_path = COALESCE(excluded.sidecar_path, notes.sidecar_path),
-                    size_bytes   = COALESCE(excluded.size_bytes, notes.size_bytes)
+                    size_bytes   = COALESCE(excluded.size_bytes, notes.size_bytes),
+                    mtime_ns     = COALESCE(excluded.mtime_ns, notes.mtime_ns)
                 RETURNING id
             """, (path, title, content_hash, now,
-                  format, file_hash, sidecar_path, size_bytes))
+                  format, file_hash, sidecar_path, size_bytes, mtime_ns))
             result = cursor.fetchone()
             conn.commit()
             return result[0] if result else None
@@ -283,15 +286,25 @@ class NotesMixin(DbBase):
     def get_file_hash(self, path: str) -> Optional[str]:
         """Raw-bytes SHA-256 for ``path`` (None if unknown).
 
-        Cheap fast-skip key for ingest: if this matches what's on disk
-        right now, the file genuinely hasn't changed and we can skip
-        even the extraction step. See blueprint §6.4.
+        This supports the ingest fast path: matching raw bytes mean extraction
+        and downstream processing can be skipped safely.
         """
         with self._get_connection() as conn:
             row = conn.execute(
                 "SELECT file_hash FROM notes WHERE path = ?", (path,)
             ).fetchone()
         return row[0] if row and row[0] else None
+
+    def get_file_state(self, path: str) -> Optional[tuple[str, int, int]]:
+        """Return ``(sha256, size, mtime_ns)`` when all values are known."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT file_hash, size_bytes, mtime_ns FROM notes WHERE path = ?",
+                (path,),
+            ).fetchone()
+        if not row or row[0] is None or row[1] is None or row[2] is None:
+            return None
+        return str(row[0]), int(row[1]), int(row[2])
 
     def update_file_hash(self, path: str, file_hash: str) -> None:
         """Refresh just the file_hash for an otherwise-unchanged note.
@@ -304,6 +317,18 @@ class NotesMixin(DbBase):
             conn.execute(
                 "UPDATE notes SET file_hash = ? WHERE path = ?",
                 (file_hash, path),
+            )
+            conn.commit()
+
+    def update_file_state(
+        self, path: str, file_hash: str, size_bytes: int, mtime_ns: int,
+    ) -> None:
+        """Refresh the complete cheap-change fingerprint for ``path``."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE notes SET file_hash = ?, size_bytes = ?, mtime_ns = ? "
+                "WHERE path = ?",
+                (file_hash, size_bytes, mtime_ns, path),
             )
             conn.commit()
 
@@ -372,6 +397,29 @@ class NotesMixin(DbBase):
 
     # ── Prune ───────────────────────────────────────────────────────────────
 
+    def _delete_note_row(self, conn, note_id: int, path: str) -> None:
+        """Delete one note and every path/id keyed dependent record."""
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+        self._delete_embeddings_for_note(conn, note_id)
+        conn.execute("DELETE FROM freshness WHERE note_path = ?", (path,))
+        # Claims use note_path rather than a note FK. Enabling foreign keys
+        # above makes their contradiction rows cascade away as intended.
+        conn.execute("DELETE FROM claims WHERE note_path = ?", (path,))
+        conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+
+    def delete_note_by_path(self, path: str) -> bool:
+        """Delete one indexed note by source path; return whether it existed."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, path FROM notes WHERE path = ?", (path,),
+            ).fetchone()
+            if row is None:
+                return False
+            self._delete_note_row(conn, int(row[0]), str(row[1]))
+            conn.commit()
+        return True
+
     def find_stale_notes(self, existing_paths: Iterable[str]) -> list[tuple[int, str]]:
         """
         Identifies note records in the DB that no longer correspond to a file on disk.
@@ -390,12 +438,7 @@ class NotesMixin(DbBase):
         if not stale:
             return 0
         with self._get_connection() as conn:
-            for note_id, _ in stale:
-                conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
-                # Use the shared helper so the embeddings_vec mirror is cleared
-                # too — a raw ``DELETE FROM embeddings`` would orphan vec rows.
-                self._delete_embeddings_for_note(conn, note_id)
-                conn.execute("DELETE FROM freshness WHERE note_path = (SELECT path FROM notes WHERE id = ?)", (note_id,))
-                conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            for note_id, path in stale:
+                self._delete_note_row(conn, note_id, path)
             conn.commit()
         return len(stale)

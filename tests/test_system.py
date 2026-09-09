@@ -1,4 +1,4 @@
-"""B-06 regression: argv-shape match for Grimore daemon, not substring."""
+"""Daemon detection matches argv structure rather than substrings."""
 import pytest
 
 import grimore.utils.system as sysmod

@@ -217,7 +217,7 @@ class TestGitReady:
 
         git = next(c for c in report.checks if c.name == "git_ready")
         assert git.ok is False
-        # Warnings don't block startup, just surface the fix.
+        # Warnings do not block startup; they only surface remediation guidance.
         assert git.severity == "warning"
         assert "git" in git.fix
         # Missing git alone should NOT mark the whole report as failed.

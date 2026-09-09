@@ -21,8 +21,8 @@ logger = get_logger(__name__)
 # Hard cap on the total context (\n\n-joined sources) injected into the LLM
 # system prompt. With top_k×500 chars per chunk, a high --top-k could push
 # >25 KB into a 32 k-token window — fine on qwen2.5:3b, fragile on smaller
-# local models. 16 KB leaves headroom for the question, the prompt template
-# and the model's own answer space (B-07).
+# local models. 16 KB leaves headroom for the question, the prompt template,
+# and the model's own answer space.
 _ORACLE_CONTEXT_MAX_CHARS = 16_000
 _CONTEXT_SEPARATOR = "\n\n"
 
@@ -249,9 +249,9 @@ class Oracle:
         own turn log) and is interpolated into both the retrieval-rewrite
         prompt and the system prompt. Unlike retrieved note content and
         ``extra_sources`` it previously skipped the injection guard, so a
-        caller could smuggle role markers / chat-template tokens through it
-        (audit L3); a non-list value would also crash the ``history[-3:]``
-        iteration with an ``AttributeError`` → 500.
+        caller could otherwise smuggle role markers or chat-template tokens
+        through it. A non-list value would also crash the ``history[-3:]``
+        iteration and turn malformed input into a server error.
 
         Returns a list of ``{"q", "a"}`` dicts with both fields run through
         :meth:`SecurityGuard.sanitize_prompt`. Anything that isn't a list of
@@ -583,7 +583,11 @@ class Oracle:
             # ranked list so eval can tell the two apart.
             return None, [], retrieved
 
-        return _CONTEXT_SEPARATOR.join(accepted_parts), list(set(sources)), retrieved
+        return (
+            _CONTEXT_SEPARATOR.join(accepted_parts),
+            list(dict.fromkeys(sources)),
+            retrieved,
+        )
 
     def ask_stream(self, question: str, top_k: int = 5, extra_sources=None,
                    history=None,
@@ -593,7 +597,7 @@ class Oracle:
         Yields events::
 
             {"type": "token", "text": "..."}       # zero-or-more, as LLM emits
-            {"type": "done",  "sources": [...]}    # exactly one, terminal
+            {"type": "done", "answer": "...", "sources": [...]}  # terminal
 
         Falls back to a single ``done`` with an empty ``sources`` list when
         retrieval finds nothing or when the streaming call returns no tokens
@@ -646,7 +650,14 @@ class Oracle:
 
         if not produced:
             logger.warning("oracle_stream_no_response")
-        # Tokens are already on screen, so we can't unlink in place; surface a
-        # count instead so the caller can warn the user about ungrounded links.
-        _, dropped = self.verify_citations("".join(chunks), sources)
-        yield {"type": "done", "sources": sources, "retrieved": retrieved, "dropped_citations": dropped}
+        # Tokens are already on screen, but the final event carries the verified
+        # answer so clients can replace their provisional rendering and remove
+        # citations that were not present in the retrieved context.
+        verified_answer, dropped = self.verify_citations("".join(chunks), sources)
+        yield {
+            "type": "done",
+            "answer": verified_answer,
+            "sources": sources,
+            "retrieved": retrieved,
+            "dropped_citations": dropped,
+        }

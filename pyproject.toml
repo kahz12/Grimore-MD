@@ -88,21 +88,19 @@ vec = ["sqlite-vec>=0.1.0"]
 # stay on the default "llm" engine.
 reranker = ["sentence-transformers>=2.7"]
 # Local HTTP API + minimal web UI. Off by default so a
-# fresh install doesn't pull in fastapi/uvicorn for users who only
+# fresh install doesn't pull in starlette/uvicorn for users who only
 # need the CLI and shell. ``grimore serve`` checks for this extra at
 # launch and prints the install command if missing.
-serve = ["fastapi>=0.110", "uvicorn>=0.27"]
-# Official MCP SDK. The shipped ``grimore mcp`` server
-# implements the JSON-RPC handshake by hand and does NOT require this
-# extra — declared here for a future opt-in upgrade path to the SDK's
-# transport helpers and richer schema validation.
-mcp = ["mcp>=0.1.0"]
-
+serve = ["starlette>=0.37,<2", "uvicorn>=0.27"]
 [project.scripts]
 grimore = "grimore.cli:app"
 
 [tool.setuptools.packages.find]
 include = ["grimore*"]
+
+[tool.setuptools.package-data]
+"grimore.cognition" = ["prompts/*.txt"]
+"grimore.api" = ["static/*.js", "static/*.css", "templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -110,7 +108,7 @@ markers = [
     "e2e: end-to-end test that calls a real Ollama server (auto-skips when none is reachable; opt out with -m 'not e2e').",
     "vec: requires the sqlite-vec extension (auto-skips when unavailable).",
     "reranker: requires sentence-transformers (auto-skips when unavailable).",
-    "serve: requires fastapi + uvicorn (auto-skips when unavailable).",
+    "serve: requires starlette + uvicorn (auto-skips when unavailable).",
 ]
 
 [tool.coverage.run]

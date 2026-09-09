@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 # Historical public constant. Kept as a re-export of the Markdown adapter's
 # limit so v2.0 imports (`from grimore.ingest.parser import MAX_NOTE_BYTES`)
 # keep resolving. Per-format caps for non-MD documents are config-driven in
-# later phases.
+# as adapters are registered.
 MAX_NOTE_BYTES = _MAX_MD_BYTES
 
 
@@ -61,15 +61,14 @@ def iter_vault_documents(
 ) -> list[Path]:
     """Sorted list of every document the dispatcher can pick up.
 
-    Iterates one ``rglob`` per extension because ``Path.glob`` doesn't
-    understand brace alternation (``*.{md,pdf}``). Skips ignored dirs and,
-    when ``sidecar_dir`` is set, skips any path under it so we never
-    re-ingest the .md files Grimore itself generated.
+    Walks the vault once and compares lower-cased suffixes against a set.
+    This keeps extension matching case-insensitive on Linux and avoids one
+    full directory traversal per configured format. Skips ignored dirs and,
+    when ``sidecar_dir`` is set, skips any path under it so we never re-ingest
+    the .md files Grimore itself generated.
 
-    When ``sniff_magic`` is True, a second pass picks up files whose
-    extension is unknown but whose content libmagic recognises (e.g. a
-    PDF saved without an extension, or named ``.bak``). Files that
-    sniff to nothing recognisable stay skipped.
+    When ``sniff_magic`` is True, files with unknown suffixes are content-
+    sniffed during that same pass (e.g. a PDF saved without an extension).
 
     The result is sorted so progress UI feels stable across reruns.
     """
@@ -83,51 +82,34 @@ def iter_vault_documents(
 
     known_exts = {ext.lower().lstrip(".") for ext in formats if ext}
     seen: set[Path] = set()
-    for ext in known_exts:
-        if not ext:
-            continue
-        for candidate in vault_path.rglob(f"*.{ext}"):
-            if is_ignored_path(candidate, ignored_dirs):
-                continue
-            try:
-                resolved = SecurityGuard.resolve_within_vault(candidate, vault_root)
-            except ValueError:
-                logger.warning("path_escape_skipped", path=str(candidate))
-                continue
-            if sidecar_root is not None:
-                try:
-                    resolved.relative_to(sidecar_root)
-                except ValueError:
-                    pass
-                else:
-                    # Inside the sidecar tree — never re-ingest our own output.
-                    continue
-            seen.add(candidate)
-
+    sniff_extension = None
     if sniff_magic:
-        from grimore.ingest.sniffer import sniff_extension
-        for candidate in vault_path.rglob("*"):
-            if not candidate.is_file():
-                continue
-            if candidate in seen:
-                continue
-            ext_key = candidate.suffix.lower().lstrip(".")
-            if ext_key in known_exts:
-                # Already handled by the extension pass; no need to sniff.
-                continue
-            if is_ignored_path(candidate, ignored_dirs):
-                continue
+        from grimore.ingest.sniffer import sniff_extension as _sniff_extension
+        sniff_extension = _sniff_extension
+
+    for candidate in vault_path.rglob("*"):
+        if not candidate.is_file():
+            continue
+        if is_ignored_path(candidate, ignored_dirs):
+            continue
+        try:
+            resolved = SecurityGuard.resolve_within_vault(candidate, vault_root)
+        except ValueError:
+            logger.warning("path_escape_skipped", path=str(candidate))
+            continue
+        if sidecar_root is not None:
             try:
-                resolved = SecurityGuard.resolve_within_vault(candidate, vault_root)
+                resolved.relative_to(sidecar_root)
             except ValueError:
+                pass
+            else:
                 continue
-            if sidecar_root is not None:
-                try:
-                    resolved.relative_to(sidecar_root)
-                except ValueError:
-                    pass
-                else:
-                    continue
+
+        ext_key = candidate.suffix.lower().lstrip(".")
+        if ext_key in known_exts:
+            seen.add(candidate)
+            continue
+        if sniff_extension is not None:
             sniffed = sniff_extension(candidate)
             if sniffed and sniffed in known_exts:
                 seen.add(candidate)
@@ -244,3 +226,19 @@ class MarkdownParser:
             # true content type so downstream chunking + DB rows match.
             doc = replace(doc, format=sniffed_ext)
         return ParsedNote.from_extracted(doc)
+
+
+def read_document_text(
+    file_path: Union[str, Path],
+    *,
+    vault_root: Optional[Union[str, Path]] = None,
+    config=None,
+) -> str:
+    """Return adapter-extracted text for any supported vault document.
+
+    Downstream features must use this instead of ``Path.read_text`` so PDF,
+    DOCX, EPUB, ODT and other binary formats share the exact ingest semantics.
+    """
+    return MarkdownParser().parse_file(
+        Path(file_path), vault_root=vault_root, config=config,
+    ).content

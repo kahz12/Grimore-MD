@@ -168,8 +168,8 @@ class TurnResult:
     negative: bool = False
     abstained: Optional[bool] = None       # set only for negative cases
     # ── failure taxonomy ──
-    # Which pipeline stage broke (or "ok"). Tells you *what to fix*, not just
-    # that a number dropped. See ``classify_outcome``. ``expected_sources`` and
+    # Which pipeline stage broke (or "ok"), so reports identify the responsible
+    # component when a number drops. See ``classify_outcome``. ``expected_sources`` and
     # ``missing_keywords`` are carried so the Failures section can explain each.
     outcome: str = "ok"
     expected_sources: list[str] = field(default_factory=list)
@@ -625,8 +625,8 @@ def answer_abstained(answer: str) -> bool:
 # retrieved). Soft by design — a single missing keyword isn't a failure.
 _KW_PASS_THRESHOLD = 0.5
 
-# Outcome labels, in pipeline order. The first stage that breaks wins, so the
-# label points at the component to fix.
+# Outcome labels follow pipeline order. The first failing stage determines the
+# label, which identifies the responsible component.
 OUTCOMES = (
     "ok",               # everything the turn could check, passed
     "retrieval_miss",   # expected note never retrieved (not in the pool at all)

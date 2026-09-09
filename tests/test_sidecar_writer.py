@@ -89,6 +89,7 @@ class TestFrontmatterWriterSidecar:
         assert post.metadata["content_hash"] == "ch1"
         assert post.metadata["file_hash"] == "fh1"
         assert post.metadata[SIDECAR_FLAG_KEY] is True
+        assert "body" in post.content
 
     def test_non_md_dry_run_creates_nothing(self, tmp_path):
         src = tmp_path / "a.pdf"
@@ -133,6 +134,28 @@ class TestFrontmatterWriterSidecar:
         assert post2.metadata["summary"] == "fresh"
         # User text survives the merge.
         assert "User-added notes" in post2.content
+
+    def test_rerun_refreshes_extracted_text_without_losing_user_text(self, tmp_path):
+        src = tmp_path / "doc.pdf"
+        src.write_bytes(b"%PDF")
+        writer = FrontmatterWriter()
+        sidecar = writer.write_metadata(
+            _note(src, fmt="pdf", content="old extracted"),
+            {"tags": ["v1"]}, vault_root=tmp_path, dry_run=False,
+        )
+        post = frontmatter.load(sidecar)
+        post.content += "\n\nMy annotation"
+        sidecar.write_text(frontmatter.dumps(post), encoding="utf-8")
+
+        writer.write_metadata(
+            _note(src, fmt="pdf", content="new extracted"),
+            {"tags": ["v2"]}, vault_root=tmp_path, dry_run=False,
+        )
+
+        refreshed = frontmatter.load(sidecar).content
+        assert "new extracted" in refreshed
+        assert "old extracted" not in refreshed
+        assert "My annotation" in refreshed
 
     def test_missing_vault_root_for_non_md_raises(self, tmp_path):
         src = tmp_path / "a.pdf"

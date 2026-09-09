@@ -223,8 +223,8 @@ class TestSearchApiFilter:
 
     def _client(self, db, vault):
         pytest.importorskip("starlette")
-        from starlette.testclient import TestClient
         from grimore.api.app import build_app
+        from tests.asgi_client import ASGITestClient
 
         class _Session:
             def __init__(self):
@@ -234,7 +234,7 @@ class TestSearchApiFilter:
                 self.config = type("C", (), {"cognition": type("K", (), {
                     "hybrid_search": False})()})()
 
-        return TestClient(build_app(_Session()))
+        return ASGITestClient(build_app(_Session()))
 
     def test_tags_narrow_the_results(self, db, vault):
         client = self._client(db, vault)

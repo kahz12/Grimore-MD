@@ -7,9 +7,7 @@ clients can use Grimore as a tool.
 This module implements the JSON-RPC 2.0 framing and the MCP
 ``initialize`` / ``tools/list`` / ``tools/call`` handshake by hand —
 the wire shape is simple enough that pulling in the official ``mcp``
-SDK as a hard dependency would be more weight than it's worth. The
-``mcp`` extra in ``pyproject.toml`` is still declared for forward
-compatibility in case a future phase wants the SDK's transport helpers.
+SDK as a dependency would be more weight than it's worth.
 
 Tools exposed:
 
@@ -31,6 +29,7 @@ from dataclasses import dataclass
 from typing import IO, Any, Callable, Optional
 
 from grimore.session import Session
+from grimore.ingest.parser import read_document_text
 from grimore.utils.logger import get_logger
 from grimore.utils.security import SecurityGuard
 
@@ -220,8 +219,8 @@ class MCPServer:
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question is required and must be a non-empty string")
         # ValueError on a non-numeric value propagates to the dispatcher,
-        # which maps it to _INVALID_PARAMS. maximum mirrors the advertised
-        # input-schema bound so the handler actually enforces it (audit L2).
+        # which maps it to _INVALID_PARAMS. The runtime limit matches the
+        # maximum advertised by the input schema.
         top_k = SecurityGuard.coerce_top_k(args.get("top_k"), default=5, maximum=25)
         result = self.session.oracle.ask(question, top_k=top_k)
         return {
@@ -251,10 +250,14 @@ class MCPServer:
         else:
             hits = []
 
+        titles = self.session.db.get_note_titles(
+            hit.get("note_id") for hit in hits
+            if hit.get("note_id") is not None
+        )
         rows: list[dict] = []
         for hit in hits:
             note_id = hit.get("note_id")
-            title = self.session.db.get_note_title(note_id) or ""
+            title = titles.get(int(note_id), "")
             text = hit.get("text") or ""
             snippet = text[:200] + ("…" if len(text) > 200 else "")
             rows.append({
@@ -311,8 +314,12 @@ class MCPServer:
 
         body = ""
         try:
-            body = resolved.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
+            body = read_document_text(
+                resolved,
+                vault_root=self.session.vault_root,
+                config=self.session.config,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
             logger.warning("mcp_note_read_failed", path=row["path"], error=str(exc))
         return {
             "found": True,

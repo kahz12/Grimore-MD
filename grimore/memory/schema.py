@@ -370,10 +370,8 @@ class SchemaMixin(DbBase):
 
         Idempotent — every ALTER is gated on a ``PRAGMA table_info`` check
         so re-running the migration on an already-upgraded DB is a no-op.
-        New rows default to Markdown semantics so v2.0 callers that
-        haven't been ported keep working unchanged.
-
-        See ``docs/MULTIFORMAT_BLUEPRINT.md`` §5 for the contract.
+        New rows default to Markdown semantics so callers that omit the newer
+        format fields keep working unchanged.
         """
         note_cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)")}
         if "format" not in note_cols:
@@ -387,6 +385,8 @@ class SchemaMixin(DbBase):
             conn.execute("ALTER TABLE notes ADD COLUMN sidecar_path TEXT")
         if "size_bytes" not in note_cols:
             conn.execute("ALTER TABLE notes ADD COLUMN size_bytes INTEGER")
+        if "mtime_ns" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN mtime_ns INTEGER")
 
         emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
         if "page" not in emb_cols:
@@ -435,7 +435,7 @@ class SchemaMixin(DbBase):
                                Status is 'open' / 'dismissed' / 'resolved';
                                dismissed pairs persist across re-scans so
                                we don't re-flag what the user already saw.
-        * ``mirror_runs``    — audit trail for incremental scans.
+        * ``mirror_runs``    — execution history for incremental scans.
         """
         conn.execute(
             """

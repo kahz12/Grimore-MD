@@ -88,3 +88,13 @@ class TestIterVaultDocuments:
             vault, formats=[".MD"], ignored_dirs=[],
         )
         assert {p.name for p in out} == {"n.md"}
+
+    def test_uppercase_filename_extension_is_detected(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        upper = vault / "UPPER.MD"
+        upper.write_text("# Upper\n")
+
+        out = iter_vault_documents(vault, formats=["md"], ignored_dirs=[])
+
+        assert out == [upper]

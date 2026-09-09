@@ -1,4 +1,4 @@
-"""B-07 regression: Oracle.ask caps the LLM context at _ORACLE_CONTEXT_MAX_CHARS."""
+"""Oracle retrieval, context limits, history safety, and citation behavior."""
 from unittest.mock import MagicMock
 
 from grimore.cognition.oracle import Oracle, _ORACLE_CONTEXT_MAX_CHARS
@@ -206,7 +206,7 @@ def test_oversized_first_source_is_skipped_then_smaller_ones_kept():
     assert len(ctx) <= _ORACLE_CONTEXT_MAX_CHARS
 
 
-# ── L3: request-supplied history must pass the injection guard ──────────
+# ── Request-supplied history must pass the injection guard ─────────────
 
 _ZERO_WIDTH = "​"  # U+200B inserted by SecurityGuard.sanitize_prompt
 
@@ -277,3 +277,33 @@ def test_non_list_history_does_not_crash():
     # A string history would previously raise AttributeError → 500.
     result = o.ask("hi", history="expand on that")
     assert result["answer"] == "OK"
+
+
+def test_stream_done_contains_answer_with_ungrounded_citations_unlinked():
+    o = _make_oracle()
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 1, "text": "body", "score": 0.9},
+    ]
+    o.router.complete_streaming.return_value = iter([
+        "Supported [[Note 1]]. ", "Invented [[Ghost]].",
+    ])
+
+    events = list(o.ask_stream("hi"))
+
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["answer"] == "Supported [[Note 1]]. Invented Ghost."
+    assert done["dropped_citations"] == 1
+
+
+def test_context_sources_keep_first_seen_order():
+    o = _make_oracle()
+    o.connector.find_similar_notes.return_value = [
+        {"note_id": 3, "text": "three", "score": 0.9},
+        {"note_id": 1, "text": "one", "score": 0.8},
+        {"note_id": 3, "text": "three again", "score": 0.7},
+    ]
+
+    _context, sources, _retrieved = o._build_context("hi", 3)
+
+    assert sources == ["Note 3", "Note 1"]

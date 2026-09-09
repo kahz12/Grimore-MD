@@ -61,7 +61,7 @@ class TestMigration:
         with closing(sqlite3.connect(db.db_path)) as conn, conn:
             notes_cols = _columns(conn, "notes")
             emb_cols = _columns(conn, "embeddings")
-        for col in ("format", "file_hash", "sidecar_path", "size_bytes"):
+        for col in ("format", "file_hash", "sidecar_path", "size_bytes", "mtime_ns"):
             assert col in notes_cols, f"notes missing {col!r}"
         for col in ("page", "heading"):
             assert col in emb_cols, f"embeddings missing {col!r}"
@@ -75,12 +75,12 @@ class TestMigration:
 
         with closing(sqlite3.connect(db.db_path)) as conn, conn:
             row = conn.execute(
-                "SELECT title, format, file_hash, sidecar_path, size_bytes "
+                "SELECT title, format, file_hash, sidecar_path, size_bytes, mtime_ns "
                 "FROM notes WHERE path = ?",
                 ("/vault/old.md",),
             ).fetchone()
         assert row is not None
-        title, fmt, file_hash, sidecar, size = row
+        title, fmt, file_hash, sidecar, size, mtime_ns = row
         assert title == "Old Note"
         # Backfilled rows inherit the column default 'md'.
         assert fmt == "md"
@@ -88,6 +88,7 @@ class TestMigration:
         assert file_hash is None
         assert sidecar is None
         assert size is None
+        assert mtime_ns is None
 
     def test_migration_is_idempotent(self, tmp_path):
         path = str(tmp_path / "twice.db")
@@ -113,9 +114,11 @@ class TestUpsertNoteKwargs:
             file_hash="f1",
             sidecar_path="/vault/.grimore/sidecars/book.pdf.md",
             size_bytes=1234,
+            mtime_ns=5678,
         )
         assert nid is not None
         assert db.get_file_hash("/vault/book.pdf") == "f1"
+        assert db.get_file_state("/vault/book.pdf") == ("f1", 1234, 5678)
 
         # Re-upsert with a new content_hash but no file_hash override —
         # the stored file_hash must be preserved via COALESCE.
@@ -127,6 +130,12 @@ class TestUpsertNoteKwargs:
         db.upsert_note("/vault/c.md", "C", "h", file_hash="aaa")
         db.update_file_hash("/vault/c.md", "bbb")
         assert db.get_file_hash("/vault/c.md") == "bbb"
+
+    def test_update_file_state_round_trip(self, tmp_path):
+        db = Database(str(tmp_path / "u.db"))
+        db.upsert_note("/vault/c.md", "C", "h")
+        db.update_file_state("/vault/c.md", "abc", 42, 123456)
+        assert db.get_file_state("/vault/c.md") == ("abc", 42, 123456)
 
 
 class TestStoreEmbeddingKwargs:
@@ -152,3 +161,23 @@ class TestStoreEmbeddingKwargs:
                 (nid,),
             ).fetchone()
         assert row == (42, "Ch 3")
+
+
+class TestDeleteNoteByPath:
+    def test_removes_path_and_all_dependent_records(self, tmp_path):
+        db = Database(str(tmp_path / "delete.db"))
+        path = "/vault/gone.md"
+        nid = db.upsert_note(path, "Gone", "hash")
+        db.upsert_tags(nid, ["old"])
+        db.store_embedding(nid, 0, "chunk", b"\x00" * 8)
+        db.upsert_freshness(path, "2026-01-01T00:00:00", 30)
+        db.replace_claims_for_note(
+            path, [("A claim", 0, 7, b"\x00" * 8)],
+            "2026-01-01T00:00:00Z",
+        )
+
+        assert db.delete_note_by_path(path) is True
+        assert db.delete_note_by_path(path) is False
+        with closing(sqlite3.connect(db.db_path)) as conn:
+            for table in ("notes", "note_tags", "embeddings", "freshness", "claims"):
+                assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0

@@ -153,6 +153,7 @@ class GrimoreDaemon:
         self.observer = VaultObserver(
             vault_path=self.config.vault.path,
             callback=self.process_file,
+            delete_callback=self.remove_file,
             ignored_dirs=self.config.vault.ignored_dirs,
             supported_extensions=self.config.vault.formats,
             sniff_magic=self.config.ingest.sniff_magic,
@@ -262,16 +263,30 @@ class GrimoreDaemon:
                 self.event_log.write("skip", path=rel, reason="sidecar")
                 return
 
-            # 0b. Cheap fast-skip on the raw file bytes (blueprint §6.4).
-            # Avoids re-extracting expensive formats (PDF, EPUB, DOCX)
-            # when nothing on disk has changed.
+            # Size+mtime is the O(1) fast path. Hash bytes only when the
+            # metadata fingerprint changed or has not been recorded yet.
             try:
+                disk_stat = file_path.stat()
+                stored_state = self.db.get_file_state(str(file_path))
+                if stored_state is not None and stored_state[1:] == (
+                    disk_stat.st_size, disk_stat.st_mtime_ns,
+                ):
+                    self.event_log.write("skip", path=rel, reason="unchanged_stat")
+                    return
                 file_hash = sha256_file(file_path)
             except OSError as e:
                 logger.error("file_hash_failed", path=rel, error=str(e))
                 self.event_log.write("error", path=rel, error=str(e))
                 return
-            if self.db.get_file_hash(str(file_path)) == file_hash:
+            stored_hash = (
+                stored_state[0] if stored_state
+                else self.db.get_file_hash(str(file_path))
+            )
+            if stored_hash == file_hash:
+                self.db.update_file_state(
+                    str(file_path), file_hash,
+                    disk_stat.st_size, disk_stat.st_mtime_ns,
+                )
                 self.event_log.write("skip", path=rel, reason="unchanged_bytes")
                 return
 
@@ -300,7 +315,10 @@ class GrimoreDaemon:
             # have fast-skipped above) but the extracted text didn't —
             # refresh the file_hash so the next event also fast-skips.
             if self.db.get_content_hash_by_path(str(file_path)) == note.content_hash:
-                self.db.update_file_hash(str(file_path), file_hash)
+                self.db.update_file_state(
+                    str(file_path), file_hash,
+                    disk_stat.st_size, disk_stat.st_mtime_ns,
+                )
                 logger.info("file_unchanged", path=rel)
                 self.event_log.write("skip", path=rel, reason="unchanged")
                 return
@@ -330,6 +348,14 @@ class GrimoreDaemon:
                 dry_run=self.config.output.dry_run,
             )
 
+            if not self.config.output.dry_run:
+                latest_stat = file_path.stat()
+                if (latest_stat.st_size, latest_stat.st_mtime_ns) != (
+                    disk_stat.st_size, disk_stat.st_mtime_ns,
+                ):
+                    file_hash = sha256_file(file_path)
+                disk_stat = latest_stat
+
             # 7. Update Database records
             sidecar_target_str = (
                 str(target) if (note.format != "md" and target is not None) else None
@@ -339,7 +365,8 @@ class GrimoreDaemon:
                 format=note.format,
                 file_hash=file_hash,
                 sidecar_path=sidecar_target_str,
-                size_bytes=note.size_bytes or None,
+                size_bytes=disk_stat.st_size,
+                mtime_ns=disk_stat.st_mtime_ns,
             )
             self.db.update_last_tagged(str(file_path))
             if note_id is not None:
@@ -385,3 +412,17 @@ class GrimoreDaemon:
             logger.error("processing_failed", path=rel, error=str(e))
             self.event_log.write("error", path=rel, error=str(e))
             self.notifier.notify("Grimore: Critical Error", f"Error processing {file_path.name}")
+
+    def remove_file(self, file_path: Path) -> None:
+        """Remove every index row belonging to a deleted or renamed source."""
+        rel = self._log_path(file_path)
+        try:
+            resolved = SecurityGuard.resolve_within_vault(file_path, self.vault_root)
+        except ValueError:
+            logger.warning("delete_path_escape_skipped", path=rel)
+            self.event_log.write("skip", path=rel, reason="delete_path_escape")
+            return
+        removed = self.db.delete_note_by_path(str(resolved))
+        if removed:
+            logger.info("file_removed_from_index", path=rel)
+            self.event_log.write("deleted", path=rel)

@@ -39,7 +39,8 @@ class OllamaBackend:
         self.host = SecurityGuard.validate_llm_host(
             raw_host, allow_remote=allow_remote
         )
-        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        # Connect to the validated loopback address so DNS cannot change
+        # between validation and the request.
         # read_retries=0: a read timeout here means the model is still doing
         # prompt eval or generation, not that the request failed. Retrying
         # throws that work away and re-queues behind it, so the connect-error

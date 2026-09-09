@@ -18,6 +18,7 @@ import signal
 import sys
 import threading
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -463,3 +464,16 @@ class TestDaemonSignalHandling:
         assert instance.observer is None
         assert instance._pid_lock_fd is None
         assert instance.db.checkpointed is True
+
+
+def test_observer_stop_waits_for_processor_without_timeout(tmp_path):
+    """Shutdown must not close the DB underneath an indexing callback."""
+    from grimore.ingest.observer import VaultObserver
+
+    observer = VaultObserver(str(tmp_path), lambda _path: None, [])
+    observer.observer = MagicMock()
+    observer.processor_thread = MagicMock()
+
+    observer.stop()
+
+    observer.processor_thread.join.assert_called_once_with()

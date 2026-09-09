@@ -72,7 +72,7 @@ class TestParseFile:
             self.parser.parse_file(tmp_path / "nope.md")
 
     def test_vault_root_optional_validates_when_set(self, tmp_path):
-        # B-02: parser re-validates vault scope as defence-in-depth.
+        # The parser independently enforces vault containment.
         vault = tmp_path / "vault"
         outside = tmp_path / "outside"
         vault.mkdir()

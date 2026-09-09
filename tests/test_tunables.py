@@ -94,7 +94,7 @@ class TestEmbedderBatchSize:
         assert Embedder(_config()).batch_size == _EMBED_BATCH_SIZE
 
     def test_non_positive_batch_size_is_floored_to_one(self):
-        # A zero step would make embed_batch's range() loop never advance.
+        # A zero batch size would make embed_batch's range() loop never advance.
         assert Embedder(_config(embed_batch_size=0)).batch_size == 1
 
     def test_embed_batch_splits_requests_at_the_configured_size(self):

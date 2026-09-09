@@ -49,7 +49,8 @@ class Embedder:
             raw_host, allow_remote=allow_remote
         )
         self.model = config.cognition.model_embeddings_local
-        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        # Connect to the validated loopback address so DNS cannot change
+        # between validation and the request.
         self.session = build_session(
             pins=SecurityGuard.loopback_pins(raw_host, allow_remote=allow_remote)
         )

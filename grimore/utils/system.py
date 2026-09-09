@@ -67,8 +67,8 @@ def _is_grimore_process(pid: int) -> bool:
 
     A bare substring match for "grimore" used to be enough but had
     false positives (e.g. an editor opened on this repo, an unrelated
-    script with "grimore" in its argv). Matching argv structure
-    eliminates that ambiguity. (B-06)
+    script with "grimore" in its argv). Matching argv structure eliminates
+    that ambiguity.
 
     On platforms without procfs (Windows, macOS) we cannot read another
     process's argv portably, so we trust the lock + ``os.kill(pid, 0)``

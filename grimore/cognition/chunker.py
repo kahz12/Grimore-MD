@@ -259,6 +259,7 @@ def chunk_semantic(
     cur_sents: list[str] = [sentences[0]]
     cur_sum: list[float] = list(embeddings[0])  # running sum (cheap mean)
     cur_len = 1
+    cur_chars = len(sentences[0])
 
     def _flush():
         joined = " ".join(cur_sents).strip()
@@ -278,7 +279,7 @@ def chunk_semantic(
         mean = [v / cur_len for v in cur_sum]
         sim = _cosine(mean, emb)
 
-        candidate_len = sum(len(s) for s in cur_sents) + len(cur_sents) + len(sent)
+        candidate_len = cur_chars + 1 + len(sent)
         too_big = candidate_len > max_chars
         drift = sim < threshold
 
@@ -287,10 +288,12 @@ def chunk_semantic(
             cur_sents = [sent]
             cur_sum = list(emb)
             cur_len = 1
+            cur_chars = len(sent)
         else:
             cur_sents.append(sent)
             cur_sum = [a + b for a, b in zip(cur_sum, emb, strict=True)]
             cur_len += 1
+            cur_chars = candidate_len
 
     _flush()
     return chunks
@@ -343,8 +346,8 @@ def _sliding_window(text: str, size: int, overlap: int) -> list[str]:
     """
     if size <= 0 or len(text) <= size:
         return [text] if text else []
-    # Clamp overlap so step is always meaningful progress. If overlap >= size,
-    # step would degenerate to 1 and emit len(text) near-identical windows —
+    # Clamp overlap so the stride always makes meaningful progress. If overlap
+    # reaches size, the stride degenerates to 1 and emits near-identical windows,
     # trivial OOM path for any hostile or mis-configured note. Capping at
     # size // 2 keeps the "overlap" semantics without the runaway.
     if overlap >= size:

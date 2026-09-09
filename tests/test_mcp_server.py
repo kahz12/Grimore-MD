@@ -61,6 +61,9 @@ def _stub_session(*, hits=None, ask_answer="hello", chunk_vectors=None,
     # DB: title lookup + category frequency.
     session.db.fts_available = True
     session.db.get_note_title.return_value = note_title
+    session.db.get_note_titles.side_effect = lambda ids: {
+        int(note_id): note_title for note_id in ids
+    }
     session.db.get_note_location.return_value = (note_path, note_title)
     session.db.get_category_frequency.return_value = [
         ("philosophy", 5), ("tech/networking", 2),
@@ -177,8 +180,7 @@ class TestAskTool:
         srv.session.oracle.ask.assert_called_once_with("q?", top_k=12)
 
     def test_top_k_is_clamped_to_schema_maximum(self):
-        # The advertised input-schema maximum is 25; an over-large value is
-        # clamped instead of being passed through (audit L2).
+        # The runtime clamp must match the maximum advertised by the schema.
         srv = _server(_stub_session())
         _call(srv, "grimore_ask", {"question": "q?", "top_k": 9999})
         srv.session.oracle.ask.assert_called_once_with("q?", top_k=25)
@@ -228,8 +230,7 @@ class TestSearchTool:
         assert resp["error"]["code"] == -32602
 
     def test_top_k_is_clamped_to_schema_maximum(self):
-        # Search advertises a maximum of 50; a huge value is clamped before
-        # it reaches the connector (audit L2).
+        # Clamp before retrieval so callers cannot amplify connector work.
         sess = _stub_session(hits=[])
         srv = _server(sess)
         _call(srv, "grimore_search", {"query": "x", "top_k": 9999})
@@ -314,7 +315,7 @@ class TestConnectTool:
         assert _content_payload(resp) == {"hits": []}
 
     def test_top_k_is_clamped_to_schema_maximum(self):
-        # Connect advertises a maximum of 25 (audit L2).
+        # Connect enforces the same maximum advertised by its schema.
         sess = _stub_session(
             chunk_vectors=[[1.0, 0.0, 0.0, 0.0]],
             hits=[],

@@ -172,7 +172,10 @@ class TestConnectorParity:
                    for i in range(8)])
         query = [1.0, 0.0]
 
-        legacy = db.get_all_embeddings_with_id()
+        with db._get_connection() as conn:
+            legacy = conn.execute(
+                "SELECT id, note_id, text_content, vector FROM embeddings"
+            ).fetchall()
         expected = sorted(
             (
                 Embedder.dot_product(query, Embedder.deserialize_vector(r[3])),

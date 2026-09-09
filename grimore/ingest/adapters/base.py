@@ -4,8 +4,7 @@ Format-neutral interface for document adapters.
 Every adapter (Markdown, PDF, ePub, DOCX, …) returns an
 :class:`ExtractedDocument` so the cognition layer — tagger, embedder,
 oracle, mirror, chronicler, synthesizer — can stay completely ignorant
-of the original file format. See ``docs/MULTIFORMAT_BLUEPRINT.md`` §3-§4
-for the architectural picture.
+of the original file format.
 """
 from __future__ import annotations
 
@@ -35,9 +34,8 @@ class ExtractedDocument:
 
     ``content_hash`` hashes the normalised body text (same algorithm the
     Markdown pipeline has always used) so re-tagging fires only when the
-    *meaning* changes, not when bytes change. ``file_hash`` is the cheap
-    "did anything on disk change at all" key used by the two-tier
-    fast-skip (blueprint §6.4).
+    *meaning* changes, not when bytes change. ``file_hash`` records whether
+    the raw file changed so extraction can be skipped when bytes are stable.
     """
     source_path: Path
     format: str

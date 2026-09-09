@@ -20,8 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import frontmatter
-
+from grimore.ingest.parser import read_document_text
 from grimore.session import Session
 from grimore.utils.config import ChroniclerConfig
 from grimore.utils.logger import get_logger
@@ -200,14 +199,14 @@ class Chronicler:
         last_verified, _window, _, _ = row
 
         try:
-            content = Path(path).read_text(encoding="utf-8")
-        except OSError as e:
+            body = read_document_text(
+                path,
+                vault_root=self.session.vault_root,
+                config=self.session.config,
+            )
+        except (OSError, UnicodeError, ValueError) as e:
             logger.warning("decay_read_failed", path=path, error=str(e))
             return None
-        try:
-            body = frontmatter.loads(content).content
-        except Exception:
-            body = content
 
         prompt = (
             "You audit personal notes for staleness.\n"

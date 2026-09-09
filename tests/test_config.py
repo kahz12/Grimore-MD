@@ -1,4 +1,4 @@
-"""B-03 regression: .env is loaded from the cwd ONLY, never via upward walk."""
+"""Project environment loading stays anchored to the current directory."""
 import os
 
 import pytest
@@ -40,7 +40,7 @@ def test_loads_env_from_cwd(tmp_path, monkeypatch, isolated_env):
 
 
 def test_does_not_walk_upward_to_parent_env(tmp_path, monkeypatch, isolated_env):
-    """The whole point of B-03: a parent .env must NOT leak into the env."""
+    """A parent project's .env must not leak into the current process."""
     parent = tmp_path / "parent"
     parent.mkdir()
     (parent / ".env").write_text("GRIMORE_TEST_PARENT=parent_value\n")

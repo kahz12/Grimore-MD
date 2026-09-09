@@ -1,17 +1,17 @@
 """
 Black Mirror — claim-level contradiction detection.
 
-Pipeline (per the v2.1 plan §1):
+Processing pipeline:
 
-  PHASE 0 — claim extraction
+  Claim extraction
       For each note (or each note whose mtime > extracted_at), the
       LLM produces atomic factual claims. Each claim is embedded.
 
-  PHASE 1 — candidate generation
+  Candidate generation
       For each claim, find its K nearest neighbor claims across other
       notes via cosine similarity. Drop pairs below a similarity floor.
 
-  PHASE 2 — contradiction check
+  Contradiction check
       For each candidate pair, the LLM returns a structured verdict.
       Positives are persisted; pairs already seen (in any status) are
       skipped, which is the dismissal-persistence guarantee.
@@ -27,8 +27,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
+
 from grimore.cognition.claims import ClaimExtractor
-from grimore.cognition.embedder import Embedder
+from grimore.ingest.parser import read_document_text
 from grimore.session import Session
 from grimore.utils.logger import get_logger
 
@@ -168,13 +170,17 @@ class Mirror:
             cutoff = self.session.db.latest_mirror_run_time()
             focus_ids = self._focus_claim_ids(cutoff)
 
+        neighbors_by_claim = self._neighbor_map(
+            decoded, focus_ids=focus_ids, top_k=top_k,
+        )
+
         seen_pairs: set[tuple[int, int]] = set()
-        for j, (cid, npath, ctext, vec) in enumerate(decoded):
+        for j, (cid, npath, ctext, _vec) in enumerate(decoded):
             if focus_ids is not None and cid not in focus_ids:
                 continue
             if progress:
                 progress("pairs", j, len(decoded))
-            neighbors = self._top_k_neighbors(cid, npath, vec, decoded, top_k=top_k)
+            neighbors = neighbors_by_claim.get(cid, [])
             for n_cid, n_npath, n_ctext, _score in neighbors:
                 a, b = (cid, n_cid) if cid < n_cid else (n_cid, cid)
                 if (a, b) in seen_pairs:
@@ -285,8 +291,12 @@ class Mirror:
     def _extract_and_persist(self, note_path: str) -> int:
         """Read note → extract claims → embed → persist."""
         try:
-            content = Path(note_path).read_text(encoding="utf-8")
-        except OSError as e:
+            content = read_document_text(
+                note_path,
+                vault_root=self.session.vault_root,
+                config=self.session.config,
+            )
+        except (OSError, UnicodeError, ValueError) as e:
             logger.warning("mirror_read_failed", path=note_path, error=str(e))
             return 0
         extracted = self._extractor.extract(content)
@@ -296,35 +306,70 @@ class Mirror:
             self.session.db.replace_claims_for_note(note_path, [], _now_iso())
             return 0
         embedder = self.session.embedder
+        vectors = embedder.embed_batch([claim.text for claim in extracted])
         rows: list[tuple[str, Optional[int], Optional[int], Optional[bytes]]] = []
-        for c in extracted:
-            vec = embedder.embed(c.text)
+        for c, vec in zip(extracted, vectors, strict=True):
             blob = embedder.serialize_vector(vec) if vec else None
             rows.append((c.text, c.char_start, c.char_end, blob))
         return self.session.db.replace_claims_for_note(
             note_path, rows, _now_iso()
         )
 
-    def _top_k_neighbors(
+    def _neighbor_map(
         self,
-        cid: int,
-        npath: str,
-        vec: list[float],
         all_decoded: list[tuple[int, str, str, list[float]]],
         *,
+        focus_ids: Optional[set[int]],
         top_k: int,
-    ) -> list[tuple[int, str, str, float]]:
-        """Cross-note top-K cosine neighbors, filtered by similarity floor."""
-        scored: list[tuple[int, str, str, float]] = []
-        for n_cid, n_npath, n_ctext, n_vec in all_decoded:
-            if n_cid == cid or n_npath == npath:
-                continue
-            score = Embedder.dot_product(vec, n_vec)
-            if score < self.similarity_floor:
-                continue
-            scored.append((n_cid, n_npath, n_ctext, score))
-        scored.sort(key=lambda r: r[3], reverse=True)
-        return scored[:top_k]
+    ) -> dict[int, list[tuple[int, str, str, float]]]:
+        """Vectorized cross-note top-K candidates, bounded in memory.
+
+        Claims are grouped by embedding dimension so a partially migrated DB
+        remains usable. Matrix multiplication runs in blocks: memory is
+        ``O(block_size * claims)`` instead of materialising the full square
+        similarity matrix, and ``argpartition`` avoids sorting every claim.
+        """
+        if top_k <= 0:
+            return {}
+        by_dim: dict[int, list[tuple[int, str, str, list[float]]]] = {}
+        for row in all_decoded:
+            if row[3]:
+                by_dim.setdefault(len(row[3]), []).append(row)
+
+        out: dict[int, list[tuple[int, str, str, float]]] = {}
+        block_size = 256
+        for rows in by_dim.values():
+            matrix = np.asarray([row[3] for row in rows], dtype=np.float32)
+            note_paths = np.asarray([row[1] for row in rows], dtype=object)
+            focus_indices = [
+                i for i, row in enumerate(rows)
+                if focus_ids is None or row[0] in focus_ids
+            ]
+            for start in range(0, len(focus_indices), block_size):
+                block_indices = focus_indices[start:start + block_size]
+                scores = matrix[block_indices] @ matrix.T
+                for local_i, source_i in enumerate(block_indices):
+                    row_scores = scores[local_i]
+                    valid = np.flatnonzero(
+                        (row_scores >= self.similarity_floor)
+                        & (note_paths != note_paths[source_i])
+                    )
+                    if valid.size > top_k:
+                        valid_scores = row_scores[valid]
+                        cutoff = np.partition(valid_scores, -top_k)[-top_k]
+                        stronger = valid[valid_scores > cutoff]
+                        tied = valid[valid_scores == cutoff]
+                        remaining = top_k - stronger.size
+                        valid = np.concatenate((stronger, tied[:remaining]))
+                    selected = sorted(
+                        valid.tolist(),
+                        key=lambda i: (-float(row_scores[i]), i),
+                    )
+                    out[rows[source_i][0]] = [
+                        (rows[i][0], rows[i][1], rows[i][2], float(row_scores[i]))
+                        for i in selected
+                    ]
+        return out
 
     def _check_contradiction(
         self,
@@ -352,8 +397,9 @@ class Mirror:
                 return v
         return "medium"
 
-    @staticmethod
-    def _read_context(note_path: str, cs: Optional[int], ce: Optional[int]) -> Optional[str]:
+    def _read_context(
+        self, note_path: str, cs: Optional[int], ce: Optional[int],
+    ) -> Optional[str]:
         """Return the surrounding paragraph for a claim span, or None.
 
         Reads the file, strips frontmatter, and returns the paragraph
@@ -363,8 +409,12 @@ class Mirror:
         if cs is None or ce is None:
             return None
         try:
-            raw = Path(note_path).read_text(encoding="utf-8")
-        except OSError:
+            raw = read_document_text(
+                note_path,
+                vault_root=self.session.vault_root,
+                config=self.session.config,
+            )
+        except (OSError, UnicodeError, ValueError):
             return None
         # If there's frontmatter, the offsets came from `body` (the full
         # file in our extractor) so we use it as-is — no re-mapping.

@@ -98,7 +98,8 @@ class PreflightChecker:
 
     def __init__(self, config, *, session=None, ollama_host: Optional[str] = None):
         self.config = config
-        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        # Connect to the validated loopback address so DNS cannot change
+        # between validation and the request.
         self.session = session or build_session(
             total_retries=1,
             backoff=0.1,

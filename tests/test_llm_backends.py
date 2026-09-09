@@ -341,7 +341,11 @@ class TestBackendSecurityGate:
                 llm_base_url="http://203.0.113.5:8080",
             ))
 
-    def test_openai_accepts_remote_https(self):
+    def test_openai_accepts_remote_https(self, monkeypatch):
+        monkeypatch.setattr(
+            "grimore.utils.security.socket.getaddrinfo",
+            lambda *_a, **_kw: [(2, 1, 6, "", ("203.0.113.5", 0))],
+        )
         b = OpenAICompatibleBackend(_cfg(
             allow_remote=True,
             llm_base_url="https://api.openai.com",

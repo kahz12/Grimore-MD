@@ -435,17 +435,25 @@ class ChunksMixin(DbBase):
             cursor = conn.execute("SELECT note_id, text_content, vector FROM embeddings")
             return cursor.fetchall()
 
-    def get_all_embeddings_with_id(self):
-        """
-        Like :py:meth:`get_all_embeddings` but also returns the embedding's
-        primary-key id, which is needed to align dense and FTS5 rankings.
-        Rows: ``(id, note_id, text_content, vector)``.
-        """
-        with self._get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT id, note_id, text_content, vector FROM embeddings"
-            )
-            return cursor.fetchall()
+    def get_embeddings_for_notes(
+        self, note_ids,
+    ) -> list[tuple[int, str, bytes]]:
+        """Return embeddings belonging only to ``note_ids`` in bounded SQL batches."""
+        ids = list({int(note_id) for note_id in note_ids})
+        if not ids:
+            return []
+        rows: list[tuple[int, str, bytes]] = []
+        for start in range(0, len(ids), 900):
+            batch = ids[start:start + 900]
+            placeholders = ",".join("?" * len(batch))
+            with self._get_connection() as conn:
+                found = conn.execute(
+                    "SELECT note_id, text_content, vector FROM embeddings "
+                    f"WHERE note_id IN ({placeholders})",
+                    tuple(batch),
+                ).fetchall()
+            rows.extend((int(nid), text, blob) for nid, text, blob in found)
+        return rows
 
     def get_embedding_matrix_parts(self) -> tuple[list[tuple[int, int]], "bytes | bytearray", int]:
         """Everything the dense scoring matrix needs, and nothing else.
@@ -454,12 +462,9 @@ class ChunksMixin(DbBase):
         row order, the vectors concatenated into one buffer, and the vector
         dimension (0 when the table is empty).
 
-        This exists because :py:meth:`get_all_embeddings_with_id` also selects
-        ``text_content``, which the matrix does not use. On a vault with 100k
-        chunks that is ~50 MB of text moved into Python on every cold load, to
-        be thrown away immediately -- the text is only ever needed for the
-        handful of rows that win the ranking, which
-        :py:meth:`get_chunk_texts` fetches afterwards.
+        Text is deliberately fetched later via :py:meth:`get_chunk_texts` only
+        for winning rows. On a vault with 100k chunks this avoids moving about
+        50 MB of unused text into Python on every cold load.
 
         ``ORDER BY id`` is load-bearing: the caller aligns ``keys`` positionally
         with the matrix rows, and the disk cache is only valid if the order is

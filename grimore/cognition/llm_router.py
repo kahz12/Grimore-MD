@@ -136,9 +136,8 @@ class LLMRouter:
         # (read the count, compare, then write _open_until), which is racy by
         # construction even though a GIL build makes it very hard to observe:
         # 160k concurrent increments lost none, even at a 1 ns switch
-        # interval. The lock is here for free-threaded builds, where it stops
-        # being theoretical, and it costs nothing on a path that already makes
-        # network calls. It is not a fix for a bug seen in the wild.
+        # interval. The lock preserves the invariant on free-threaded builds
+        # and is negligible on a path dominated by network calls.
         self._breaker_lock = threading.Lock()
         # Instance-level breaker settings, defaulting to the class constants
         # so the historical behaviour is unchanged and the class attributes
@@ -187,9 +186,8 @@ class LLMRouter:
         # (read the count, compare, then write _open_until), which is racy by
         # construction even though a GIL build makes it very hard to observe:
         # 160k concurrent increments lost none, even at a 1 ns switch
-        # interval. The lock is here for free-threaded builds, where it stops
-        # being theoretical, and it costs nothing on a path that already makes
-        # network calls. It is not a fix for a bug seen in the wild.
+        # interval. The lock preserves the invariant on free-threaded builds
+        # and is negligible on a path dominated by network calls.
         self._breaker_lock = threading.Lock()
 
     def complete(

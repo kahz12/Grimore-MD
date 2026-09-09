@@ -34,14 +34,13 @@ from grimore.operations import (
     _do_mirror_scan,
     _do_mirror_show,
 )
+from grimore.ingest.parser import iter_vault_documents, read_document_text
 from grimore.session import NoteAttachment, Session
 from grimore.utils import ui
-from grimore.utils.config import is_ignored_path
 from grimore.utils.logger import get_logger
 from grimore.utils.paths import (
     resolve_threads_dir,
     shell_history_path,
-    sidecar_path_for,
 )
 from grimore.utils.security import SecurityGuard
 
@@ -113,8 +112,8 @@ class GrimoreShell:
         self.session = session
         self._running = True
         # Legacy word commands — first token matches one of these → run it.
-        # Kept for Phase-1 backwards compatibility with the pre-redesign
-        # shell. New users should reach for ``/<name>`` instead.
+        # Preserve word-command compatibility with the pre-redesign shell.
+        # New users should reach for ``/<name>`` instead.
         self.commands: dict[str, Callable[[Sequence[str]], None]] = {
             "ask": self._cmd_ask,
             "status": self._cmd_status,
@@ -1354,20 +1353,19 @@ class GrimoreShell:
             return self._vault_index
         vault_root = self.session.vault_root.resolve()
         ignored = self.session.config.vault.ignored_dirs
-        formats = self.session.config.vault.formats or ["md"]
         index: list[tuple[str, Path]] = []
         if not vault_root.exists():
             self._vault_index = []
             return self._vault_index
-        for ext in formats:
-            for hit in vault_root.rglob(f"*.{ext}"):
-                if is_ignored_path(hit, ignored):
-                    continue
-                try:
-                    resolved = SecurityGuard.resolve_within_vault(hit, vault_root)
-                except ValueError:
-                    continue
-                index.append((hit.stem, resolved))
+        documents = iter_vault_documents(
+            vault_root,
+            self.session.config.vault.formats or ["md"],
+            ignored,
+            sidecar_dir=self.session.config.vault.sidecar_dir,
+            sniff_magic=self.session.config.ingest.sniff_magic,
+        )
+        for hit in documents:
+            index.append((hit.stem, hit.resolve()))
         self._vault_index = index
         return index
 
@@ -1379,16 +1377,11 @@ class GrimoreShell:
         path is inside the vault — belt-and-braces against a stale cached
         index."""
         resolved = SecurityGuard.resolve_within_vault(path, vault_root)
-        read_from = resolved
-        if resolved.suffix.lower() != ".md":
-            sidecar_dir = self.session.config.vault.sidecar_dir
-            try:
-                sidecar = sidecar_path_for(resolved, vault_root, sidecar_dir)
-            except ValueError:
-                sidecar = None
-            if sidecar is not None and sidecar.is_file():
-                read_from = sidecar
-        body = read_from.read_text(encoding="utf-8", errors="replace")
+        body = read_document_text(
+            resolved,
+            vault_root=vault_root,
+            config=self.session.config,
+        )
         if len(body) > _MENTION_MAX_CHARS:
             body = body[:_MENTION_MAX_CHARS]
         return NoteAttachment(title=resolved.stem, path=resolved, content=body)

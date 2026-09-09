@@ -23,9 +23,8 @@ def _load_project_env() -> bool:
     until it finds a ``.env``. If Grimore happens to be run from a nested
     directory whose ancestor holds an unrelated project's ``.env``, that
     file's variables (potentially OLLAMA_HOST or other secrets) would
-    silently leak into Grimore's environment. Pinning the path matches
-    how ``grimore.toml`` is discovered — both anchored to the cwd — and
-    closes B-03.
+    silently leak into Grimore's environment. Pinning the path matches how
+    ``grimore.toml`` is discovered: both are anchored to the cwd.
     """
     return load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 
@@ -260,7 +259,8 @@ class ChroniclerConfig:
     override 0 cleanly. Categories that don't match any rule are also
     exempt from staleness reporting.
 
-    Defaults are the v2.1 plan's "Suggested" answer to Q3.
+    Volatile technical categories default to shorter windows; stable concepts
+    and personal records are exempt unless users configure them explicitly.
     """
     windows: dict[str, int] = field(default_factory=lambda: {
         "tech/": 90,
@@ -304,7 +304,7 @@ class ShellConfig:
 @dataclass
 class DaemonConfig:
     """
-    Ambient watcher mode (Section 4 of v2.1 plan).
+    Preferences for the ambient filesystem watcher.
 
     Disabled by default — the daemon is opt-in. Setting ``enabled = true``
     in ``grimore.toml``'s ``[daemon]`` section signals to the CLI that the

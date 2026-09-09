@@ -35,8 +35,8 @@ def sha256_file(path: Path) -> str:
     """
     Streamed SHA-256 of the raw file bytes — the cheap "did anything change"
     key that gates the expensive text-extraction + LLM path for non-MD
-    formats (PDFs, ePubs, DOCX). Used as the first tier of the two-tier
-    change-detection scheme; see the multi-format blueprint §6.4.
+    formats (PDFs, ePubs, DOCX). It complements the normalized content hash:
+    raw bytes gate extraction, while normalized text gates cognitive work.
 
     Returns the hex digest. Raises OSError if the file cannot be read.
     """

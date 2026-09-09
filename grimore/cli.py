@@ -40,6 +40,7 @@ from grimore.operations import (
     _do_mirror_show,
 )
 from grimore.output.frontmatter_writer import FrontmatterWriter
+from grimore import __version__
 from grimore.output.git_guard import GitGuard
 from grimore.output.link_injector import LinkInjector
 from grimore.session import Session
@@ -53,7 +54,7 @@ from grimore.utils.security import SecurityGuard
 
 # Define the Typer application with metadata for the help screen
 app = typer.Typer(
-    help="🔮 [bold medium_purple3]Grimore v3.1[/] — Automated Knowledge Engine",
+    help=f"🔮 [bold medium_purple3]Grimore v{__version__}[/] — Automated Knowledge Engine",
     rich_markup_mode="rich",
     no_args_is_help=True,
     add_completion=False,
@@ -68,7 +69,6 @@ logger = get_logger(__name__)
 def _version_callback(value: bool) -> None:
     """Eager ``--version`` handler: print the installed version and exit."""
     if value:
-        from grimore import __version__
         console.print(f"grimore {__version__}")
         raise typer.Exit()
 
@@ -87,7 +87,7 @@ def _main(
         None,
         "--profile",
         "-P",
-        help="Activate a [profiles.<name>] block from grimore.toml. "
+        help="Activate a \\[profiles.<name>] block from grimore.toml. "
              "Beats the GRIMORE_PROFILE environment variable.",
     ),
 ) -> None:
@@ -102,7 +102,7 @@ def _mode_badge(is_dry_run: bool) -> Text:
 
 
 def _render_preflight_report(report: PreflightReport) -> None:
-    """Print each preflight check with a ✓/⚠/✗ bullet and its fix suggestion."""
+    """Print each preflight check with a ✓/⚠/✗ bullet and remediation guidance."""
     for c in report.checks:
         if c.ok:
             bullet = ("  ✓ ", "grimore.success")
@@ -229,24 +229,34 @@ def scan(
             rel = file.relative_to(actual_vault_path)
             progress.update(task, description=f"[grimore.muted]{rel}[/]")
 
-            # Step 0: Cheap fast-skip on raw-bytes hash. PDFs and other
-            # binaries are expensive to extract; if the file's bytes
-            # haven't changed since last run, skip extraction entirely.
-            # Blueprint §6.4.
+            # Size+mtime is the O(1) fast path. Only read the whole
+            # file when that cheap fingerprint changed or is not yet known.
             try:
+                disk_stat = file.stat()
+                stored_state = db.get_file_state(str(file))
+                if stored_state is not None and stored_state[1:] == (
+                    disk_stat.st_size, disk_stat.st_mtime_ns,
+                ):
+                    stats["unchanged"] += 1
+                    progress.advance(task)
+                    continue
                 file_hash = sha256_file(file)
             except OSError as e:
                 stats["errors"] += 1
                 logger.error("file_hash_failed", path=str(file), error=str(e))
                 progress.advance(task)
                 continue
-            if db.get_file_hash(str(file)) == file_hash:
+            stored_hash = stored_state[0] if stored_state else db.get_file_hash(str(file))
+            if stored_hash == file_hash:
+                db.update_file_state(
+                    str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
+                )
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
 
             try:
-                # Step 1: Parse document into a format-neutral ParsedNote
+                # Parse the document into a format-neutral ParsedNote.
                 note = parser.parse_file(file, vault_root=vault_root, config=config)
             except Exception as e:
                 stats["errors"] += 1
@@ -263,7 +273,9 @@ def scan(
             # Idempotency check: the extracted *text* is unchanged. Keep
             # the file_hash fresh so the next scan also fast-skips.
             if db.get_content_hash_by_path(str(file)) == note.content_hash:
-                db.update_file_hash(str(file), file_hash)
+                db.update_file_state(
+                    str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
+                )
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
@@ -276,7 +288,7 @@ def scan(
             # Sanitize content before sending to LLM
             clean_content = security.sanitize_prompt(note.content)
 
-            # Step 2: Cognition (Tagging and Summarization)
+            # Generate cognitive metadata: tags, summary, category, and links.
             cognition_data = tagger.tag_note(clean_content)
 
             if is_dry_run:
@@ -291,11 +303,11 @@ def scan(
                 continue
 
             try:
-                # Step 3: Safety snapshot before writing
+                # Take the safety snapshot immediately before writing.
                 if config.output.auto_commit and git_guard.is_repo_ready():
                     git_guard.commit_pre_change(str(file))
 
-                # Step 4: Write metadata back to the right target.
+                # Write metadata to the source or its managed sidecar.
                 # For .md the writer mutates the source file in place;
                 # for everything else it materialises (or refreshes) a
                 # sidecar .md under <vault>/<sidecar_dir>/.
@@ -314,7 +326,17 @@ def scan(
                     dry_run=False,
                 )
 
-                # Step 5: Update persistence layer (DB)
+                # Markdown metadata is written into the source itself. Persist
+                # the post-write fingerprint so the next scan can take the O(1)
+                # path immediately instead of hashing once more.
+                latest_stat = file.stat()
+                if (latest_stat.st_size, latest_stat.st_mtime_ns) != (
+                    disk_stat.st_size, disk_stat.st_mtime_ns,
+                ):
+                    file_hash = sha256_file(file)
+                disk_stat = latest_stat
+
+                # Persist the indexed note and its metadata.
                 sidecar_target_str: Optional[str] = None
                 if note.format != "md" and target is not None:
                     sidecar_target_str = str(target)
@@ -323,14 +345,15 @@ def scan(
                     format=note.format,
                     file_hash=file_hash,
                     sidecar_path=sidecar_target_str,
-                    size_bytes=note.size_bytes or None,
+                    size_bytes=disk_stat.st_size,
+                    mtime_ns=disk_stat.st_mtime_ns,
                 )
                 db.update_last_tagged(str(file))
                 if note_id is not None:
                     db.upsert_tags(note_id, cognition_data["tags"])
                     db.set_note_category(note_id, cognition_data.get("category") or None)
 
-                # Step 6: Vectorize content for semantic search.
+                # Vectorize content for semantic search.
                 # Section-aware path when the adapter provided structural
                 # anchors (PDF pages, EPUB / DOCX / HTML headings); falls
                 # back to body-only chunking for MD / TXT. The chunker
@@ -393,12 +416,12 @@ def connect(
         None,
         "--threshold",
         "-t",
-        help="Min. cosine similarity to propose a link, in [0.0, 1.0] (default: cognition.connect_threshold).",
+        help="Min. cosine similarity to propose a link, in \\[0.0, 1.0] (default: cognition.connect_threshold).",
         callback=_validate_threshold,
     ),
 ):
     """
-    🕸️  Discover semantic connections between notes and inject [[wikilinks]].
+    🕸️  Discover semantic connections between notes and inject \\[\\[wikilinks]].
 
     This command uses vector embeddings and cosine similarity to find related notes.
     It then injects a 'Suggested Connections' section into the Markdown files.
@@ -803,7 +826,7 @@ def migrate_embeddings(
     ),
     write_config: bool = typer.Option(
         True, "--write-config/--no-write-config",
-        help="On success, update [cognition].model_embeddings_local in grimore.toml.",
+        help="On success, update \\[cognition].model_embeddings_local in grimore.toml.",
     ),
 ):
     """

@@ -142,8 +142,8 @@ class SecurityGuard:
     @staticmethod
     def loopback_pins(url: str, allow_remote: bool = False) -> dict[str, list[str]]:
         """Build a ``{hostname: [loopback IP, ...]}`` pin map for an HTTP
-        loopback backend, closing the DNS-rebinding TOCTOU window in
-        :func:`validate_llm_host` (audit I1).
+        loopback backend, closing the DNS-rebinding TOCTOU window left by
+        :func:`validate_llm_host`.
 
         ``validate_llm_host`` resolves the host and checks it is loopback,
         but the HTTP client re-resolves the hostname independently at connect
@@ -193,8 +193,7 @@ class SecurityGuard:
     # Default ceiling on a request-supplied ``top_k`` across the HTTP API
     # and the MCP server. A large value inflates retrieval + context
     # assembly work — an amplification lever for an (even authenticated)
-    # caller — while the cap stays well above any realistic retrieval
-    # depth. See audit L2.
+    # caller — while the cap stays well above any realistic retrieval depth.
     MAX_TOP_K = 50
 
     @staticmethod
@@ -205,7 +204,7 @@ class SecurityGuard:
         absent or blank field) falls back to ``default``. A non-numeric
         value raises ``ValueError`` so the caller can map it to a clean
         ``400`` / invalid-params response instead of letting a bare
-        ``int(...)`` surface as a 500. See audit L2.
+        ``int(...)`` surface as a server error.
         """
         if raw is None or raw == "":
             return max(1, min(int(default), maximum))

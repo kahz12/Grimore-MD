@@ -423,8 +423,8 @@ class TestRunner:
         assert report.turns[0].answer == ""
 
     def test_ranking_metrics_read_rank_order_not_flattened_sources(self):
-        # The whole point of #1: ``sources`` lists the right note but in junk
-        # order (Right first by luck); ``retrieved`` says it was actually
+        # ``sources`` lists the right note but in junk order (Right first by
+        # luck); ``retrieved`` says it was actually
         # ranked 2nd. Hit@1 must be False, Hit@3 True, MRR 0.5 — proving the
         # harness scores ranking off ``retrieved``, not ``sources``.
         session = _FakeSession([

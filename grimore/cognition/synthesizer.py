@@ -296,9 +296,7 @@ class Synthesizer:
         embedder = self.session.embedder
         chunks_by_note: dict[int, list[tuple[str, list[float]]]] = {}
         wanted_ids = {nid for nid, _, _ in notes}
-        for nid, text, blob in self.session.db.get_all_embeddings():
-            if nid not in wanted_ids:
-                continue
+        for nid, text, blob in self.session.db.get_embeddings_for_notes(wanted_ids):
             try:
                 vec = embedder.deserialize_vector(blob)
             except Exception:

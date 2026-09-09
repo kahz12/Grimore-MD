@@ -96,9 +96,8 @@ class TestExplicitClose:
             conn.execute("SELECT 1")
 
     def test_close_does_not_leak_descriptors(self, tmp_path):
-        # The inverse regression of the v3.2.0 fix: that change added a
-        # guaranteed close() precisely because connections were leaking to the
-        # GC. Holding one open per thread must not bring the leak back.
+        # Every explicit close must release its descriptor; thread-local
+        # connection reuse must not defer cleanup to garbage collection.
         before = _fd_count()
         for i in range(10):
             database = Database(str(tmp_path / f"db{i}.db"))

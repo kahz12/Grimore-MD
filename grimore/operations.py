@@ -113,7 +113,7 @@ def _do_ask(
         )
 
         # Reasoning models (qwen3.5, deepseek-r1, …) often spend tens of
-        # seconds in a "thinking" phase where Ollama streams chunks with
+        # seconds in a generation state where Ollama streams chunks with
         # an empty ``response`` field. The router drops those, so the
         # shell would look frozen between submission and the first real
         # token. A spinner stays up until that first token arrives.

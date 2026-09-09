@@ -1,7 +1,7 @@
 """XML-bomb / entity-expansion hardening for the zip-XML adapters.
 
-Covers audit finding M1: stdlib ``xml.etree`` expands internal entities,
-so a tiny crafted ``.docx`` / ``.odt`` / ``.epub`` is a "billion laughs"
+The stdlib ``xml.etree`` expands internal entities, so a tiny crafted
+``.docx`` / ``.odt`` / ``.epub`` is a "billion laughs"
 memory DoS. These tests assert the adapters now *refuse* such a file
 (rather than expanding it) and that the shared ``safe_parse_xml`` helper
 rejects DTD/entity/external constructs while still parsing benign XML.

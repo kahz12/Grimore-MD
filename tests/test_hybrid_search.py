@@ -94,8 +94,8 @@ class TestFTSSearch:
     def test_multiword_query_matches_words_out_of_order(self, db):
         # Bag-of-words recall: the query words are all in the document but in a
         # different order and not adjacent. The old single-quoted-phrase MATCH
-        # demanded the exact phrase and missed this; OR-ing the tokens restores
-        # normal BM25 recall (regression guard for the phrase-only bug).
+        # demanded the exact phrase and missed this; OR-ing the tokens preserves
+        # normal BM25 recall.
         _seed(db, [
             ("A", "the ribbed vault and the pointed arch of the cathedral", [1.0, 0.0]),
             ("B", "an unrelated note about kale", [0.0, 1.0]),
@@ -223,9 +223,9 @@ class TestRRFRankInputLogging:
         dense = [{"embedding_id": 10}, {"embedding_id": 20}, {"embedding_id": 30}]
         sparse = [{"embedding_id": 30}, {"embedding_id": 40}]
         survivors = [
-            {"embedding_id": 30, "note_id": 3},   # both lists: dense#3, bm25#1
-            {"embedding_id": 10, "note_id": 1},   # dense-only: dense#1, bm25 None
-            {"embedding_id": 40, "note_id": 4},   # bm25-only: dense None, bm25#2
+            {"embedding_id": 30, "note_id": 3},   # third dense, first sparse
+            {"embedding_id": 10, "note_id": 1},   # first dense, absent sparse
+            {"embedding_id": 40, "note_id": 4},   # absent dense, second sparse
         ]
         Connector._log_rrf_inputs(dense, sparse, survivors)
 

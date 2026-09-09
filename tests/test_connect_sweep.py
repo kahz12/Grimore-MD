@@ -302,9 +302,7 @@ class TestSuggestedLinkParity:
 
 
 class TestAbsoluteBehaviour:
-    """Parity tests compare two paths that share the assembly helper, so a bug
-    in that shared code passes them both. These pin the behaviour outright.
-    """
+    """Pin invariants independently of the shared parity-test helper."""
 
     def test_a_note_never_suggests_itself(self, db):
         _vault(db, notes=10, chunks_per_note=3, seed=5)

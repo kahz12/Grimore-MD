@@ -1,7 +1,8 @@
 // =================================================================
 // Grimore — Codex front-end controller.
 // Vanilla JS. Streams answers via SSE, parses [[citation]] markers
-// into clickable glyphs, opens notes in a side drawer. No build step.
+// into clickable glyphs and opens notes in a side drawer. It runs directly in
+// the browser without bundling or runtime compilation.
 // =================================================================
 
 const $  = (sel, root = document) => root.querySelector(sel);
@@ -346,6 +347,10 @@ async function handleAsk(event) {
                         collected += ev.text;
                         textNode.textContent = collected;
                     } else if (ev.type === 'done') {
+                        if (typeof ev.answer === 'string') {
+                            collected = ev.answer;
+                            textNode.textContent = collected;
+                        }
                         renderSources(ev.sources || []);
                         const drop = ev.dropped_citations || 0;
                         if (drop > 0) {

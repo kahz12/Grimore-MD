@@ -90,8 +90,7 @@ class TestRouting:
         # this assertion pass for the wrong reason.
         def _boom(*_a, **_kw):
             raise AssertionError("matmul path should not run when vec backend is on")
-        for loader in ("get_embedding_matrix_parts", "get_embedding_vectors",
-                       "get_all_embeddings_with_id"):
+        for loader in ("get_embedding_matrix_parts", "get_embedding_vectors"):
             monkeypatch.setattr(vec_db, loader, _boom)
 
         conn = Connector(vec_db, _StubEmbedder(), vector_backend="auto")

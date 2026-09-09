@@ -91,9 +91,7 @@ class TestVersionIsSingleSourced:
         assert _SERVER_INFO["version"] == __version__
 
     def test_no_hard_coded_version_literals_remain(self):
-        """Guards the fix rather than the symptom: a literal reintroduced in
-        either module would drift again the next time the package is bumped.
-        """
+        """Versioned modules must derive their value from the package constant."""
         import pathlib
         import re
         for mod in ("grimore/api/app.py", "grimore/mcp_server.py"):

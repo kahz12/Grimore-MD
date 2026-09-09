@@ -49,8 +49,3 @@ def for_path(path: Path | str) -> Optional[DocumentExtractor]:
 def supported_extensions() -> frozenset[str]:
     """Snapshot of every extension a currently-loaded adapter handles."""
     return frozenset(_REGISTRY)
-
-
-def _reset_for_tests() -> None:
-    """Clear the registry. Test-only — never call from production code."""
-    _REGISTRY.clear()

@@ -122,7 +122,7 @@ class TestValidateLLMHost:
 
 
 class TestValidateLLMHostCache:
-    """B-01: TTL eviction + no caching when allow_remote=True."""
+    """Loopback validation is cached briefly; remote validation is not."""
 
     def setup_method(self):
         SecurityGuard._host_cache.clear()
@@ -179,8 +179,7 @@ class TestValidateLLMHostCache:
 
 
 class TestLoopbackPins:
-    """I1: pin a loopback HTTP backend to its validated address so the HTTP
-    client can't re-resolve the name to a rebound IP between check and use."""
+    """Pin loopback HTTP to prevent DNS changes between validation and use."""
 
     def test_remote_disables_pinning(self):
         assert SecurityGuard.loopback_pins("http://localhost:11434", allow_remote=True) == {}

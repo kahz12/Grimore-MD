@@ -19,8 +19,8 @@ from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
-# Per-format cap (blueprint §6.6). Larger than Markdown's 2 MB because
-# plain-text logs and source dumps regularly run a few megabytes.
+# This limit is larger than Markdown's 2 MB cap because plain-text logs and
+# source dumps regularly run a few megabytes.
 _MAX_TXT_BYTES = 5_000_000
 
 

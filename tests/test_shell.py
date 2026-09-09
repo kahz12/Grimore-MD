@@ -206,10 +206,12 @@ def test_ask_no_stream_uses_oracle_ask(shell_config, patched_services, capsys):
 
 
 def test_history_file_created_with_0o600(tmp_path, shell_config, monkeypatch):
-    """B-09-style hygiene: per-vault history files must not be world-readable."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    """Per-vault history files must not be world-readable."""
+    from grimore.utils import paths as paths_mod
+    fake_cache = tmp_path / "cache" / "grimore"
+    monkeypatch.setattr(
+        paths_mod, "user_cache_dir", lambda app=None: str(fake_cache),
+    )
 
     session = Session(shell_config)
     path = _shell_history_path(session)
@@ -219,9 +221,11 @@ def test_history_file_created_with_0o600(tmp_path, shell_config, monkeypatch):
 
 def test_history_file_is_per_vault(tmp_path, monkeypatch):
     """Two different vaults must not share the same history file."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    from grimore.utils import paths as paths_mod
+    fake_cache = tmp_path / "cache" / "grimore"
+    monkeypatch.setattr(
+        paths_mod, "user_cache_dir", lambda app=None: str(fake_cache),
+    )
 
     vault_a = tmp_path / "vault_a"
     vault_a.mkdir()

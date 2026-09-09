@@ -1,4 +1,4 @@
-"""CLI regression tests (B-05 threshold validation, B-09 atomic Oracle export)."""
+"""CLI threshold validation and atomic Oracle export behavior."""
 import pytest
 from typer.testing import CliRunner
 
@@ -18,7 +18,7 @@ def runner():
     return CliRunner()
 
 
-# ── B-05: --threshold range ────────────────────────────────────────────────
+# ── --threshold range ─────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("bad", ["-10", "-0.001", "1.001", "5", "100"])
@@ -39,7 +39,7 @@ def test_threshold_in_range_passes_validation(runner, good):
     assert "must be in [0.0, 1.0]" not in (result.output + (result.stderr or ""))
 
 
-# ── B-09: ask --export uses atomic_write ───────────────────────────────────
+# ── ask --export uses atomic_write ─────────────────────────────────────────
 
 
 def _make_export_config(tmp_path):
@@ -87,7 +87,7 @@ def _patch_ask_dependencies(monkeypatch, config):
 
 
 def test_ask_export_writes_full_document(runner, tmp_path, monkeypatch):
-    """B-09: the exported note must contain the full Oracle answer + sources."""
+    """The exported note must contain the full Oracle answer and sources."""
     config = _make_export_config(tmp_path)
     _patch_ask_dependencies(monkeypatch, config)
 
@@ -105,7 +105,7 @@ def test_ask_export_writes_full_document(runner, tmp_path, monkeypatch):
 
 
 def test_ask_export_leaves_no_temp_artifact(runner, tmp_path, monkeypatch):
-    """B-09: atomic_write must rename its tempfile away — no .out.md.<rand> left behind."""
+    """Atomic export must not leave its temporary file behind."""
     config = _make_export_config(tmp_path)
     _patch_ask_dependencies(monkeypatch, config)
 

@@ -1,6 +1,6 @@
 """HTTP API + minimal web UI.
 
-Tests drive the API through Starlette's ``TestClient`` against a
+Tests drive the API through a direct ASGI transport against a
 MagicMock Session — no Ollama, no disk required. Auto-skips when the
 ``serve`` extra (Starlette + httpx) isn't installed so the suite stays
 green on default installs.
@@ -16,7 +16,7 @@ import pytest
 starlette = pytest.importorskip("starlette")
 httpx = pytest.importorskip("httpx")
 
-from starlette.testclient import TestClient  # noqa: E402
+from tests.asgi_client import ASGITestClient as TestClient  # noqa: E402
 
 from grimore.api.app import (  # noqa: E402
     _request_has_valid_bearer,
@@ -55,6 +55,9 @@ def _stub_session(*, hits=None, ask_answer="hello",
     session.db.fts_available = True
     session.db.vec_available = False
     session.db.get_note_title.return_value = note_title
+    session.db.get_note_titles.side_effect = lambda ids: {
+        int(note_id): note_title for note_id in ids
+    }
     session.db.get_note_location.return_value = (note_path, note_title)
     session.db.get_category_frequency.return_value = [
         ("philosophy", 5), ("tech/networking", 2),
@@ -122,8 +125,7 @@ class TestAsk:
         assert kwargs["history"] == hist
 
     def test_ask_clamps_oversized_top_k(self, client, session):
-        # A huge top_k is clamped to the ceiling rather than passed through
-        # to inflate retrieval work (audit L2).
+        # Clamp before retrieval so callers cannot amplify backend work.
         r = client.post("/api/ask", json={"question": "q?", "top_k": 9999})
         assert r.status_code == 200
         assert session.oracle.ask.call_args.kwargs["top_k"] == 50
@@ -140,6 +142,12 @@ class TestAsk:
     def test_ask_rejects_non_json_body(self, client):
         r = client.post("/api/ask", content=b"not json", headers={"content-type": "application/json"})
         assert r.status_code == 400
+
+    @pytest.mark.parametrize("body", [["question"], "question", 7, True])
+    def test_ask_rejects_non_object_json(self, client, body):
+        r = client.post("/api/ask", json=body)
+        assert r.status_code == 400
+        assert r.json()["error"] == "body must be a JSON object"
 
     def test_ask_stream_uses_sse(self, client, session):
         r = client.post("/api/ask", json={"question": "What?", "stream": True})
@@ -193,6 +201,12 @@ class TestSearch:
     def test_search_rejects_empty_query(self, client):
         r = client.post("/api/search", json={"query": ""})
         assert r.status_code == 400
+
+    @pytest.mark.parametrize("body", [["query"], "query", 7, True])
+    def test_search_rejects_non_object_json(self, client, body):
+        r = client.post("/api/search", json=body)
+        assert r.status_code == 400
+        assert r.json()["error"] == "body must be a JSON object"
 
 
 # ── notes + categories ────────────────────────────────────────────────
@@ -289,8 +303,8 @@ class TestAuth:
         # A bearer carrying high bytes (>= 0x80) arrives raw in the ASGI
         # scope — an httpx client can't even send it, so we exercise the
         # check directly. secrets.compare_digest raises TypeError on
-        # non-ASCII *str*; the fix compares raw *bytes*, so a malformed
-        # token returns False (→ 401) instead of raising (→ 500).
+        # non-ASCII *str*; comparing raw *bytes* makes a malformed token
+        # return False (→ 401) instead of raising (→ 500).
         scope = {"headers": [(b"authorization", b"Bearer \xff\xfe-nope")]}
         assert _request_has_valid_bearer(scope, "secret-token") is False
 

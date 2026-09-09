@@ -5,7 +5,7 @@ The migration is split into three primitives:
 
 * ``begin_embedding_migration`` — stamps a ``migrations`` row + creates
   the shadow ``embeddings_migration`` table.
-* ``append_migration_row`` — worker step, called once per source row.
+* ``append_migration_row`` — worker operation, called once per source row.
 * ``swap_embedding_migration`` — atomic single-transaction replace.
 
 A fourth, ``abort_embedding_migration``, drops the shadow without
@@ -264,7 +264,7 @@ class TestOrchestration:
         db = _seed_db(tmp_path, n_chunks=4)
         cfg = _make_config(tmp_path)
 
-        # First pass: simulate a worker that dies after row #2 by patching
+        # Simulate a worker that dies after processing the second row by patching
         # append_migration_row to count and raise.
         original_append = db.append_migration_row
         call_count = {"n": 0}

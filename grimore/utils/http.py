@@ -14,8 +14,8 @@ class _LoopbackPinAdapter(HTTPAdapter):
     """Connect to a pre-validated loopback IP instead of re-resolving the
     hostname, sending the original host in the ``Host`` header.
 
-    This closes the DNS-rebinding check-vs-use gap (audit I1) for plain-HTTP
-    loopback backends: :func:`SecurityGuard.validate_llm_host` resolves and
+    This closes the DNS-rebinding check-vs-use gap for plain-HTTP loopback
+    backends: :func:`SecurityGuard.validate_llm_host` resolves and
     approves the host, and the connection then goes straight to the address it
     approved rather than letting the HTTP client re-resolve the name. HTTPS is
     never pinned (it would break SNI / certificate validation), so this adapter
@@ -80,8 +80,8 @@ def build_session(
 
     ``pins`` (a ``{hostname: [ip, ...]}`` map, typically from
     :func:`SecurityGuard.loopback_pins`) pins HTTP requests to those hostnames
-    to the given pre-validated loopback IPs — closing the DNS-rebinding TOCTOU
-    window (audit I1). When falsy, the session behaves exactly as before.
+    to the given pre-validated loopback IPs, closing the DNS-rebinding TOCTOU
+    window. When falsy, the session behaves exactly as before.
     """
     if read_retries is None:
         read_retries = total_retries

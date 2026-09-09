@@ -60,6 +60,9 @@ class _MapEmbedder:
     def embed(self, text):
         return self.vectors.get(text)
 
+    def embed_batch(self, texts):
+        return [self.embed(text) for text in texts]
+
     def serialize_vector(self, vec):
         return Embedder.serialize_vector(vec)
 

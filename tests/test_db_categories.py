@@ -73,7 +73,7 @@ class TestCountNotesUnderCategory:
         assert db.count_notes_under_category("") == 0
 
     def test_underscore_in_category_does_not_match_other_chars(self, tmp_path):
-        # B-04: a literal "_" must not behave like a SQL wildcard.
+        # Category underscores are literals, not SQL wildcards.
         db = _make_db(tmp_path)
         legit = _add_note(db, "a.md", "A")
         sneaky = _add_note(db, "b.md", "B")
@@ -83,7 +83,7 @@ class TestCountNotesUnderCategory:
         assert db.count_notes_under_category("50_off") == 1
 
     def test_percent_in_category_does_not_match_anything(self, tmp_path):
-        # B-04: a literal "%" must not behave like a SQL wildcard.
+        # Category percent signs are literals, not SQL wildcards.
         db = _make_db(tmp_path)
         legit = _add_note(db, "a.md", "A")
         unrelated = _add_note(db, "b.md", "B")
@@ -117,7 +117,7 @@ class TestGetNotesByCategory:
         assert titles == {"A"}
 
     def test_recursive_treats_underscore_literally(self, tmp_path):
-        # B-04: same fix path through get_notes_by_category.
+        # Recursive lookup applies the same literal escaping rules.
         db = _make_db(tmp_path)
         legit = _add_note(db, "a.md", "Legit")
         sneaky = _add_note(db, "b.md", "Sneaky")

@@ -69,7 +69,8 @@ class OpenAICompatibleBackend:
         self._api_key_env = getattr(
             config.cognition, "llm_api_key_env", "GRIMORE_LLM_API_KEY"
         )
-        # Pin loopback HTTP to the validated address (audit I1: DNS-rebinding).
+        # Connect to the validated loopback address so DNS cannot change
+        # between validation and the request.
         # read_retries=0 for the same reason as the Ollama backend: a read
         # timeout on an inference call means the model is still working. Here
         # it also avoids paying twice for a completion that may already have

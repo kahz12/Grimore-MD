@@ -7,6 +7,7 @@ so the watcher picks up every format the user has enabled (Markdown by
 default; PDFs, ePubs, DOCX, … as later phases ship their adapters).
 """
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
@@ -18,6 +19,15 @@ from grimore.utils.config import is_ignored_path
 from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class VaultChange:
+    """A debounced filesystem mutation destined for the daemon."""
+
+    path: Path
+    timestamp: float
+    action: str = "upsert"
 
 
 def _normalise_extensions(exts: Optional[Iterable[str]]) -> frozenset[str]:
@@ -57,20 +67,25 @@ class VaultEventHandler(FileSystemEventHandler):
         self.supported_extensions = _normalise_extensions(supported_extensions)
         self.sniff_magic = sniff_magic
 
-    def _enqueue(self, raw_path: str, event_type: str):
+    def _enqueue(self, raw_path: str, event_type: str, *, action: str = "upsert"):
         """Filters and pushes valid file events into the processing queue."""
         path = Path(raw_path)
         # suffix includes the leading dot — strip it for the membership test.
         ext = path.suffix.lower().lstrip(".")
-        if ext not in self.supported_extensions:
+        if action != "delete" and ext not in self.supported_extensions:
             # Extension miss. Either give up, or — when the user has
             # opted into content sniffing — ask libmagic whether the
             # bytes look like a format we can actually ingest.
             if not (self.sniff_magic and self._sniff_matches(path)):
                 return
+        elif action == "delete" and ext not in self.supported_extensions:
+            # A deleted file can no longer be content-sniffed. Queue it anyway:
+            # deleting a non-indexed path is a harmless no-op, while dropping
+            # it could leave a previously sniffed, extensionless document stale.
+            pass
         if is_ignored_path(path, self.ignored_dirs):
             return
-        self.queue.put((path, time.time()))
+        self.queue.put(VaultChange(path, time.time(), action))
         logger.debug("file_event", type=event_type, path=str(path))
 
     def _sniff_matches(self, path: Path) -> bool:
@@ -97,8 +112,15 @@ class VaultEventHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if event.is_directory:
             return
-        # Process destination; a rename is effectively a new file for the vault.
+        # Remove the old DB row as well as processing the destination. Without
+        # this, renames leave the source path searchable until a manual prune.
+        self._enqueue(event.src_path, "moved_from", action="delete")
         self._enqueue(event.dest_path, "moved")
+
+    def on_deleted(self, event):
+        if event.is_directory:
+            return
+        self._enqueue(event.src_path, "deleted", action="delete")
 
 class VaultObserver:
     """
@@ -116,6 +138,7 @@ class VaultObserver:
         vault_path: str,
         callback,
         ignored_dirs: list[str],
+        delete_callback=None,
         debounce_seconds: int = 45,
         supported_extensions: Optional[Iterable[str]] = None,
         sniff_magic: bool = False,
@@ -124,6 +147,7 @@ class VaultObserver:
     ):
         self.vault_path = vault_path
         self.callback = callback  # Function to call when a file is ready to process
+        self.delete_callback = delete_callback
         self.ignored_dirs = ignored_dirs
         self.supported_extensions = _normalise_extensions(supported_extensions)
         self.sniff_magic = sniff_magic
@@ -131,7 +155,7 @@ class VaultObserver:
         self.poll_fallback = poll_fallback
         self.poll_interval_s = poll_interval_s
         self.queue = Queue()
-        self.pending_changes = {}  # Maps Path -> last_event_timestamp
+        self.pending_changes: dict[Path, VaultChange] = {}
         self._stop = False
 
     def start(self):
@@ -169,9 +193,11 @@ class VaultObserver:
         # die mid-write on interpreter exit).
         processor = getattr(self, "processor_thread", None)
         if processor is not None:
-            # Slightly over the 1s poll inside _process_queue so a tick in
-            # progress can complete cleanly.
-            processor.join(timeout=2.0)
+            # Network operations have their own configured timeouts. Do not
+            # close the database while an in-flight indexing callback still
+            # owns a connection: waiting here is the daemon's durability
+            # boundary during shutdown.
+            processor.join()
 
     def _process_queue(self):
         """
@@ -184,22 +210,29 @@ class VaultObserver:
                 # Get all available events from queue
                 while True:
                     try:
-                        path, timestamp = self.queue.get_nowait()
-                        self.pending_changes[path] = timestamp
+                        change = self.queue.get_nowait()
+                        self.pending_changes[change.path] = change
                     except Empty:
                         break
 
                 # Check for debounced events
                 now = time.time()
                 to_process = []
-                for path, last_time in list(self.pending_changes.items()):
-                    if now - last_time >= self.debounce_seconds:
-                        to_process.append(path)
+                for path, change in list(self.pending_changes.items()):
+                    if now - change.timestamp >= self.debounce_seconds:
+                        to_process.append(change)
                         del self.pending_changes[path]
 
-                for path in to_process:
-                    logger.info("debounce_expired", path=str(path))
-                    self.callback(path)
+                for change in to_process:
+                    logger.info(
+                        "debounce_expired", path=str(change.path),
+                        action=change.action,
+                    )
+                    if change.action == "delete":
+                        if self.delete_callback is not None:
+                            self.delete_callback(change.path)
+                    else:
+                        self.callback(change.path)
 
                 time.sleep(1)
             except Exception as e:

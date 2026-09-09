@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -297,8 +298,9 @@ class TestObserverSniff:
         f.write_bytes(b"\x00")
         handler._enqueue(str(f), "created")
         assert not handler.queue.empty()
-        path, _ts = handler.queue.get()
-        assert path == f
+        change = handler.queue.get()
+        assert change.path == f
+        assert change.action == "upsert"
 
     def test_extension_miss_still_dropped_when_mime_unsupported(self, tmp_path, monkeypatch):
         handler = self._handler(monkeypatch, sniff_magic=True, mime="image/png")
@@ -306,6 +308,30 @@ class TestObserverSniff:
         f.write_bytes(b"\x00")
         handler._enqueue(str(f), "created")
         assert handler.queue.empty()
+
+    def test_delete_is_queued_even_after_file_has_vanished(self, tmp_path, monkeypatch):
+        handler = self._handler(monkeypatch, sniff_magic=True, mime="application/pdf")
+        gone = tmp_path / "extensionless"
+        handler.on_deleted(SimpleNamespace(is_directory=False, src_path=str(gone)))
+
+        change = handler.queue.get_nowait()
+        assert change.path == gone
+        assert change.action == "delete"
+
+    def test_move_queues_source_delete_then_destination_upsert(self, tmp_path, monkeypatch):
+        handler = self._handler(monkeypatch, sniff_magic=False, mime="application/pdf")
+        source = tmp_path / "old.md"
+        destination = tmp_path / "new.md"
+        handler.on_moved(SimpleNamespace(
+            is_directory=False,
+            src_path=str(source),
+            dest_path=str(destination),
+        ))
+
+        removed = handler.queue.get_nowait()
+        added = handler.queue.get_nowait()
+        assert (removed.path, removed.action) == (source, "delete")
+        assert (added.path, added.action) == (destination, "upsert")
 
 
 class TestVaultIterationSniff:
