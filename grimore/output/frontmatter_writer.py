@@ -118,6 +118,7 @@ class FrontmatterWriter:
             logger.error(
                 "metadata_update_failed", path=str(file_path), error=str(e),
             )
+            raise
 
     # ── Sidecar (non-MD) ──────────────────────────────────────────────────
 
@@ -198,6 +199,7 @@ class FrontmatterWriter:
                 "sidecar_write_failed",
                 source=str(note.path), sidecar=str(sidecar_path), error=str(e),
             )
+            raise
 
     @staticmethod
     def _default_sidecar_body(note: ParsedNote) -> str:

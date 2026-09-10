@@ -14,11 +14,16 @@ model picks this up as a clean skip rather than a failure.
 
 Run only these:    pytest -m e2e
 Skip these:        pytest -m "not e2e"
+
+Use already-installed alternatives without downloading models:
+    GRIMORE_E2E_EMBEDDING_MODEL=nomic-embed-text-v2-moe:latest pytest -m e2e
+    GRIMORE_E2E_LLM_MODEL=qwen2.5:3b pytest -m e2e
 """
 from __future__ import annotations
 
 import hashlib
 import os
+from collections.abc import Iterator
 
 import pytest
 import requests
@@ -26,7 +31,7 @@ import requests
 from grimore.cognition.embedder import Embedder
 from grimore.memory.db import Database
 from grimore.session import Session
-from grimore.utils.config import load_config
+from grimore.utils.config import Config
 
 pytestmark = pytest.mark.e2e
 
@@ -38,8 +43,8 @@ _OLLAMA_PROBE_TIMEOUT_S = 2.0
 # fixture re-checks both names — Ollama exposes models as either
 # ``nomic-embed-text`` or ``nomic-embed-text:latest`` depending on how the
 # user pulled them.
-_DEFAULT_LLM = "qwen2.5:3b"
-_DEFAULT_EMB = "nomic-embed-text"
+_DEFAULT_LLM = os.getenv("GRIMORE_E2E_LLM_MODEL", "qwen2.5:3b")
+_DEFAULT_EMB = os.getenv("GRIMORE_E2E_EMBEDDING_MODEL", "nomic-embed-text")
 
 
 def _ollama_host() -> str:
@@ -128,14 +133,16 @@ _VAULT_NOTES: list[tuple[str, str]] = [
 
 
 @pytest.fixture(scope="module")
-def seeded(tmp_path_factory, live_ollama) -> dict:
+def seeded(tmp_path_factory, live_ollama) -> Iterator[dict]:
     """Build a temp DB with the three notes embedded by the real Ollama
     embedder, plus a warm Session pointed at it. Module-scoped so the embed
     cost (≈1s per chunk on nomic-embed-text) is paid once."""
     workdir = tmp_path_factory.mktemp("grimore_e2e")
     db_path = workdir / "grimore.db"
 
-    config = load_config()
+    # Integration fixtures must not inherit credentials, remote endpoints, or
+    # tuning from the user's working vault configuration.
+    config = Config()
     config.memory.db_path = str(db_path)
     config.vault.path = str(workdir)
     # Pin the models we already verified are installed, in case a user's
@@ -169,7 +176,12 @@ def seeded(tmp_path_factory, live_ollama) -> dict:
     # Force the warm services to materialise so the first test isn't paying
     # for cold-start router + embedder build.
     _ = session.db, session.router, session.embedder, session.oracle
-    return {"config": config, "db": db, "session": session, "workdir": workdir}
+    try:
+        yield {"config": config, "db": db, "session": session, "workdir": workdir}
+    finally:
+        session.close()
+        db.close()
+        embedder.session.close()
 
 
 # ── helpers ────────────────────────────────────────────────────────────────

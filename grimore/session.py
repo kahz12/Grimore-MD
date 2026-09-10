@@ -198,12 +198,18 @@ class Session:
         return Path(self.config.vault.path)
 
     def refresh(self) -> None:
-        """Drop cached services so the next access rebuilds them.
+        """Close cached services so the next access rebuilds them.
 
         Also clears conversation memory: ``refresh()`` runs when the vault
         may have changed underneath us (e.g. a scan from another terminal),
         so stale conversational context is dropped along with the services.
         """
+        if self._db is not None:
+            self._db.close()
+        for service in (self._router, self._embedder):
+            http_session = getattr(service, "session", None)
+            if http_session is not None:
+                http_session.close()
         self._db = None
         self._router = None
         self._embedder = None
@@ -233,16 +239,7 @@ class Session:
         self._oracle = None
 
     def close(self) -> None:
-        """Idempotent teardown.
-
-        The Database now keeps one connection per thread for its lifetime
-        instead of opening one per query, so dropping the reference is no
-        longer enough: without an explicit close the file descriptor would
-        survive until GC. Closing before refresh() because refresh() is what
-        drops the handle we need.
-        """
-        if self._db is not None:
-            self._db.close()
+        """Idempotent teardown of database and network connections."""
         self.refresh()
 
     def __enter__(self) -> "Session":

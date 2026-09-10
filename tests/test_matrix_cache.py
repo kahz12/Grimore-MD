@@ -282,6 +282,41 @@ class TestDisabled:
 
 
 class TestConcurrentWrite:
+    def test_interleaved_publishers_cannot_mix_matrix_and_signature(self, db_path, monkeypatch):
+        first = _np.array([[1., 0.], [0., 1.]], dtype=_np.float32)
+        second = first[::-1].copy()
+        sig_first, sig_second = (2, 2, 16), (2, 3, 16)
+        replace = pathlib.Path.replace
+        raced = False
+
+        def interleave(path, target):
+            nonlocal raced
+            result = replace(path, target)
+            if str(target).endswith(".vecmat.npy") and not raced:
+                raced = True
+                matrix_cache.save(db_path, second, sig_second)
+            return result
+
+        monkeypatch.setattr(pathlib.Path, "replace", interleave)
+        matrix_cache.save(db_path, first, sig_first)
+        loaded = matrix_cache.load(db_path, sig_first, 2, 2)
+        assert loaded is None or _np.array_equal(loaded, first)
+
+    def test_replacement_after_validation_maps_the_validated_file(self, db_path, monkeypatch):
+        first = _np.array([[1., 0.]], dtype=_np.float32)
+        second = _np.array([[0., 1.]], dtype=_np.float32)
+        matrix_cache.save(db_path, first, (1, 1, 8))
+        read_header = _np.lib.format.read_array_header_1_0
+
+        def interleave(fh, *args, **kwargs):
+            result = read_header(fh, *args, **kwargs)
+            matrix_cache.save(db_path, second, (1, 2, 8))
+            return result
+
+        monkeypatch.setattr(_np.lib.format, "read_array_header_1_0", interleave)
+        loaded = matrix_cache.load(db_path, (1, 1, 8), 1, 2)
+        assert loaded is not None and _np.array_equal(loaded, first)
+
     def test_a_write_during_the_build_skips_the_cache_write(self, db, db_path):
         """The daemon can index while a query builds the matrix. The resulting
         file would be sealed with a signature no later reader can match, so it

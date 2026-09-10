@@ -377,7 +377,6 @@ def _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect):
     monkeypatch.setattr(daemon_mod, "MarkdownParser", lambda *a, **kw: object())
     monkeypatch.setattr(daemon_mod, "GitGuard", lambda *a, **kw: object())
     monkeypatch.setattr(daemon_mod, "FrontmatterWriter", lambda *a, **kw: object())
-    monkeypatch.setattr(daemon_mod, "LinkInjector", lambda *a, **kw: object())
     monkeypatch.setattr(daemon_mod, "Notifier", lambda *a, **kw: object())
     monkeypatch.setattr(daemon_mod, "SecurityGuard", lambda *a, **kw: object())
     monkeypatch.setattr(daemon_mod, "BackupManager",
@@ -387,7 +386,6 @@ def _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect):
     monkeypatch.setattr(daemon_mod, "load_taxonomy_from_vault", lambda *a, **kw: {})
     monkeypatch.setattr(daemon_mod, "Tagger", lambda *a, **kw: object())
     monkeypatch.setattr(daemon_mod, "Embedder", lambda *a, **kw: object())
-    monkeypatch.setattr(daemon_mod, "Connector", lambda *a, **kw: object())
 
     vault = tmp_path / "vault"
     vault.mkdir()

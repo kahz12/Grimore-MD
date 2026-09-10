@@ -82,6 +82,16 @@ def patched_services(monkeypatch):
     return counts
 
 
+def test_refresh_closes_existing_network_clients(shell_config, patched_services):
+    session = Session(shell_config)
+    router_http = session.router.session
+    embedder_http = session.embedder.session
+    session.refresh()
+    session.close()
+    router_http.close.assert_called_once()
+    embedder_http.close.assert_called_once()
+
+
 # ── core dispatch behaviour ──────────────────────────────────────────────
 
 

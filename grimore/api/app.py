@@ -31,6 +31,7 @@ import secrets
 import threading
 import time
 from functools import partial
+from contextlib import aclosing
 from pathlib import Path
 from typing import Optional
 
@@ -92,35 +93,67 @@ async def _run_blocking(func, *args, **kwargs):
 
 
 async def _iterate_blocking(iterator):
-    """Bridge one synchronous iterator with one bounded producer thread."""
+    """Advance only on consumer demand; close the iterator on its own thread.
+
+    Cancellation cannot interrupt a blocking next() already in progress, but
+    it prevents every subsequent advance and releases the slot when that call
+    returns (model I/O has its own timeout).
+    """
     await _acquire_worker_slot()
-    event_queue: queue.Queue = queue.Queue()
+    event_queue: queue.Queue = queue.Queue(maxsize=1)
     done = object()
+    demand = threading.Event()
+    stopped = threading.Event()
 
     def _producer() -> None:
         try:
-            for item in iterator:
+            while True:
+                demand.wait()
+                demand.clear()
+                if stopped.is_set():
+                    break
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    event_queue.put((True, done))
+                    break
+                if stopped.is_set():
+                    break
                 event_queue.put((True, item))
         except BaseException as exc:
             event_queue.put((False, exc))
         finally:
-            event_queue.put((True, done))
-            _API_WORKER_SLOTS.release()
+            try:
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    close()
+            finally:
+                _API_WORKER_SLOTS.release()
 
-    threading.Thread(
-        target=_producer, name="grimore-api-stream", daemon=True,
-    ).start()
-    while True:
-        try:
-            ok, item = event_queue.get_nowait()
-        except queue.Empty:
-            await asyncio.sleep(0.005)
-            continue
-        if not ok:
-            raise item
-        if item is done:
-            break
-        yield item
+    try:
+        threading.Thread(
+            target=_producer, name="grimore-api-stream", daemon=True,
+        ).start()
+    except BaseException:
+        _API_WORKER_SLOTS.release()
+        raise
+    try:
+        while True:
+            demand.set()
+            while True:
+                try:
+                    ok, item = event_queue.get_nowait()
+                    break
+                except queue.Empty:
+                    await asyncio.sleep(0.005)
+            if not ok:
+                raise item
+            if item is done:
+                break
+            yield item
+    finally:
+        stopped.set()
+        demand.set()
 
 # Discovered relative to this file so editable installs and packaged
 # installs both pick the right asset path.
@@ -357,9 +390,10 @@ def _build_routes(session: Session) -> list:
                 gen = session.oracle.ask_stream(
                     question, top_k=top_k, history=history,
                 )
-                async for event in _iterate_blocking(gen):
-                    payload = json.dumps(event, ensure_ascii=False)
-                    yield f"data: {payload}\n\n".encode("utf-8")
+                async with aclosing(_iterate_blocking(gen)) as events:
+                    async for event in events:
+                        payload = json.dumps(event, ensure_ascii=False)
+                        yield f"data: {payload}\n\n".encode("utf-8")
 
             return StreamingResponse(event_stream(), media_type="text/event-stream")
 

@@ -615,7 +615,11 @@ class ChunksMixin(DbBase):
         """
         with self._get_connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM embeddings"
+                # Separate scalar aggregates retain one SQLite snapshot while
+                # enabling Count and the PK max lookup. Combining them forces
+                # SQLite to execute an aggregate step for every row.
+                "SELECT (SELECT COUNT(*) FROM embeddings), "
+                "COALESCE((SELECT MAX(id) FROM embeddings), 0)"
             ).fetchone()
             return (int(row[0]), int(row[1]))
 

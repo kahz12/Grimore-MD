@@ -110,6 +110,18 @@ class TestResolveNoteFilter:
 
 class TestFilteredRetrieval:
     @pytest.mark.parametrize("hybrid", [True, False])
+    def test_majority_filter_with_more_requested_hits_than_matches(self, db, vault, hybrid):
+        conn = _connector(db)
+        allowed = {vault["infra"], vault["net"]}
+        if hybrid:
+            hits = conn.find_hybrid("retention", [1., 0.], top_k=5,
+                                    filter_note_ids=allowed)
+        else:
+            hits = conn.find_similar_notes([1., 0.], top_k=5,
+                                           filter_note_ids=allowed)
+        assert {h["note_id"] for h in hits} == allowed
+
+    @pytest.mark.parametrize("hybrid", [True, False])
     def test_only_filtered_notes_come_back(self, db, vault, hybrid):
         conn = _connector(db)
         allowed = {vault["notes"]}
@@ -172,6 +184,45 @@ class TestFilteredRetrieval:
 
 
 class TestFilteredFtsSearch:
+    def test_large_filter_keeps_its_own_best_matches(self, db):
+        outside = db.upsert_note("/v/out.md", "outside", "out")
+        db.store_embeddings_bulk(outside, [dict(chunk_index=i, text_content="needle",
+            vector=_vec(1., 0.), page=None, heading=None, chunk_hash=None)
+            for i in range(100)])
+        allowed = set()
+        for i in range(901):
+            nid = db.upsert_note(f"/v/{i}.md", str(i), str(i))
+            allowed.add(nid)
+            db.store_embedding(nid, 0, "needle " + "filler " * 100, _vec(1., 0.))
+        hits = db.fts_search("needle", limit=5, filter_note_ids=allowed)
+        assert len(hits) == 5
+        assert {h[1] for h in hits} <= allowed
+        # Temporary membership must not survive into the next query.
+        assert db.fts_search("needle", limit=1)[0][1] == outside
+
+    @pytest.mark.parametrize("backend", ["numpy", "sqlite-vec"])
+    def test_long_excluded_note_does_not_hide_matches(self, db, backend):
+        if backend == "sqlite-vec" and not db._vec_available:
+            pytest.skip("sqlite-vec unavailable")
+        own = db.upsert_note("/v/long.md", "Long", "long")
+        other = db.upsert_note("/v/other.md", "Other", "other")
+        db.store_embeddings_bulk(own, [dict(chunk_index=i, text_content="needle",
+            vector=_vec(1., 0.), page=None, heading=None, chunk_hash=None)
+            for i in range(100)])
+        db.store_embedding(other, 0, "needle filler", _vec(.8, .6))
+        conn = Connector(db, _StubEmbedder(), vector_backend=backend,
+                         matrix_cache_enabled=False)
+        direct = conn.find_similar_notes([1., 0.], top_k=5,
+            exclude_note_id=own, dedupe_by_note=True)
+        batch = conn.find_similar_notes_batch([[1., 0.]], top_k=5,
+            exclude_note_ids=[own], dedupe_by_note=True)[0]
+        hybrid = conn.find_hybrid("needle", [1., 0.], top_k=5, exclude_note_id=own)
+        for hits in (direct, batch, hybrid):
+            assert [h["note_id"] for h in hits] == [other]
+        assert [h[1] for h in db.fts_search("needle", limit=5, exclude_note_id=own)] == [other]
+        filtered = conn.find_hybrid("needle", [1., 0.], top_k=5, filter_note_ids={other})
+        assert [h["note_id"] for h in filtered] == [other]
+
     def test_fts_restricts_to_the_allowed_notes(self, db, vault):
         if not db.fts_available:
             pytest.skip("FTS5 not available in this build")

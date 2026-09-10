@@ -27,6 +27,7 @@ directory the database already lives in.
 """
 import os
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +44,7 @@ logger = get_logger(__name__)
 
 _MATRIX_SUFFIX = ".vecmat.npy"
 _SEAL_SUFFIX = ".vecmat.sig"
+_TOKEN_BYTES = 32
 
 
 def cache_paths(db_path: str) -> Optional[tuple[Path, Path]]:
@@ -78,9 +80,32 @@ def load(db_path: str, signature: tuple[int, int, int], rows: int, dim: int):
     try:
         if not (matrix_path.exists() and seal_path.exists()):
             return None
-        if seal_path.read_text().strip() != _seal_text(signature):
+        seal = seal_path.read_text().strip()
+        prefix, separator, token = seal.rpartition(":")
+        if not separator or prefix != _seal_text(signature) or len(token) != _TOKEN_BYTES:
             return None
-        matrix = _np.load(matrix_path, mmap_mode="r")
+        # Map the same open file whose publication token we validated. Loading
+        # by pathname again would race another writer's os.replace(). The token
+        # is a trailer after the ordinary NPY array, ignored by numpy.load.
+        with matrix_path.open("rb") as fh:
+            fh.seek(-_TOKEN_BYTES, os.SEEK_END)
+            if fh.read(_TOKEN_BYTES) != token.encode("ascii"):
+                return None
+            fh.seek(0)
+            version = _np.lib.format.read_magic(fh)
+            if version == (1, 0):
+                shape, fortran, dtype = _np.lib.format.read_array_header_1_0(fh)
+            elif version == (2, 0):
+                shape, fortran, dtype = _np.lib.format.read_array_header_2_0(fh)
+            else:
+                return None
+            if shape != (rows, dim) or dtype != _np.float32 or rows <= 0 or dim <= 0:
+                return None
+            offset = fh.tell()
+            if os.fstat(fh.fileno()).st_size != offset + rows * dim * 4 + _TOKEN_BYTES:
+                return None
+            matrix = _np.memmap(fh, mode="r", dtype=dtype, shape=shape,
+                                offset=offset, order="F" if fortran else "C")
     except Exception as exc:
         # A corrupt or unreadable cache must never break retrieval; the
         # caller rebuilds from SQLite.
@@ -96,12 +121,11 @@ def load(db_path: str, signature: tuple[int, int, int], rows: int, dim: int):
 
 
 def save(db_path: str, matrix, signature: tuple[int, int, int]) -> None:
-    """Write the matrix and its seal, atomically and matrix-first.
+    """Publish matrix and seal with a shared, unique generation token.
 
-    Both files go through a temporary name and ``os.replace``, so a reader
-    never sees a partial matrix. The matrix is replaced before the seal: in the
-    window between them the seal still describes the *previous* contents, which
-    can only cause a miss, never a stale hit.
+    Each replacement is atomic; the pair is not. A token in both files makes
+    any interleaving of concurrent publishers a cache miss, never a false hit.
+    Old caches without a token are rebuilt automatically.
     """
     if _np is None or matrix is None:
         return
@@ -114,12 +138,14 @@ def save(db_path: str, matrix, signature: tuple[int, int, int]) -> None:
     # still filling. The loser then publishes a mix of both writes, which has a
     # valid header and the right shape and so survives every check in load().
     tmp_matrix = tmp_seal = None
+    token = uuid.uuid4().hex
     try:
         fd, tmp_matrix_name = tempfile.mkstemp(
             dir=str(matrix_path.parent), prefix=matrix_path.name + ".", suffix=".tmp")
         tmp_matrix = Path(tmp_matrix_name)
         with os.fdopen(fd, "wb") as fh:
             _np.save(fh, _np.asarray(matrix, dtype=_np.float32))
+            fh.write(token.encode("ascii"))
             fh.flush()
             # Without this, a crash after the rename can leave the file at full
             # length with unwritten blocks reading as zeros -- correct shape,
@@ -132,7 +158,7 @@ def save(db_path: str, matrix, signature: tuple[int, int, int]) -> None:
             dir=str(seal_path.parent), prefix=seal_path.name + ".", suffix=".tmp")
         tmp_seal = Path(tmp_seal_name)
         with os.fdopen(fd, "w") as fh:
-            fh.write(_seal_text(signature))
+            fh.write(_seal_text(signature) + ":" + token)
             fh.flush()
             os.fsync(fh.fileno())
         tmp_seal.replace(seal_path)

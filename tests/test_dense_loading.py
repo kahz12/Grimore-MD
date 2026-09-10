@@ -48,6 +48,26 @@ def _seed(db, rows):
 
 
 class TestMatrixParts:
+    def test_signature_avoids_per_row_aggregate_work(self, db):
+        note = db.upsert_note("/v/large.md", "Large", "large")
+        with db._get_connection() as conn:
+            conn.executemany(
+                "INSERT INTO embeddings (note_id, chunk_index, text_content, vector) "
+                "VALUES (?, ?, ?, ?)",
+                ((note, i, "chunk", _vec(1., 0.)) for i in range(10_000)),
+            )
+        ticks = []
+        conn.set_progress_handler(lambda: ticks.append(1) or 0, 100)
+        try:
+            assert db.embeddings_signature() == (10_000, 10_000)
+        finally:
+            conn.set_progress_handler(None, 0)
+        # A combined COUNT/MAX executes ~50,000 VM instructions here. This
+        # checks query work, avoiding wall-clock assertions sensitive to load.
+        assert len(ticks) < 10
+        db.delete_note_embeddings(note)
+        assert db.embeddings_signature() == (0, 0)
+
     def test_keys_and_blob_align_and_exclude_text(self, db):
         _seed(db, [("a", "alpha text", (1.0, 0.0)),
                    ("b", "beta text", (0.0, 1.0))])

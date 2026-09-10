@@ -263,10 +263,9 @@ class Connector:
                 # once and blank the few rows that lost.
                 if len(rows) > len(keys) * self._RESTRICT_MAX_FRACTION:
                     scores = _np.asarray(matrix @ q, dtype=_np.float32)
-                    keep = _np.zeros(len(keys), dtype=bool)
-                    keep[rows] = True
-                    scores[~keep] = -_np.inf
-                    return None, scores
+                    # Rank only surviving rows, even when top_k exceeds their
+                    # count. A -inf mask still lets excluded rows into top-k.
+                    return rows, scores[rows]
                 return rows, matrix[rows] @ q
         # No matrix (or a width mismatch): fall back to the per-row path over
         # the allowed rows only.
@@ -299,11 +298,12 @@ class Connector:
         if _np is not None and n > k:
             arr = _np.asarray(scores, dtype=_np.float32)
             part = _np.argpartition(-arr, k - 1)[:k]
-            # argpartition returns the k picks in arbitrary order, so sort them
-            # by ascending index first; the stable argsort by descending score
-            # then resolves score ties by original index — exactly matching the
-            # Python ``sorted(..., reverse=True)`` fallback (Python's sort is
-            # stable, so reverse keeps equal keys in ascending-index order).
+            # Resolve ties at the cut as well as inside the selected window.
+            # argpartition may otherwise choose arbitrary members of a tie.
+            cutoff = arr[part].min()
+            higher = _np.flatnonzero(arr > cutoff)
+            ties = _np.flatnonzero(arr == cutoff)[:k - len(higher)]
+            part = _np.concatenate((higher, ties))
             part.sort()
             return part[_np.argsort(-arr[part], kind="stable")].tolist()
         return sorted(range(n), key=lambda i: scores[i], reverse=True)[:k]
@@ -334,6 +334,8 @@ class Connector:
         read ``note_id`` and ``score`` (``connect``, the graph's suggested
         edges) would otherwise pay once per note across the whole vault.
         """
+        if top_k <= 0:
+            return []
         query = list(query_vector)
 
         # sqlite-vec fast path: let SQLite do the ranking and skip the
@@ -343,31 +345,11 @@ class Connector:
             return []
 
         if self._use_vec_backend():
-            needed = top_k + (1 if exclude_note_id is not None else 0)
-            if dedupe_by_note:
-                needed = max(needed * 5, needed + 10)
-            # sqlite-vec ranks inside SQLite with no predicate hook, so the
-            # filter is a post-pass over an oversampled page here.
-            if filter_note_ids is not None:
-                needed = max(needed * 4, needed + 20)
-            hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
-            # with_text is honoured here too: the flag is a contract about the
-            # returned shape, not an artefact of how the numpy path fetches.
-            similarities = [
-                {"note_id": nid, "text": text if with_text else "", "score": score}
-                for _eid, nid, text, score in hits
-                if filter_note_ids is None or nid in filter_note_ids
-            ]
-            if dedupe_by_note:
-                seen: set[int] = set()
-                unique: list[dict] = []
-                for item in similarities:
-                    if item["note_id"] in seen:
-                        continue
-                    seen.add(item["note_id"])
-                    unique.append(item)
-                similarities = unique
-            return similarities[:top_k]
+            hits = self._vec_filtered(query, top_k, exclude_note_id,
+                                      filter_note_ids, dedupe_by_note)
+            if hits is not None:
+                return [{"note_id": nid, "text": text if with_text else "", "score": score}
+                        for _eid, nid, text, score in hits]
 
         keys, matrix, blobs = self._load_dense()
         rows, scores = self._candidate_scores(
@@ -375,16 +357,8 @@ class Connector:
         if len(scores) == 0:
             return []
 
-        # Oversample headroom for the post-filters: ``exclude_note_id`` may
-        # drop one of the picks, and ``dedupe_by_note`` collapses repeated
-        # note_ids — both happen *after* top-k, so we need a wider window
-        # going in. The 5× + 10 floor for dedupe is generous enough that
-        # any realistic vault keeps the same final set as the old full-sort
-        # path while still being O(N) instead of O(N log N).
-        needed = top_k + (1 if exclude_note_id is not None else 0)
-        if dedupe_by_note:
-            needed = max(needed * 5, needed + 10)
-        top_idx = self._topk_indices(scores, needed)
+        top_idx = self._select_indices(scores, keys, rows, top_k,
+                                       exclude_note_id, dedupe_by_note)
 
         # Text for the winners only -- one query instead of carrying every
         # chunk's 500 chars through the scoring pass.
@@ -401,6 +375,57 @@ class Connector:
         return self._hits_from_picks(picks, texts, exclude_note_id,
                                      dedupe_by_note, top_k)
 
+    def _select_indices(self, scores, keys, rows, top_k, exclude_note_id=None,
+                        dedupe_by_note=False):
+        """Widen the ranking window until k eligible hits or exhaustion.
+
+        A fixed oversample cannot bound how many chunks a single note owns.
+        Start small for ordinary queries and widen only when filters require it.
+        """
+        if top_k <= 0:
+            return []
+        needed = min(len(scores), top_k)
+        while needed:
+            selected = []
+            seen = set()
+            for index in self._topk_indices(scores, needed):
+                note_id = keys[rows[index] if rows is not None else index][1]
+                if note_id == exclude_note_id or (dedupe_by_note and note_id in seen):
+                    continue
+                seen.add(note_id)
+                selected.append(index)
+                if len(selected) == top_k:
+                    return selected
+            if needed == len(scores):
+                return selected
+            needed = min(len(scores), max(needed * 2, 16))
+        return []
+
+    def _vec_filtered(self, query, limit, exclude_note_id=None,
+                      filter_note_ids=None, dedupe_by_note=False):
+        """Adaptively widen k-NN; use dense fallback for very wide windows."""
+        needed = limit
+        # Bound repeated extension work. The numpy fallback remains exact when
+        # an enormous document or a narrow filter needs a wider candidate set.
+        while 0 < needed <= 4096:
+            hits = self.db.vec_search(query, needed)
+            selected = []
+            seen = set()
+            for hit in hits:
+                nid = hit[1]
+                if nid == exclude_note_id or (filter_note_ids is not None and nid not in filter_note_ids):
+                    continue
+                if dedupe_by_note and nid in seen:
+                    continue
+                seen.add(nid)
+                selected.append(hit)
+                if len(selected) == limit:
+                    return selected
+            if len(hits) < needed:
+                return selected
+            needed = max(needed * 2, 16)
+        return None
+
     @staticmethod
     def _hits_from_picks(picks, texts, exclude_note_id,
                          dedupe_by_note, top_k) -> list[dict]:
@@ -413,11 +438,8 @@ class Connector:
         every block until the sweep ended and make the blocking pointless.
 
         Shared by the single-query and batched paths so they cannot drift.
-        The order of the three steps is the behaviour, not an implementation
-        detail: the self-note filter and the per-note dedup both run *after*
-        the top-k cut, so a note whose best chunk sits outside the oversampled
-        window is absent even if it would place well among notes. Reproducing
-        that exactly is what makes the batched sweep a drop-in replacement.
+        Ranking has already selected enough eligible rows. These defensive
+        filters keep the helper safe for callers assembling their own picks.
         """
         hits: list[dict] = []
         for emb_id, note_id, score in picks:
@@ -504,8 +526,10 @@ class Connector:
                 for q, ex in zip(queries, excludes, strict=True)
             ]
 
+        if self._use_vec_backend():
+            return _per_query()
         keys, matrix, _blobs = self._load_dense()
-        if self._use_vec_backend() or matrix is None or _np is None:
+        if matrix is None or _np is None:
             return _per_query()
 
         chunks, dim = matrix.shape
@@ -525,15 +549,9 @@ class Connector:
                 return _per_query()
             block_scores = q_block @ matrix.T
             for offset, row in enumerate(block_scores):
-                # The oversample window is computed per query, exactly as the
-                # single-query path does: it widens by one only when *that*
-                # query excludes a note. Hoisting it out of the loop would
-                # diverge for a batch that mixes excluded and plain queries.
                 exclude = excludes[start + offset]
-                needed = top_k + (1 if exclude is not None else 0)
-                if dedupe_by_note:
-                    needed = max(needed * 5, needed + 10)
-                top_idx = self._topk_indices(row, needed)
+                top_idx = self._select_indices(row, keys, None, top_k,
+                                               exclude, dedupe_by_note)
                 # float(row[i]) copies the value out; keeping `row` itself
                 # would keep the whole block alive (see _hits_from_picks).
                 per_query.append(
@@ -558,25 +576,15 @@ class Connector:
         filter_note_ids: "set[int] | None" = None,
     ) -> list[dict]:
         """Return ranked dense-similarity candidates keyed by embedding id."""
-        if filter_note_ids is not None and not filter_note_ids:
+        if limit <= 0 or (filter_note_ids is not None and not filter_note_ids):
             return []
         query = list(query_vector)
 
         if self._use_vec_backend():
-            needed = limit + (1 if exclude_note_id is not None else 0)
-            if filter_note_ids is not None:
-                needed = max(needed * 4, needed + 20)
-            hits = self.db.vec_search(query, needed, exclude_note_id=exclude_note_id)
-            return [
-                {
-                    "embedding_id": eid,
-                    "note_id": nid,
-                    "text": text,
-                    "score": score,
-                }
-                for eid, nid, text, score in hits
-                if filter_note_ids is None or nid in filter_note_ids
-            ][:limit]
+            hits = self._vec_filtered(query, limit, exclude_note_id, filter_note_ids)
+            if hits is not None:
+                return [{"embedding_id": eid, "note_id": nid, "text": text, "score": score}
+                        for eid, nid, text, score in hits]
 
         keys, matrix, blobs = self._load_dense()
         rows, scores = self._candidate_scores(
@@ -584,11 +592,7 @@ class Connector:
         if len(scores) == 0:
             return []
 
-        # Same +1 headroom as find_similar_notes: the excluded row could be
-        # one of the picks. No dedupe here (the fusion pass keys on
-        # embedding_id, not note_id), so a single extra slot is enough.
-        needed = limit + (1 if exclude_note_id is not None else 0)
-        top_idx = self._topk_indices(scores, needed)
+        top_idx = self._select_indices(scores, keys, rows, limit, exclude_note_id)
 
         picks = [(keys[rows[p]][0] if rows is not None else keys[p][0],
                   keys[rows[p]][1] if rows is not None else keys[p][1], p)
@@ -651,6 +655,7 @@ class Connector:
 
         sparse_rows = self.db.fts_search(
             query_text, limit=pool, filter_note_ids=filter_note_ids,
+            exclude_note_id=exclude_note_id,
         ) if query_text else []
         sparse: list[dict] = [
             {"embedding_id": eid, "note_id": nid, "text": text, "bm25": bm25}

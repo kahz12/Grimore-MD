@@ -16,6 +16,7 @@ from grimore.cognition.connector import Connector
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.reembed import reembed_note
+from grimore.cognition.privacy import ingest_services
 from grimore.cognition.tagger import Tagger
 from grimore.ingest.parser import MarkdownParser, iter_vault_documents
 from grimore.memory.db import Database
@@ -248,9 +249,10 @@ def scan(
                 continue
             stored_hash = stored_state[0] if stored_state else db.get_file_hash(str(file))
             if stored_hash == file_hash:
-                db.update_file_state(
-                    str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
-                )
+                if not is_dry_run:
+                    db.update_file_state(
+                        str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
+                    )
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
@@ -273,9 +275,10 @@ def scan(
             # Idempotency check: the extracted *text* is unchanged. Keep
             # the file_hash fresh so the next scan also fast-skips.
             if db.get_content_hash_by_path(str(file)) == note.content_hash:
-                db.update_file_state(
-                    str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
-                )
+                if not is_dry_run:
+                    db.update_file_state(
+                        str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
+                    )
                 stats["unchanged"] += 1
                 progress.advance(task)
                 continue
@@ -285,100 +288,113 @@ def scan(
             if sensitive_findings:
                 logger.warning("sensitive_data_detected", path=str(file), types=sensitive_findings)
 
-            # Sanitize content before sending to LLM
-            clean_content = security.sanitize_prompt(note.content)
-
-            # Generate cognitive metadata: tags, summary, category, and links.
-            cognition_data = tagger.tag_note(clean_content)
-
-            if is_dry_run:
-                stats["processed"] += 1
-                logger.info(
-                    "dry_run_preview",
-                    path=str(file),
-                    tags=cognition_data["tags"],
-                    summary=cognition_data["summary"][:80],
-                )
-                progress.advance(task)
-                continue
-
             try:
-                # Take the safety snapshot immediately before writing.
-                if config.output.auto_commit and git_guard.is_repo_ready():
-                    git_guard.commit_pre_change(str(file))
+                with ingest_services(
+                    config, tagger, embedder, sensitive=bool(sensitive_findings),
+                ) as (note_tagger, note_embedder):
+                    # Sanitize content before sending to LLM
+                    clean_content = security.sanitize_prompt(note.content)
 
-                # Write metadata to the source or its managed sidecar.
-                # For .md the writer mutates the source file in place;
-                # for everything else it materialises (or refreshes) a
-                # sidecar .md under <vault>/<sidecar_dir>/.
-                metadata_updates = {
-                    "tags": cognition_data["tags"],
-                    "summary": cognition_data["summary"],
-                    "category": cognition_data.get("category", ""),
-                    "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                }
-                target = writer.write_metadata(
-                    note,
-                    metadata_updates,
-                    vault_root=vault_root,
-                    sidecar_dir=config.vault.sidecar_dir,
-                    write_sidecars=config.vault.write_sidecars,
-                    dry_run=False,
-                )
+                    # Generate cognitive metadata: tags, summary, category, and links.
+                    cognition_data = note_tagger.tag_note(clean_content)
 
-                # Markdown metadata is written into the source itself. Persist
-                # the post-write fingerprint so the next scan can take the O(1)
-                # path immediately instead of hashing once more.
-                latest_stat = file.stat()
-                if (latest_stat.st_size, latest_stat.st_mtime_ns) != (
-                    disk_stat.st_size, disk_stat.st_mtime_ns,
-                ):
-                    file_hash = sha256_file(file)
-                disk_stat = latest_stat
-
-                # Persist the indexed note and its metadata.
-                sidecar_target_str: Optional[str] = None
-                if note.format != "md" and target is not None:
-                    sidecar_target_str = str(target)
-                note_id = db.upsert_note(
-                    str(file), note.title, note.content_hash,
-                    format=note.format,
-                    file_hash=file_hash,
-                    sidecar_path=sidecar_target_str,
-                    size_bytes=disk_stat.st_size,
-                    mtime_ns=disk_stat.st_mtime_ns,
-                )
-                db.update_last_tagged(str(file))
-                if note_id is not None:
-                    db.upsert_tags(note_id, cognition_data["tags"])
-                    db.set_note_category(note_id, cognition_data.get("category") or None)
-
-                # Vectorize content for semantic search.
-                # Section-aware path when the adapter provided structural
-                # anchors (PDF pages, EPUB / DOCX / HTML headings); falls
-                # back to body-only chunking for MD / TXT. The chunker
-                # runs first (cheap, deterministic); ``reembed_note`` then
-                # diffs the resulting chunks against stored hashes so
-                # untouched chunks skip the Ollama round-trip.
-                if note_id is not None:
-                    candidate_chunks = build_candidate_chunks(
-                        note, clean_content, embedder, config,
-                    )
-                    if candidate_chunks:
-                        result = reembed_note(
-                            db, embedder, note_id, candidate_chunks,
-                            text_truncation=getattr(
-                                config.cognition, "chunk_store_chars", 500
-                            ),
+                    if is_dry_run:
+                        stats["processed"] += 1
+                        logger.info(
+                            "dry_run_preview",
+                            path=str(file),
+                            tags=cognition_data["tags"],
+                            summary=cognition_data["summary"][:80],
                         )
-                        stats["chunks"] += result.embedded
+                        progress.advance(task)
+                        continue
 
-                stats["processed"] += 1
-            except Exception as e:
+                    try:
+                        # Take the safety snapshot immediately before writing.
+                        if config.output.auto_commit and git_guard.is_repo_ready():
+                            git_guard.commit_pre_change(str(file))
+
+                        # Write metadata to the source or its managed sidecar.
+                        # For .md the writer mutates the source file in place;
+                        # for everything else it materialises (or refreshes) a
+                        # sidecar .md under <vault>/<sidecar_dir>/.
+                        metadata_updates = {
+                            "tags": cognition_data["tags"],
+                            "summary": cognition_data["summary"],
+                            "category": cognition_data.get("category", ""),
+                            "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        }
+                        target = writer.write_metadata(
+                            note,
+                            metadata_updates,
+                            vault_root=vault_root,
+                            sidecar_dir=config.vault.sidecar_dir,
+                            write_sidecars=config.vault.write_sidecars,
+                            dry_run=False,
+                        )
+
+                        # Markdown metadata is written into the source itself. Persist
+                        # the post-write fingerprint so the next scan can take the O(1)
+                        # path immediately instead of hashing once more.
+                        latest_stat = file.stat()
+                        if (latest_stat.st_size, latest_stat.st_mtime_ns) != (
+                            disk_stat.st_size, disk_stat.st_mtime_ns,
+                        ):
+                            file_hash = sha256_file(file)
+                        disk_stat = latest_stat
+
+                        # Persist the indexed note and its metadata.
+                        sidecar_target_str: Optional[str] = None
+                        if note.format != "md" and target is not None:
+                            sidecar_target_str = str(target)
+                        note_id = db.upsert_note(
+                            str(file), note.title, "",
+                            format=note.format,
+                            file_hash="",
+                            sidecar_path=sidecar_target_str,
+                            size_bytes=-1,
+                            mtime_ns=-1,
+                        )
+                        db.update_last_tagged(str(file))
+                        if note_id is not None:
+                            db.upsert_tags(note_id, cognition_data["tags"])
+                            db.set_note_category(note_id, cognition_data.get("category") or None)
+
+                        # Vectorize content for semantic search.
+                        # Section-aware path when the adapter provided structural
+                        # anchors (PDF pages, EPUB / DOCX / HTML headings); falls
+                        # back to body-only chunking for MD / TXT. The chunker
+                        # runs first (cheap, deterministic); ``reembed_note`` then
+                        # diffs the resulting chunks against stored hashes so
+                        # untouched chunks skip the Ollama round-trip.
+                        if note_id is not None:
+                            candidate_chunks = build_candidate_chunks(
+                                note, clean_content, note_embedder, config,
+                            )
+                            result = reembed_note(
+                                db, note_embedder, note_id, candidate_chunks,
+                                text_truncation=getattr(
+                                    config.cognition, "chunk_store_chars", 500
+                                ),
+                            )
+                            stats["chunks"] += result.embedded
+                            if result.stored != len(candidate_chunks):
+                                raise RuntimeError("embedding incomplete; file remains pending for retry")
+                            db.complete_note_indexing(
+                                note_id, note.content_hash, file_hash,
+                                disk_stat.st_size, disk_stat.st_mtime_ns,
+                            )
+
+                        stats["processed"] += 1
+                    except Exception as e:
+                        stats["errors"] += 1
+                        logger.error("processing_failed", path=str(file), error=str(e))
+
+                    progress.advance(task)
+            except Exception as exc:
                 stats["errors"] += 1
-                logger.error("processing_failed", path=str(file), error=str(e))
-
-            progress.advance(task)
+                logger.error("processing_failed", path=str(file), error=str(exc))
+                progress.advance(task)
 
     # ── Summary ────────────────────────────────────────────────────────────
     summary_rows = [

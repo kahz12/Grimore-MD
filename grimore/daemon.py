@@ -23,11 +23,10 @@ from grimore.output.frontmatter_writer import FrontmatterWriter
 from grimore.cognition.chunker import build_candidate_chunks
 from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.reembed import reembed_note
+from grimore.cognition.privacy import ingest_services
 from grimore.cognition.tagger import Tagger
 from grimore.memory.taxonomy import load_taxonomy_from_vault
 from grimore.cognition.embedder import Embedder
-from grimore.cognition.connector import Connector
-from grimore.output.link_injector import LinkInjector
 from grimore.utils.notifications import Notifier
 from grimore.utils.security import SecurityGuard
 from grimore.utils.backup import BackupManager
@@ -63,7 +62,6 @@ class GrimoreDaemon:
         self.parser = MarkdownParser()
         self.git_guard = GitGuard(config.vault.path)
         self.writer = FrontmatterWriter()
-        self.injector = LinkInjector()
         self.notifier = Notifier()
         self.security = SecurityGuard(config.vault.path)
         self.backup = BackupManager(config.memory.db_path)
@@ -74,12 +72,6 @@ class GrimoreDaemon:
         self.vault_tax = load_taxonomy_from_vault(Path(config.vault.path))
         self.tagger = Tagger(config, self.router, self.vault_tax)
         self.embedder = Embedder(config, cache=self.db)
-        self.connector = Connector(
-            self.db, self.embedder,
-            vector_backend=getattr(config.cognition, "vector_backend", "auto"),
-            matrix_cache_enabled=bool(getattr(
-                config.cognition, "vec_matrix_cache", True)),
-        )
 
         self.vault_root = Path(config.vault.path).resolve()
         self.observer = None
@@ -283,10 +275,11 @@ class GrimoreDaemon:
                 else self.db.get_file_hash(str(file_path))
             )
             if stored_hash == file_hash:
-                self.db.update_file_state(
-                    str(file_path), file_hash,
-                    disk_stat.st_size, disk_stat.st_mtime_ns,
-                )
+                if not self.config.output.dry_run:
+                    self.db.update_file_state(
+                        str(file_path), file_hash,
+                        disk_stat.st_size, disk_stat.st_mtime_ns,
+                    )
                 self.event_log.write("skip", path=rel, reason="unchanged_bytes")
                 return
 
@@ -307,106 +300,117 @@ class GrimoreDaemon:
             force_local = bool(sensitive_findings)
             if force_local:
                 logger.warning("sensitive_data_detected", path=rel, types=sensitive_findings)
-                if self.config.cognition.allow_remote:
-                    logger.warning("remote_disabled_for_note", path=rel,
-                                   reason="sensitive_data_detected")
 
             # 3. Check text-level idempotency. Bytes changed (else we'd
             # have fast-skipped above) but the extracted text didn't —
             # refresh the file_hash so the next event also fast-skips.
             if self.db.get_content_hash_by_path(str(file_path)) == note.content_hash:
-                self.db.update_file_state(
-                    str(file_path), file_hash,
-                    disk_stat.st_size, disk_stat.st_mtime_ns,
-                )
+                if not self.config.output.dry_run:
+                    self.db.update_file_state(
+                        str(file_path), file_hash,
+                        disk_stat.st_size, disk_stat.st_mtime_ns,
+                    )
                 logger.info("file_unchanged", path=rel)
                 self.event_log.write("skip", path=rel, reason="unchanged")
                 return
 
-            # 4. Git Guard: automatic snapshot
-            if self.config.output.auto_commit and not self.config.output.dry_run:
-                self.git_guard.commit_pre_change(str(file_path))
+            with ingest_services(
+                self.config, self.tagger, self.embedder, sensitive=force_local,
+            ) as (note_tagger, note_embedder):
+                # 4. Git Guard: automatic snapshot
+                if self.config.output.auto_commit and not self.config.output.dry_run:
+                    self.git_guard.commit_pre_change(str(file_path))
 
-            # 5. Cognition: Tagging & Summary via LLM
-            clean_content = self.security.sanitize_prompt(note.content)
-            cognition_data = self.tagger.tag_note(clean_content)
+                # 5. Cognition: Tagging & Summary via LLM
+                clean_content = self.security.sanitize_prompt(note.content)
+                cognition_data = note_tagger.tag_note(clean_content)
 
-            # 6. Output: Update note frontmatter (inline for .md, sidecar
-            # for every other format).
-            metadata_updates = {
-                "tags": cognition_data["tags"],
-                "summary": cognition_data["summary"],
-                "category": cognition_data.get("category", ""),
-                "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            }
-            target = self.writer.write_metadata(
-                note,
-                metadata_updates,
-                vault_root=self.vault_root,
-                sidecar_dir=self.config.vault.sidecar_dir,
-                write_sidecars=self.config.vault.write_sidecars,
-                dry_run=self.config.output.dry_run,
-            )
-
-            if not self.config.output.dry_run:
-                latest_stat = file_path.stat()
-                if (latest_stat.st_size, latest_stat.st_mtime_ns) != (
-                    disk_stat.st_size, disk_stat.st_mtime_ns,
-                ):
-                    file_hash = sha256_file(file_path)
-                disk_stat = latest_stat
-
-            # 7. Update Database records
-            sidecar_target_str = (
-                str(target) if (note.format != "md" and target is not None) else None
-            )
-            note_id = self.db.upsert_note(
-                str(file_path), note.title, note.content_hash,
-                format=note.format,
-                file_hash=file_hash,
-                sidecar_path=sidecar_target_str,
-                size_bytes=disk_stat.st_size,
-                mtime_ns=disk_stat.st_mtime_ns,
-            )
-            self.db.update_last_tagged(str(file_path))
-            if note_id is not None:
-                self.db.upsert_tags(note_id, cognition_data["tags"])
-                self.db.set_note_category(note_id, cognition_data.get("category") or None)
-
-            # 8. Embeddings: Vectorize for semantic index. Section-aware
-            # when the adapter handed us page / heading anchors (PDF /
-            # EPUB / DOCX / HTML); body-only chunking otherwise. The
-            # incremental re-embed path means an edit to one paragraph
-            # of a long doc only re-embeds that paragraph's chunk.
-            chunk_count = 0
-            if note_id is not None:
-                candidate_chunks = build_candidate_chunks(
-                    note, clean_content, self.embedder, self.config,
+                # 6. Output: Update note frontmatter (inline for .md, sidecar
+                # for every other format).
+                metadata_updates = {
+                    "tags": cognition_data["tags"],
+                    "summary": cognition_data["summary"],
+                    "category": cognition_data.get("category", ""),
+                    "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                }
+                target = self.writer.write_metadata(
+                    note,
+                    metadata_updates,
+                    vault_root=self.vault_root,
+                    sidecar_dir=self.config.vault.sidecar_dir,
+                    write_sidecars=self.config.vault.write_sidecars,
+                    dry_run=self.config.output.dry_run,
                 )
-                if candidate_chunks:
+
+                if self.config.output.dry_run:
+                    self.event_log.write("preview", path=rel,
+                                         tags=len(cognition_data.get("tags") or []))
+                    return
+
+                if not self.config.output.dry_run:
+                    latest_stat = file_path.stat()
+                    if (latest_stat.st_size, latest_stat.st_mtime_ns) != (
+                        disk_stat.st_size, disk_stat.st_mtime_ns,
+                    ):
+                        file_hash = sha256_file(file_path)
+                    disk_stat = latest_stat
+
+                # 7. Update Database records
+                sidecar_target_str = (
+                    str(target) if (note.format != "md" and target is not None) else None
+                )
+                note_id = self.db.upsert_note(
+                    str(file_path), note.title, "",
+                    format=note.format,
+                    file_hash="",
+                    sidecar_path=sidecar_target_str,
+                    size_bytes=-1,
+                    mtime_ns=-1,
+                )
+                self.db.update_last_tagged(str(file_path))
+                if note_id is not None:
+                    self.db.upsert_tags(note_id, cognition_data["tags"])
+                    self.db.set_note_category(note_id, cognition_data.get("category") or None)
+
+                # 8. Embeddings: Vectorize for semantic index. Section-aware
+                # when the adapter handed us page / heading anchors (PDF /
+                # EPUB / DOCX / HTML); body-only chunking otherwise. The
+                # incremental re-embed path means an edit to one paragraph
+                # of a long doc only re-embeds that paragraph's chunk.
+                chunk_count = 0
+                if note_id is not None:
+                    candidate_chunks = build_candidate_chunks(
+                        note, clean_content, note_embedder, self.config,
+                    )
                     result = reembed_note(
-                        self.db, self.embedder, note_id, candidate_chunks,
+                        self.db, note_embedder, note_id, candidate_chunks,
                         text_truncation=getattr(
                             self.config.cognition, "chunk_store_chars", 500
                         ),
                     )
+                    if result.stored != len(candidate_chunks):
+                        raise RuntimeError("embedding incomplete; file remains pending for retry")
                     chunk_count = result.stored
+                    self.db.complete_note_indexing(
+                        note_id, note.content_hash, file_hash,
+                        disk_stat.st_size, disk_stat.st_mtime_ns,
+                    )
                     logger.info(
                         "file_embedded", path=rel,
                         kept=result.kept, embedded=result.embedded,
                         removed=result.removed,
                     )
 
-            with self._counter_lock:
-                self.processed_count += 1
-            self.last_batch_time = time.monotonic()
-            logger.info("file_processed_complete", path=rel)
-            self.event_log.write(
-                "processed",
-                path=rel,
-                tags=len(cognition_data.get("tags") or []),
-                chunks=chunk_count,
-            )
+                with self._counter_lock:
+                    self.processed_count += 1
+                self.last_batch_time = time.monotonic()
+                logger.info("file_processed_complete", path=rel)
+                self.event_log.write(
+                    "processed",
+                    path=rel,
+                    tags=len(cognition_data.get("tags") or []),
+                    chunks=chunk_count,
+                )
 
         except Exception as e:
             logger.error("processing_failed", path=rel, error=str(e))
@@ -421,6 +425,9 @@ class GrimoreDaemon:
         except ValueError:
             logger.warning("delete_path_escape_skipped", path=rel)
             self.event_log.write("skip", path=rel, reason="delete_path_escape")
+            return
+        if self.config.output.dry_run:
+            self.event_log.write("preview_delete", path=rel)
             return
         removed = self.db.delete_note_by_path(str(resolved))
         if removed:

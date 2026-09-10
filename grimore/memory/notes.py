@@ -281,6 +281,23 @@ class NotesMixin(DbBase):
             conn.execute("UPDATE notes SET last_tagged = ? WHERE path = ?", (now, path))
             conn.commit()
 
+    def complete_note_indexing(
+        self, note_id: int, content_hash: str, file_hash: str,
+        size_bytes: int, mtime_ns: int,
+    ) -> None:
+        """Publish change fingerprints only after all chunks were indexed.
+
+        Ingest first upserts with empty hashes and negative stat values. Those
+        sentinels cannot match a real file, so a failed or interrupted pass is
+        retried even when its source has not changed.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE notes SET content_hash = ?, file_hash = ?, "
+                "size_bytes = ?, mtime_ns = ? WHERE id = ?",
+                (content_hash, file_hash, size_bytes, mtime_ns, note_id),
+            )
+
     # ── Multi-format helpers ───────────────────────────────────────────────
 
     def get_file_hash(self, path: str) -> Optional[str]:

@@ -133,6 +133,21 @@ class TestExplicitClose:
         with pytest.raises(sqlite3.ProgrammingError):
             conn.execute("SELECT 1")
 
+    def test_session_refresh_closes_old_connections_before_rebuilding(self, tmp_path):
+        config = Config(memory=MemoryConfig(db_path=str(tmp_path / "refresh.db")))
+        session = Session(config)
+        old_db = session.db
+        old_connection = old_db._thread_conn()
+        session.refresh()
+        try:
+            with pytest.raises(sqlite3.ProgrammingError):
+                old_connection.execute("SELECT 1")
+            assert session.db is not old_db
+            assert session.db._thread_conn().execute("SELECT 1").fetchone() == (1,)
+        finally:
+            session.close()
+            old_db.close()
+
 
 class TestDeadThreadReaping:
     """A connection outlives its thread unless something reclaims it.

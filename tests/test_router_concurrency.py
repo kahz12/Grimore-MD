@@ -48,6 +48,29 @@ def _hammer(fn, threads=8, per_thread=50):
 
 
 class TestBreakerUnderConcurrency:
+    def test_success_does_not_bypass_a_waiters_existing_lock(self):
+        router = _router()
+        shared_lock = router._breaker_lock
+        router._record_success()
+        started, finished = threading.Event(), threading.Event()
+
+        def fail():
+            started.set()
+            router._record_failure()
+            finished.set()
+
+        # A waiting request may already have resolved the existing lock before
+        # a success resets the counters. All later requests must still queue
+        # behind that same critical section.
+        with shared_lock:
+            worker = threading.Thread(target=fail)
+            worker.start()
+            assert started.wait(2)
+            bypassed = finished.wait(.05)
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert not bypassed, "success replaced the lock used by pending requests"
+
     def test_every_failure_is_counted(self):
         """400 concurrent failures must count 400. Passes without the lock on
         a GIL build; it is the property a free-threaded one would violate."""

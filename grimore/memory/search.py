@@ -12,8 +12,7 @@ from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Note ids bindable in one IN list. Above this the filter is applied
-# after the query instead; see fts_search.
+# Note ids bindable in one IN list. Larger filters use a temporary table.
 _MAX_FILTER_IDS = 900
 
 # Upper bound on the number of OR-ed terms in an FTS5 MATCH expression, so a
@@ -31,6 +30,7 @@ class SearchMixin(DbBase):
 
     def fts_search(self, query: str, limit: int = 20,
                    filter_note_ids: "set[int] | None" = None,
+                   exclude_note_id: Optional[int] = None,
                    ) -> list[tuple[int, int, str, float]]:
         """
         BM25 full-text search over embeddings.text_content.
@@ -49,7 +49,7 @@ class SearchMixin(DbBase):
         """
         if filter_note_ids is not None and not filter_note_ids:
             return []
-        if not self.fts_available or not query or not query.strip():
+        if limit <= 0 or not self.fts_available or not query or not query.strip():
             return []
         # FTS5 match string. Tokenise on whitespace and OR the terms so we get
         # bag-of-words BM25 recall — a document that contains the query words
@@ -62,30 +62,38 @@ class SearchMixin(DbBase):
         tokens = [t for t in query.split() if t][:_FTS_MAX_TERMS]
         if not tokens:
             return []
-        # Beyond the host-parameter budget an IN list cannot be bound, so the
-        # filter moves to a post-pass over an oversampled page. Recall is a
-        # little softer there, but a filter that wide is barely a filter.
         note_clause = ""
         note_params: tuple[int, ...] = ()
-        post_filter: "set[int] | None" = None
+        table_filter = False
         if filter_note_ids is not None:
             if len(filter_note_ids) <= _MAX_FILTER_IDS:
                 ids = sorted(filter_note_ids)
                 note_clause = f" AND e.note_id IN ({','.join('?' * len(ids))})"
                 note_params = tuple(ids)
             else:
-                post_filter = filter_note_ids
-                limit = limit * 4
+                table_filter = True
+                note_clause = " AND e.note_id IN (SELECT note_id FROM temp.grimore_search_filter)"
+        if exclude_note_id is not None:
+            note_clause += " AND e.note_id != ?"
+            note_params += (exclude_note_id,)
         match = " OR ".join('"' + t.replace('"', '""') + '"' for t in tokens)
         with self._get_connection() as conn:
             try:
+                if table_filter:
+                    # Connections are thread-local; no other request can
+                    # replace this filter while its query is running.
+                    conn.execute("CREATE TEMP TABLE IF NOT EXISTS grimore_search_filter "
+                                 "(note_id INTEGER PRIMARY KEY)")
+                    conn.execute("DELETE FROM temp.grimore_search_filter")
+                    conn.executemany("INSERT INTO temp.grimore_search_filter VALUES (?)",
+                                     ((nid,) for nid in filter_note_ids or ()))
                 rows = conn.execute(
                     """
                     SELECT e.id, e.note_id, e.text_content, bm25(embeddings_fts) AS score
                     FROM embeddings_fts
                     JOIN embeddings e ON e.id = embeddings_fts.rowid
                     WHERE embeddings_fts MATCH ?{note_clause}
-                    ORDER BY score ASC
+                    ORDER BY score ASC, e.id ASC
                     LIMIT ?
                     """.format(note_clause=note_clause),
                     (match, *note_params, limit),
@@ -93,9 +101,10 @@ class SearchMixin(DbBase):
             except sqlite3.OperationalError as e:
                 logger.warning("fts_query_failed", error=str(e))
                 return []
+            finally:
+                if table_filter:
+                    conn.execute("DROP TABLE IF EXISTS temp.grimore_search_filter")
         out = [(r[0], r[1], r[2], float(r[3])) for r in rows]
-        if post_filter is not None:
-            out = [r for r in out if r[1] in post_filter]
         return out
 
     # ── sqlite-vec search ─────────────────────────────────────────────────

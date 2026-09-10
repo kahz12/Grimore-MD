@@ -342,10 +342,7 @@ class TestAbsoluteBehaviour:
 
 
 class TestOversampleWindow:
-    """The dedupe oversample has to be computed per query. With a fixture
-    small enough that the window covers the whole table, its size is
-    unobservable -- so this builds one where it genuinely cuts.
-    """
+    """A crowded note must not hide other eligible notes."""
 
     def _crowded_vault(self, db):
         # One note owns 14 near-identical chunks that dominate any ranking;
@@ -362,9 +359,7 @@ class TestOversampleWindow:
         db.store_embedding(far, 0, "far", _blob(_unit([0.6, 0.8])))
         return [1.0, 0.0]
 
-    def test_window_width_is_observable_in_this_fixture(self, db):
-        """Guards the guard: if the fixture stopped exercising the window, the
-        test below would pass for the wrong reason."""
+    def test_excluding_an_absent_note_does_not_change_results(self, db):
         query = self._crowded_vault(db)
         conn = _connector(db)
         narrow = conn.find_similar_notes_batch(
@@ -373,8 +368,8 @@ class TestOversampleWindow:
         wide = conn.find_similar_notes_batch(
             [query], top_k=2, exclude_note_ids=[999],
             dedupe_by_note=True, with_text=False)[0]
-        assert [h["note_id"] for h in narrow] != [h["note_id"] for h in wide], \
-            "fixture no longer distinguishes the two window widths"
+        assert len(narrow) == len(wide) == 2
+        assert [h["note_id"] for h in narrow] == [h["note_id"] for h in wide]
 
     def test_batch_uses_each_querys_own_window(self, db):
         query = self._crowded_vault(db)

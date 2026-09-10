@@ -181,14 +181,6 @@ class LLMRouter:
             self._open_until = 0.0
         if was_tripped:
             logger.info("llm_circuit_closed")
-        # The breaker is shared mutable state on a router the daemon and the
-        # API use at the same time. _record_failure is a check-then-act
-        # (read the count, compare, then write _open_until), which is racy by
-        # construction even though a GIL build makes it very hard to observe:
-        # 160k concurrent increments lost none, even at a 1 ns switch
-        # interval. The lock preserves the invariant on free-threaded builds
-        # and is negligible on a path dominated by network calls.
-        self._breaker_lock = threading.Lock()
 
     def complete(
         self,

@@ -36,6 +36,24 @@ def _note(path: Path, *, fmt: str, title: str = "T",
 # ── FrontmatterWriter ────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("fmt", ["md", "txt"])
+def test_metadata_write_errors_reach_the_indexer(tmp_path, monkeypatch, fmt):
+    src = tmp_path / f"note.{fmt}"
+    src.write_text("Original document.\n")
+    before = src.read_bytes()
+
+    def fail_write(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("grimore.output.frontmatter_writer.atomic_write", fail_write)
+    with pytest.raises(OSError, match="disk full"):
+        FrontmatterWriter().write_metadata(
+            _note(src, fmt=fmt), {"tags": ["new"]},
+            vault_root=tmp_path, dry_run=False,
+        )
+    assert src.read_bytes() == before
+
+
 class TestFrontmatterWriterInline:
     def test_md_routes_to_source_file(self, tmp_path):
         src = tmp_path / "note.md"
