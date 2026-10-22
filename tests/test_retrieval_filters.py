@@ -186,9 +186,11 @@ class TestFilteredRetrieval:
 class TestFilteredFtsSearch:
     def test_large_filter_keeps_its_own_best_matches(self, db):
         outside = db.upsert_note("/v/out.md", "outside", "out")
-        db.store_embeddings_bulk(outside, [dict(chunk_index=i, text_content="needle",
-            vector=_vec(1., 0.), page=None, heading=None, chunk_hash=None)
-            for i in range(100)])
+        db.store_embeddings_bulk(outside, [{
+            "chunk_index": i, "text_content": "needle",
+            "vector": _vec(1., 0.), "page": None, "heading": None,
+            "chunk_hash": None,
+        } for i in range(100)])
         allowed = set()
         for i in range(901):
             nid = db.upsert_note(f"/v/{i}.md", str(i), str(i))
@@ -206,9 +208,11 @@ class TestFilteredFtsSearch:
             pytest.skip("sqlite-vec unavailable")
         own = db.upsert_note("/v/long.md", "Long", "long")
         other = db.upsert_note("/v/other.md", "Other", "other")
-        db.store_embeddings_bulk(own, [dict(chunk_index=i, text_content="needle",
-            vector=_vec(1., 0.), page=None, heading=None, chunk_hash=None)
-            for i in range(100)])
+        db.store_embeddings_bulk(own, [{
+            "chunk_index": i, "text_content": "needle",
+            "vector": _vec(1., 0.), "page": None, "heading": None,
+            "chunk_hash": None,
+        } for i in range(100)])
         db.store_embedding(other, 0, "needle filler", _vec(.8, .6))
         conn = Connector(db, _StubEmbedder(), vector_backend=backend,
                          matrix_cache_enabled=False)
@@ -281,7 +285,12 @@ class TestSearchApiFilter:
             def __init__(self):
                 self.db = db
                 self.embedder = _StubEmbedder()
-                self.oracle = type("O", (), {"connector": _connector(db)})()
+                self.oracle = type("O", (), {
+                    "connector": _connector(db),
+                    "rewrite_retrieval_query": (
+                        lambda _self, question, history=None: question
+                    ),
+                })()
                 self.config = type("C", (), {"cognition": type("K", (), {
                     "hybrid_search": False})()})()
 

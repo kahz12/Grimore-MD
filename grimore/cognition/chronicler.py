@@ -32,10 +32,6 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _now_iso() -> str:
-    return _now_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
 def _parse_iso(ts: str) -> datetime:
     """Best-effort parse of an ISO timestamp; tolerates trailing ``Z``
     and timestamps written without timezone (treats those as UTC)."""
@@ -73,7 +69,7 @@ class StaleNote:
     path: str
     title: str
     category: Optional[str]
-    last_verified: str
+    last_verified: Optional[str]
     window_days: int
     days_overdue: int
     likely_stale: Optional[bool]
@@ -112,8 +108,7 @@ class Chronicler:
         report = SeedReport()
         existing = dict(db.list_freshness())
         notes = db.get_notes_for_freshness_seed()
-        now = _now_iso()
-        for path, category, last_anchor in notes:
+        for path, category, _last_scan_anchor in notes:
             window = resolve_window_days(category, self.cfg)
             if window <= 0:
                 if path in existing:
@@ -122,10 +117,10 @@ class Chronicler:
                 continue
             if path in existing:
                 if existing[path] != window:
-                    db.upsert_freshness(path, last_anchor or now, window)
+                    db.upsert_freshness(path, None, window)
                     report.updated += 1
             else:
-                db.upsert_freshness(path, last_anchor or now, window)
+                db.upsert_freshness(path, None, window)
                 report.added += 1
         return report
 
@@ -146,6 +141,8 @@ class Chronicler:
         for path, title, category, last_verified, window_days, likely in (
             self.session.db.get_freshness_with_notes()
         ):
+            if not last_verified:
+                continue
             try:
                 lv = _parse_iso(last_verified)
             except ValueError:
@@ -166,6 +163,55 @@ class Chronicler:
         out.sort(key=lambda r: r.days_overdue, reverse=True)
         return out
 
+    def list_stale_snapshot(self, *, today: Optional[datetime] = None) -> list[StaleNote]:
+        """Compute the current stale-note view without writing seed rows.
+
+        The web review inbox is a GET surface, so merely opening it must not
+        mutate freshness state. Existing verification rows take precedence;
+        eligible but untracked notes use their indexed anchor as a preview of
+        what :meth:`seed` would create.
+        """
+        tracked = {
+            path: (title, category, last_verified, window_days, likely)
+            for path, title, category, last_verified, window_days, likely
+            in self.session.db.get_freshness_with_notes()
+        }
+        candidates = []
+        for path, category, _last_scan_anchor in self.session.db.get_notes_for_freshness_seed():
+            window_days = resolve_window_days(category, self.cfg)
+            if window_days <= 0:
+                continue
+            if path in tracked:
+                title, _stored_category, last_verified, _stored_window, likely = tracked[path]
+                if not last_verified:
+                    continue
+                candidates.append((
+                    path, title, category, last_verified, window_days, likely,
+                ))
+
+        now = today or _now_utc()
+        out: list[StaleNote] = []
+        for path, title, category, last_verified, window_days, likely in candidates:
+            try:
+                verified_at = _parse_iso(last_verified)
+            except (TypeError, ValueError):
+                logger.warning("freshness_bad_timestamp", path=path, ts=last_verified)
+                continue
+            days_overdue = (now - verified_at).days - int(window_days)
+            if days_overdue <= 0:
+                continue
+            out.append(StaleNote(
+                path=path,
+                title=title or Path(path).stem,
+                category=category,
+                last_verified=last_verified,
+                window_days=int(window_days),
+                days_overdue=days_overdue,
+                likely_stale=None if likely is None else bool(likely),
+            ))
+        out.sort(key=lambda row: row.days_overdue, reverse=True)
+        return out
+
     # ── verification ───────────────────────────────────────────────────
 
     def verify(self, path: str) -> bool:
@@ -175,6 +221,7 @@ class Chronicler:
         exists for that note (silent no-op — the user may verify notes
         outside Chronicler's scope without it being an error).
         """
+        self.seed()
         return self.session.db.touch_freshness_verified(path)
 
     # ── decay signal (LLM) ─────────────────────────────────────────────
@@ -192,11 +239,15 @@ class Chronicler:
           * the LLM call fails or returns malformed output
         """
         db = self.session.db
+        self.seed()
         row = db.get_freshness_row(path)
         if row is None:
             logger.info("decay_skipped_no_freshness_row", path=path)
             return None
         last_verified, _window, _, _ = row
+        if not last_verified:
+            logger.info("decay_skipped_unverified", path=path)
+            return None
 
         try:
             body = read_document_text(

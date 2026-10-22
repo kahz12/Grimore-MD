@@ -24,6 +24,9 @@ from typing import Optional
 from grimore.output.git_guard import GitGuard
 from grimore.utils.http import build_session
 from grimore.utils.logger import get_logger
+from grimore.utils.ocr import (
+    check_ocr_languages, validate_ocr_language, validate_ocr_max_pages,
+)
 from grimore.utils.security import SecurityGuard
 
 _which = shutil.which
@@ -465,7 +468,7 @@ class PreflightChecker:
         elif engine == "pymupdf":
             # Try both the modern and legacy import names — older releases
             # ship as ``fitz``. ``X and Y`` short-circuits to None on the
-            # first success, or to the last error string when both fail.
+            # first success, or to the last diagnostic when both fail.
             failure = self._probe_module("pymupdf") and self._probe_module("fitz")
             report.add(CheckResult(
                 name="pdf_engine:pymupdf",
@@ -491,37 +494,88 @@ class PreflightChecker:
                 ),
             ))
 
-        # OCR fallback — opt-in. Needs both the Python wheels and the
-        # tesseract binary on PATH. Either missing is an error because
-        # the user explicitly asked for OCR; silent fallback would mask
-        # a configuration mistake.
+        # OCR fallback — opt-in. Both external binaries and Python packages
+        # must be ready before a scanned page enters the indexing pipeline.
         if bool(getattr(ingest, "ocr", False)):
-            wheel_missing = self._probe_module("pytesseract") or self._probe_module("pdf2image")
-            binary_missing = None if _which("tesseract") else "tesseract binary not on PATH"
-            if wheel_missing or binary_missing:
+            try:
+                validate_ocr_max_pages(getattr(ingest, "ocr_max_pages", 0))
+            except ValueError as exc:
+                report.add(CheckResult(
+                    name="ocr_max_pages", ok=False, severity="error",
+                    message=str(exc),
+                    fix="Set [ingest].ocr_max_pages to 0 (unlimited) or a positive page count.",
+                ))
+            language = getattr(ingest, "ocr_language", "eng")
+            try:
+                validate_ocr_language(language)
+                language_valid = True
+            except ValueError as exc:
+                language_valid = False
+                report.add(CheckResult(
+                    name="ocr_language", ok=False, severity="error",
+                    message=str(exc),
+                    fix="Set [ingest].ocr_language to eng, spa or spa+eng.",
+                ))
+            timeout = getattr(ingest, "ocr_timeout_s", 30)
+            if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+                report.add(CheckResult(
+                    name="ocr_timeout_s",
+                    ok=False,
+                    severity="error",
+                    message="OCR timeout must be a positive integer.",
+                    fix="Set [ingest].ocr_timeout_s to a positive number of seconds.",
+                ))
+            missing = [
+                f"{module}: {failure}"
+                for module in ("pytesseract", "pdf2image")
+                if (failure := self._probe_module(module))
+            ]
+            tesseract_path = _which("tesseract")
+            if not tesseract_path:
+                missing.append("tesseract binary not on PATH")
+            if not _which("pdfinfo"):
+                missing.append("Poppler pdfinfo not on PATH")
+            if not (_which("pdftoppm") or _which("pdftocairo")):
+                missing.append("Poppler renderer not on PATH")
+            if not missing and language_valid and tesseract_path:
+                if language_failure := check_ocr_languages(tesseract_path, language):
+                    missing.append(language_failure)
+            if missing:
                 fix_parts = []
-                if wheel_missing:
+                if any(item.startswith(("pytesseract:", "pdf2image:")) for item in missing):
                     fix_parts.append("pip install 'grimore[ocr]'")
-                if binary_missing:
+                if any(item.startswith("tesseract binary") for item in missing):
                     fix_parts.append(
                         "Install tesseract (Linux: `apt install tesseract-ocr`; "
                         "Termux: `pkg install tesseract`)."
+                    )
+                if any(item.startswith("Poppler ") for item in missing):
+                    fix_parts.append(
+                        "Install Poppler (Linux: `apt install poppler-utils`; "
+                        "Termux: `pkg install poppler`)."
+                    )
+                if any("language data" in item for item in missing):
+                    fix_parts.append(
+                        "Install the requested Tesseract language data (for Spanish on "
+                        "Linux: `apt install tesseract-ocr-spa`), or change "
+                        "[ingest].ocr_language to an installed language."
                     )
                 report.add(CheckResult(
                     name="ocr",
                     ok=False,
                     severity="error",
-                    message=(
-                        f"OCR enabled but unavailable: "
-                        f"{wheel_missing or binary_missing}"
-                    ),
+                    message="OCR enabled but unavailable: " + "; ".join(missing),
                     fix="\n".join(fix_parts),
                 ))
             else:
                 report.add(CheckResult(
                     name="ocr",
                     ok=True,
-                    message="OCR fallback ready (tesseract + pytesseract).",
+                    message=(
+                        f"OCR fallback ready (Tesseract, Poppler, Python extras; {language})."
+                        if language_valid else
+                        "OCR dependencies ready; fix the language setting above."
+                    ),
                 ))
 
         # Magic-byte sniffer — opt-in. Off by default, so absence of the

@@ -121,7 +121,7 @@ class LLMRouter:
         self.config = config
         self.backend: LLMBackend = backend or build_backend(config)
         # Legacy alias kept for code that surfaced the host in logs or
-        # error messages. Points at whatever URL the backend is using
+        # diagnostic messages. Points at whatever URL the backend is using
         # — Ollama's host or the OpenAI base URL — so the field stays
         # informative without breaking the contract.
         self.ollama_host = getattr(
@@ -235,12 +235,15 @@ class LLMRouter:
                     "llm_json_parse_failed",
                     raw=SecurityGuard.redact_for_log(raw if isinstance(raw, str) else ""),
                 )
-                self._record_failure()
+                if not optional:
+                    self._record_failure()
                 return None
-            self._record_success()
+            if not optional:
+                self._record_success()
             return parsed
 
-        self._record_success()
+        if not optional:
+            self._record_success()
         return raw
 
     def list_installed_models(self) -> list[dict]:

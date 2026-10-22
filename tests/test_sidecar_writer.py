@@ -15,6 +15,7 @@ import frontmatter
 import pytest
 
 from grimore.ingest.parser import ParsedNote
+from grimore.output.change_journal import ChangeJournal
 from grimore.output.frontmatter_writer import FrontmatterWriter, SIDECAR_FLAG_KEY
 from grimore.output.link_injector import LinkInjector
 
@@ -84,8 +85,81 @@ class TestFrontmatterWriterInline:
         post = frontmatter.load(src)
         assert "tags" not in post.metadata
 
+    def test_preview_describes_target_and_fields_without_writing(self, tmp_path):
+        src = tmp_path / "note.md"
+        src.write_text("---\ntags: [old]\n---\nbody\n", encoding="utf-8")
+        note = _note(src, fmt="md")
+        note.metadata = {"tags": ["old"]}
+        before = src.read_bytes()
+
+        preview = FrontmatterWriter().preview_metadata(
+            note, {"tags": ["new"], "summary": "draft"},
+            vault_root=tmp_path,
+        )
+
+        assert preview == {
+            "target": str(src),
+            "action": "update",
+            "fields": [
+                {"name": "tags", "before": ["old"], "after": ["new"]},
+                {"name": "summary", "before": None, "after": "draft"},
+            ],
+        }
+        assert src.read_bytes() == before
+
+    def test_journal_restores_writer_change_from_copy(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        src = vault / "note.md"
+        src.write_text("---\ntags: [old]\n---\nbody\n", encoding="utf-8")
+        before = src.read_bytes()
+        journal = ChangeJournal(vault, storage_root=tmp_path / "history")
+        change_id = journal.start("scan")
+
+        FrontmatterWriter().write_metadata(
+            _note(src, fmt="md"), {"tags": ["new"]},
+            vault_root=vault, dry_run=False, change_journal=journal,
+        )
+        journal.finish()
+        assert frontmatter.load(src).metadata["tags"] == ["new"]
+
+        journal.restore(change_id)
+        assert src.read_bytes() == before
+
 
 class TestFrontmatterWriterSidecar:
+    def test_extraction_refresh_does_not_create_partial_sidecar(self, tmp_path):
+        source = tmp_path / "book.pdf"
+        source.write_bytes(b"placeholder")
+        note = _note(source, fmt="pdf")
+
+        result = FrontmatterWriter().refresh_extraction_metadata(
+            note, {"status": "partial", "issues": []},
+            vault_root=tmp_path, dry_run=False,
+        )
+
+        assert result is None
+        assert not (tmp_path / ".grimore" / "sidecars" / "book.pdf.md").exists()
+
+    def test_sidecar_preview_includes_managed_fields(self, tmp_path):
+        source = tmp_path / "Books" / "spec.pdf"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"%PDF-1.4 fake")
+        note = _note(source, fmt="pdf")
+
+        preview = FrontmatterWriter().preview_metadata(
+            note, {"summary": "draft"}, vault_root=tmp_path,
+        )
+
+        assert preview["action"] == "create"
+        fields = {item["name"]: item["after"] for item in preview["fields"]}
+        assert fields["summary"] == "draft"
+        assert fields["source"] == str(source)
+        assert fields["format"] == "pdf"
+        assert fields["content_hash"] == note.content_hash
+        assert fields["grimore_sidecar"] is True
+        assert fields["title"] == note.title
+
     def test_non_md_creates_sidecar_in_mirrored_tree(self, tmp_path):
         src = tmp_path / "Books" / "spec.pdf"
         src.parent.mkdir(parents=True)

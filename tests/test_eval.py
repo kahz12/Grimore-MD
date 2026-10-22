@@ -20,10 +20,12 @@ from grimore.cognition.eval import (
     classify_outcome,
     compare_runs,
     comparison_summary,
+    citation_validity,
     export_report,
     run_provenance,
     faithfulness,
     judge_relevance,
+    judge_claim_support,
     keyword_recall,
     _keyword_hits,
     load_golden,
@@ -34,6 +36,7 @@ from grimore.cognition.eval import (
     run_eval,
     source_hit_at_k,
     _stage_latency_means,
+    validate_golden_evidence,
 )
 
 
@@ -61,14 +64,18 @@ class TestMetrics:
     def test_mrr_empty_expected_is_full(self):
         assert mrr(["X"], []) == 1.0
 
-    def test_faithfulness_no_citations_is_full(self):
-        # Citation-free answer can't be unfaithful — score is 1.0.
+    def test_citation_free_answer_has_no_validity_score(self):
+        # No citation means validity is unknown, not perfect faithfulness.
+        score, total = citation_validity("plain prose, no links", 0)
+        assert score is None and total == 0
+
+    def test_faithfulness_compatibility_alias_uses_corrected_semantics(self):
         score, total = faithfulness("plain prose, no links", 0)
-        assert score == 1.0 and total == 0
+        assert score is None and total == 0
 
     def test_faithfulness_partial_drop(self):
         # Two citations kept in the cleaned text + one dropped = 1/3 ungrounded.
-        score, total = faithfulness("Per [[A]] and [[B#p.1]].", 1)
+        score, total = citation_validity("Per [[A]] and [[B#p.1]].", 1)
         assert total == 3
         assert score == pytest.approx(2 / 3)
 
@@ -254,6 +261,45 @@ class TestJudge:
         router.complete.side_effect = RuntimeError("boom")
         assert judge_relevance(router, "q", "a") is None
 
+    def test_claim_support_is_separate_from_citation_membership(self):
+        router = MagicMock()
+        router.complete.return_value = {
+            "supported": 2,
+            "unsupported": 1,
+            "unverifiable": 1,
+            "cited_supported": 1,
+        }
+        result = judge_claim_support(
+            router,
+            "q",
+            "Two claims cite [[A]], but only one citation supports its claim.",
+            [{"label": "A", "passage": {"text": "Exact evidence."}}],
+        )
+        assert result is not None
+        assert result["support"] == pytest.approx(2 / 3)
+        assert result["citation_coverage"] == pytest.approx(1 / 3)
+        assert result["unverifiable"] == 1
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            None,
+            {"supported": 1},
+            {"supported": -1, "unsupported": 0, "unverifiable": 0,
+             "cited_supported": 0},
+            {"supported": 1, "unsupported": 0, "unverifiable": 0,
+             "cited_supported": 2},
+        ],
+    )
+    def test_claim_support_rejects_incomplete_or_invalid_counts(self, response):
+        router = MagicMock()
+        router.complete.return_value = response
+        result = judge_claim_support(
+            router, "q", "a",
+            [{"label": "A", "passage": {"text": "Evidence."}}],
+        )
+        assert result is None
+
 
 # ── golden loader ──────────────────────────────────────────────────────────
 
@@ -349,6 +395,75 @@ questions:
     question: "x"
     negative: true
     expected_sources: ["A"]
+"""))
+
+    def test_v2_loads_evidence_metadata_and_inherits_followup_dimensions(self, tmp_path):
+        cases = load_golden(self._write(tmp_path, """\
+version: 2
+set: tuning
+corpus_version: fixture-v1
+questions:
+  - id: q1
+    question: "What?"
+    category: direct
+    language: en
+    case_type: direct
+    document_formats: [md]
+    expected_sources: [A]
+    expected_answer: "Answer A"
+    expected_evidence:
+      - source: A
+        passage: "Evidence for answer A."
+        locator: "Section 1"
+    review_criteria: "Must state A."
+    user_task: find-fact
+    difficulty: standard
+    split: tuning
+    follow_ups:
+      - id: q1-followup
+        question: "And why?"
+        expected_sources: [A]
+        expected_answer: "Because A."
+        expected_evidence:
+          - source: A
+            passage: "Because evidence A."
+        review_criteria: "Must explain A."
+"""))
+        case, follow = cases[0], cases[0].follow_ups[0]
+        assert case.expected_evidence[0]["locator"] == "Section 1"
+        assert follow.language == "en" and follow.document_formats == ["md"]
+        assert follow.case_type == "follow-up" and follow.split == "tuning"
+
+    def test_v2_requires_answer_evidence_and_review_metadata(self, tmp_path):
+        with pytest.raises(ValueError, match="requires difficulty and review_criteria"):
+            load_golden(self._write(tmp_path, """\
+version: 2
+set: tuning
+corpus_version: fixture-v1
+questions:
+  - id: incomplete
+    question: "What?"
+    language: en
+    case_type: direct
+    document_formats: [md]
+    expected_sources: [A]
+    expected_answer: "A"
+    expected_evidence: [{source: A, passage: "A passage"}]
+    user_task: find-fact
+    difficulty: standard
+    split: tuning
+"""))
+
+    def test_rejects_duplicate_ids_across_followups(self, tmp_path):
+        with pytest.raises(ValueError, match="duplicate case id"):
+            load_golden(self._write(tmp_path, """\
+version: 1
+questions:
+  - id: duplicate
+    question: "One?"
+    follow_ups:
+      - id: duplicate
+        question: "Two?"
 """))
 
 
@@ -477,8 +592,80 @@ class TestRunner:
         assert session.oracle.retrieve.call_args.kwargs["top_k"] == 5
         # Aggregate carries the absence through, not a zero.
         agg = report.summary()["aggregate"]
-        assert agg["keyword_recall"] is None and agg["faithfulness"] is None
+        assert agg["keyword_recall"] is None and agg["citation_validity"] is None
+        assert agg["cited_answer_rate"] is None
+        assert agg["faithfulness"] is None  # compatibility alias
         assert agg["hit_at_1"] == 1.0
+
+    def test_citation_validity_and_answer_coverage_are_separate(self):
+        session = _FakeSession([
+            {"answer": "Grounded [[A]].", "sources": ["A"],
+             "retrieved": [{"title": "A", "rank": 1}], "dropped_citations": 0},
+            {"answer": "Correct-looking but uncited.", "sources": ["B"],
+             "retrieved": [{"title": "B", "rank": 1}], "dropped_citations": 0},
+        ])
+        cases = [
+            EvalCase(id="cited", question="q1", expected_sources=["A"]),
+            EvalCase(id="uncited", question="q2", expected_sources=["B"]),
+        ]
+        report = run_eval(session, cases, top_k=1, judge=False)
+        agg = report.summary()["aggregate"]
+        # The one emitted reference is valid, but only half the answers cite.
+        assert agg["citation_validity"] == 1.0
+        assert agg["cited_answer_rate"] == 0.5
+        assert report.turns[0].citation_validity == 1.0
+        assert report.turns[1].faithfulness is None
+        assert report.turns[1].citation_validity is None
+
+    def test_support_judge_and_manual_review_are_exported_separately(self):
+        details = [{
+            "label": "A",
+            "passage": {"text": "The indexed passage supports the claim."},
+        }]
+        session = _FakeSession([{
+            "answer": "The claim is documented [[A]].",
+            "answer_status": "supported",
+            "sources": ["A"],
+            "source_details": details,
+            "retrieved": [{"title": "A", "rank": 1}],
+            "dropped_citations": 0,
+        }])
+        session.router.complete.side_effect = [
+            {"score": 9},
+            {"supported": 1, "unsupported": 0, "unverifiable": 0,
+             "cited_supported": 1},
+        ]
+        cases = [EvalCase(
+            id="support", question="q", expected_sources=["A"],
+            expected_evidence=[{"source": "A", "passage": "The indexed passage"}],
+            review_criteria="The claim must be entailed by passage A.",
+        )]
+        report = run_eval(session, cases, top_k=1, judge=True)
+        turn = report.turns[0]
+        assert turn.citation_validity == 1.0
+        assert turn.automated_claim_support == 1.0
+        assert turn.claim_citation_coverage == 1.0
+        summary = report.summary()
+        assert summary["aggregate"]["automated_claim_support"] == 1.0
+        assert summary["aggregate"]["claim_citation_coverage"] == 1.0
+        review = summary["manual_review"][0]
+        assert review["claim_support"] == "pending"
+        assert review["review_criteria"].startswith("The claim")
+        assert review["source_details"] == details
+
+    def test_answerable_abstention_is_counted_as_failure(self):
+        session = _FakeSession([{
+            "answer": "Evidencia insuficiente para responder.",
+            "answer_status": "insufficient_evidence",
+            "sources": ["A"],
+            "retrieved": [{"title": "A", "rank": 1}],
+            "dropped_citations": 0,
+        }])
+        cases = [EvalCase(id="pos", question="q", expected_sources=["A"])]
+        report = run_eval(session, cases, top_k=1, judge=False)
+        assert report.turns[0].abstained is True
+        assert report.turns[0].outcome == "incorrect_abstention"
+        assert report.summary()["aggregate"]["incorrect_abstention_rate"] == 1.0
 
     def test_negative_scored_by_abstention_and_excluded_from_ranking(self):
         session = _FakeSession([
@@ -606,6 +793,140 @@ class TestRunner:
         # Second ask must not see c1's turn in history (forget cleared it).
         second_call_kwargs = session.oracle.ask.call_args_list[1].kwargs
         assert "history" not in second_call_kwargs
+
+
+# ── generation failures + resumable runs ─────────────────────────────────────
+
+
+_SILENT = {"answer": "The Oracle is silent.", "sources": ["A"], "dropped_citations": 0,
+           "generation_error": "no_model_response"}
+
+
+def _answer(text="ok"):
+    return {"answer": text, "sources": ["A"], "dropped_citations": 0}
+
+
+class TestGenerationFailures:
+    def test_oracle_flags_a_missing_model_response(self):
+        from tests.test_answer_sufficiency import make_oracle
+        oracle = make_oracle(None, enabled=False)
+        oracle.router.complete.side_effect = [None]
+        assert oracle.ask("Question?")["generation_error"] == "no_model_response"
+
+    def test_oracle_flags_a_response_without_answer_but_keeps_its_status(self):
+        from tests.test_answer_sufficiency import make_oracle
+        oracle = make_oracle(None, enabled=False)
+        oracle.router.complete.side_effect = [{"status": "supported"}]
+        result = oracle.ask("Question?")
+        assert result["generation_error"] == "missing_answer_field"
+        assert result["answer"] == "The Oracle is silent."
+
+    def test_oracle_answer_carries_no_generation_error(self):
+        from tests.test_answer_sufficiency import make_oracle
+        oracle = make_oracle(None, enabled=False)
+        oracle.router.complete.side_effect = [{"answer": "Fact [[Document#p.2]].", "status": "supported"}]
+        assert "generation_error" not in oracle.ask("Question?")
+
+    @pytest.mark.parametrize("chunks, flagged", [([], True), (["Fact."], False)])
+    def test_stream_final_event_flags_a_silent_model(self, chunks, flagged):
+        from tests.test_answer_sufficiency import make_oracle
+        oracle = make_oracle(None, enabled=False)
+        oracle.router.complete_streaming.return_value = iter(chunks)
+        done = list(oracle.ask_stream("Question?"))[-1]
+        assert done["type"] == "done"
+        assert (done.get("generation_error") == "no_model_response") is flagged
+
+    def test_silent_turn_is_counted_skips_judges_and_keeps_historical_metrics(self):
+        session = _FakeSession([_SILENT])
+        cases = [EvalCase(id="neg", question="Unknown?", negative=True)]
+        report = run_eval(session, cases, top_k=1, judge=True)
+        turn = report.turns[0]
+        assert turn.generation_error == "no_model_response"
+        assert turn.answer_relevance is None
+        session.router.complete.assert_not_called()
+        agg = report.summary()["aggregate"]
+        assert agg["generation_failure_n"] == 1
+        # The historical definition is untouched: the sentinel still reads as
+        # an abstention cue. The count above is what flags the contamination.
+        assert agg["abstention_rate"] == 1.0
+
+    def test_raised_ask_is_a_generation_failure(self):
+        session = _FakeSession([])
+        session.oracle.ask.side_effect = RuntimeError("connection refused")
+        report = run_eval(session, [EvalCase(id="x", question="q", expected_sources=["A"])],
+                          top_k=1, judge=False)
+        assert report.turns[0].generation_error == "ask_failed"
+
+    def test_retrieval_only_turns_are_never_generation_failures(self):
+        session = _FakeSession([])
+        session.oracle.retrieve.return_value = []
+        report = run_eval(session, [EvalCase(id="x", question="q", expected_sources=["A"])],
+                          generate=False, judge=False)
+        assert report.turns[0].generation_error is None
+        assert report.summary()["aggregate"]["generation_failure_n"] == 0
+
+
+class TestCheckpoint:
+    @staticmethod
+    def _cases():
+        return [
+            EvalCase(id="a", question="qa", expected_sources=["A"],
+                     follow_ups=[EvalCase(id="a-fu", question="qa2", expected_sources=["A"])]),
+            EvalCase(id="b", question="qb", expected_sources=["A"]),
+        ]
+
+    def test_interrupted_run_resumes_without_asking_finished_cases(self, tmp_path):
+        path = tmp_path / "run.jsonl"
+        first = _FakeSession([_answer("a1"), _answer("a2"), KeyboardInterrupt()])
+        with pytest.raises(KeyboardInterrupt):
+            run_eval(first, self._cases(), top_k=1, judge=False, checkpoint=path)
+
+        second = _FakeSession([_answer("b1")])
+        report = run_eval(second, self._cases(), top_k=1, judge=False, checkpoint=path)
+        assert [c.args[0] for c in second.oracle.ask.call_args_list] == ["qb"]
+        assert [(t.case_id, t.answer) for t in report.turns] == [
+            ("a", "a1"), ("a-fu", "a2"), ("b", "b1"),
+        ]
+        assert report.provenance["checkpoint"]["restored_cases"] == 1
+        assert report.provenance["checkpoint"]["run_cases"] == 1
+
+    def test_failed_case_is_asked_again_and_supersedes_the_failure(self, tmp_path):
+        path = tmp_path / "run.jsonl"
+        cases = [EvalCase(id="b", question="qb", expected_sources=["A"])]
+        run_eval(_FakeSession([_SILENT]), cases, top_k=1, judge=False, checkpoint=path)
+
+        retry = _FakeSession([_answer("recovered")])
+        report = run_eval(retry, cases, top_k=1, judge=False, checkpoint=path)
+        assert retry.oracle.ask.call_count == 1
+        assert report.turns[0].answer == "recovered"
+        assert report.summary()["aggregate"]["generation_failure_n"] == 0
+
+        later = _FakeSession([])
+        assert run_eval(later, cases, top_k=1, judge=False, checkpoint=path).turns[0].answer == "recovered"
+        later.oracle.ask.assert_not_called()
+
+    def test_checkpoint_from_a_different_run_is_refused(self, tmp_path):
+        path = tmp_path / "run.jsonl"
+        cases = [EvalCase(id="b", question="qb", expected_sources=["A"])]
+        run_eval(_FakeSession([_answer()]), cases, top_k=1, judge=False, checkpoint=path)
+        with pytest.raises(ValueError, match="top_k"):
+            run_eval(_FakeSession([_answer()]), cases, top_k=2, judge=False, checkpoint=path)
+        edited = [EvalCase(id="b", question="qb edited", expected_sources=["A"])]
+        with pytest.raises(ValueError, match="cases_hash"):
+            run_eval(_FakeSession([_answer()]), edited, top_k=1, judge=False, checkpoint=path)
+
+    def test_torn_final_line_is_ignored_and_the_case_is_run(self, tmp_path):
+        path = tmp_path / "run.jsonl"
+        cases = self._cases()
+        run_eval(_FakeSession([_answer(), _answer(), _answer()]), cases,
+                 top_k=1, judge=False, checkpoint=path)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        path.write_text("\n".join(lines[:-1] + [lines[-1][:20]]) + "\n", encoding="utf-8")
+
+        resumed = _FakeSession([_answer("b again")])
+        report = run_eval(resumed, cases, top_k=1, judge=False, checkpoint=path)
+        assert [t.answer for t in report.turns][-1] == "b again"
+        assert resumed.oracle.ask.call_count == 1
 
 
 # ── report export ──────────────────────────────────────────────────────────
@@ -737,9 +1058,20 @@ class TestHistoryAndCompare:
         prov = run_provenance(session, golden)
         assert prov["config"]["hybrid_search"] is True
         assert prov["golden_hash"] is not None and "timestamp" in prov
+        assert prov["grimore_version"]
+        assert prov["hardware"]["python"]
+        assert prov["corpus"]["fingerprint"] is None
         # Same fingerprint → same config_hash (so genuine regressions are
         # distinguishable from config changes).
         assert run_provenance(session, golden)["config_hash"] == prov["config_hash"]
+        assert len(prov["code_fingerprint"]) == 12
+        assert run_provenance(session, golden)["code_fingerprint"] == prov["code_fingerprint"]
+
+    def test_git_provenance_names_the_package_checkout_from_any_cwd(self, tmp_path, monkeypatch):
+        from grimore.cognition.eval import _git_provenance
+        expected = _git_provenance()
+        monkeypatch.chdir(tmp_path)  # an isolated evaluation workspace
+        assert _git_provenance() == expected
 
 
 # ── shipped golden ───────────────────────────────────────────────────────────
@@ -758,3 +1090,49 @@ def test_shipped_golden_loads_and_is_stratified():
     assert any(c.follow_ups for c in cases)
     # Every non-negative case names at least one expected source.
     assert all(c.expected_sources for c in cases if not c.negative)
+
+
+def test_phase0_datasets_are_separate_complete_and_grounded():
+    """Phase-0 acceptance guard: size, holdout separation and real evidence."""
+    root = Path(__file__).resolve().parents[1]
+
+    def flatten(cases):
+        out = []
+        for case in cases:
+            out.append(case)
+            out.extend(flatten(case.follow_ups))
+        return out
+
+    tuning_roots = load_golden(root / "eval" / "phase0_tuning.yaml")
+    evaluation_roots = load_golden(root / "eval" / "phase0_evaluation.yaml")
+    tuning = flatten(tuning_roots)
+    evaluation = flatten(evaluation_roots)
+    combined = tuning + evaluation
+
+    assert len(tuning) == 60
+    assert len(evaluation) == 40
+    assert len(combined) == 100
+    assert sum(case.negative for case in combined) >= 20
+    assert {case.language for case in combined} == {"es", "en"}
+    assert {fmt for case in combined for fmt in case.document_formats} >= {"md", "pdf", "txt"}
+    assert {case.user_task for case in combined} == {
+        "find-fact", "compare-documents", "review-note",
+    }
+    assert {
+        "direct", "ambiguous", "follow-up", "unanswerable",
+        "contradictory", "similar-documents", "comparison",
+    } <= {case.case_type for case in combined}
+
+    tuning_ids = {case.id for case in tuning}
+    evaluation_ids = {case.id for case in evaluation}
+    assert tuning_ids.isdisjoint(evaluation_ids)
+    assert all(case.split == "tuning" for case in tuning)
+    assert all(case.split == "evaluation" for case in evaluation)
+
+    positives = [case for case in combined if not case.negative]
+    assert all(case.expected_answer and case.expected_evidence for case in positives)
+    assert all(case.review_criteria for case in combined)
+
+    vault = root / "test_vault" / "test_vault"
+    assert validate_golden_evidence(tuning_roots, vault) == []
+    assert validate_golden_evidence(evaluation_roots, vault) == []

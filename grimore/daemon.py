@@ -12,19 +12,27 @@ from pathlib import Path
 from grimore.utils.config import Config
 from grimore.utils.event_log import DaemonEventLog
 from grimore.utils.hashing import sha256_file
+from grimore.utils.index_progress import IndexProgressReporter
 from grimore.utils.logger import get_logger
 from grimore.utils.paths import daemon_lock_path, daemon_log_path
 from grimore.ingest.observer import VaultObserver
-from grimore.ingest.parser import MarkdownParser
+from grimore.ingest.extraction_profile import (
+    pdf_extraction_profile, pdf_index_profile, pdf_retry_pending,
+)
+from grimore.ingest.pdf_reconcile import reconcile_unchanged_pdf
+from grimore.ingest.parser import MarkdownParser, extraction_diagnostics
+from grimore.memory.classification_overrides import apply_classification_override
 from grimore.memory.db import Database
+from grimore.temporal import derive_document_dates
 from grimore.memory.maintenance import MaintenanceRunner
 from grimore.output.git_guard import GitGuard
 from grimore.output.frontmatter_writer import FrontmatterWriter
+from grimore.output.change_journal import ChangeJournal
 from grimore.cognition.chunker import build_candidate_chunks
 from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.reembed import reembed_note
 from grimore.cognition.privacy import ingest_services
-from grimore.cognition.tagger import Tagger
+from grimore.cognition.tagger import Tagger, tag_document
 from grimore.memory.taxonomy import load_taxonomy_from_vault
 from grimore.cognition.embedder import Embedder
 from grimore.utils.notifications import Notifier
@@ -57,6 +65,7 @@ class GrimoreDaemon:
             daemon_log_path(),
             enabled=getattr(config.daemon, "log_events", True),
         )
+        self.index_progress = IndexProgressReporter(config.vault.path, "daemon")
         self._stop_requested = threading.Event()
         self.db = Database(config.memory.db_path)
         self.parser = MarkdownParser()
@@ -139,6 +148,7 @@ class GrimoreDaemon:
 
         logger.info("daemon_starting", vault=self.config.vault.path)
         self.event_log.write("daemon_started", vault=self.config.vault.path, pid=str(_os_getpid()))
+        self.index_progress.start(total=None, dry_run=self.config.output.dry_run)
         # Pull the debounce + polling knobs from DaemonConfig so users can
         # tune them via grimore.toml without editing source. The defaults
         # match the v2.1 behaviour (45s debounce, native inotify/FSEvents).
@@ -203,6 +213,9 @@ class GrimoreDaemon:
         """Gracefully stops the file system observer, flushes the DB and releases the lock."""
         logger.info("daemon_stopping")
         self.event_log.write("daemon_stopping")
+        progress = getattr(self, "index_progress", None)
+        if progress is not None:
+            progress.finish(status="stopped")
         if self.observer:
             try:
                 self.observer.stop()
@@ -233,6 +246,10 @@ class GrimoreDaemon:
         """
         rel = self._log_path(file_path)
         logger.info("processing_file", path=rel)
+        progress = getattr(self, "index_progress", None)
+        change_journal = None
+        if progress is not None:
+            progress.begin_item(rel)
 
         try:
             # 0. Vault-scope guard: reject symlinks or events that somehow
@@ -242,6 +259,8 @@ class GrimoreDaemon:
             except ValueError:
                 logger.warning("path_escape_skipped", path=rel)
                 self.event_log.write("skip", path=rel, reason="path_escape")
+                if progress is not None:
+                    progress.record("skipped", rel, reason="path_escape")
                 return
 
             # 0a. Never re-ingest files inside our own sidecar tree —
@@ -253,39 +272,60 @@ class GrimoreDaemon:
                 pass
             else:
                 self.event_log.write("skip", path=rel, reason="sidecar")
+                if progress is not None:
+                    progress.record("skipped", rel, reason="sidecar")
                 return
 
             # Size+mtime is the O(1) fast path. Hash bytes only when the
             # metadata fingerprint changed or has not been recorded yet.
             try:
                 disk_stat = file_path.stat()
-                stored_state = self.db.get_file_state(str(file_path))
-                if stored_state is not None and stored_state[1:] == (
+                stored_state = self.db.get_ingest_state(str(file_path))
+                current_pdf_profile = pdf_extraction_profile(self.config)
+                profile_changed = bool(
+                    stored_state
+                    and (stored_state[3] == "pdf" or file_path.suffix.lower() == ".pdf")
+                    and stored_state[4] != current_pdf_profile
+                )
+                retry_pending = bool(
+                    stored_state and pdf_retry_pending(stored_state[4], self.config)
+                )
+                temporal_backfill = self.db.note_timeline_needs_backfill(str(file_path))
+                if not temporal_backfill and not profile_changed and stored_state is not None and stored_state[1:3] == (
                     disk_stat.st_size, disk_stat.st_mtime_ns,
                 ):
                     self.event_log.write("skip", path=rel, reason="unchanged_stat")
+                    if progress is not None:
+                        progress.record("skipped", rel, reason="unchanged_stat")
                     return
                 file_hash = sha256_file(file_path)
             except OSError as e:
                 logger.error("file_hash_failed", path=rel, error=str(e))
                 self.event_log.write("error", path=rel, error=str(e))
+                if progress is not None:
+                    progress.record("failed", rel, reason="file_hash", error=str(e))
                 return
             stored_hash = (
                 stored_state[0] if stored_state
                 else self.db.get_file_hash(str(file_path))
             )
-            if stored_hash == file_hash:
+            if stored_hash == file_hash and not temporal_backfill and not profile_changed:
                 if not self.config.output.dry_run:
                     self.db.update_file_state(
                         str(file_path), file_hash,
                         disk_stat.st_size, disk_stat.st_mtime_ns,
                     )
                 self.event_log.write("skip", path=rel, reason="unchanged_bytes")
+                if progress is not None:
+                    progress.record("skipped", rel, reason="unchanged_bytes")
                 return
 
             # 1. Parse file (defence-in-depth: parser re-validates vault scope)
             note = self.parser.parse_file(
                 file_path, vault_root=self.vault_root, config=self.config,
+            )
+            document_dates = derive_document_dates(
+                note.metadata, note.format, mtime_ns=disk_stat.st_mtime_ns,
             )
 
             # 2. Security & Policy Check
@@ -293,6 +333,8 @@ class GrimoreDaemon:
             if privacy == "never_process":
                 logger.info("policy_skip", path=rel, reason="privacy: never_process")
                 self.event_log.write("skip", path=rel, reason="privacy")
+                if progress is not None:
+                    progress.record("skipped", rel, reason="privacy")
                 return
 
             # Scan for sensitive data (PII, API keys)
@@ -301,17 +343,102 @@ class GrimoreDaemon:
             if force_local:
                 logger.warning("sensitive_data_detected", path=rel, types=sensitive_findings)
 
-            # 3. Check text-level idempotency. Bytes changed (else we'd
-            # have fast-skipped above) but the extracted text didn't —
-            # refresh the file_hash so the next event also fast-skips.
-            if self.db.get_content_hash_by_path(str(file_path)) == note.content_hash:
-                if not self.config.output.dry_run:
+            # 3. Text is unchanged, but PDF page anchors or diagnostics may
+            # still differ. Reconcile those before publishing the new file
+            # fingerprint so write/embedding failures remain retryable.
+            if ((not profile_changed or retry_pending) and
+                    self.db.get_content_hash_by_path(str(file_path)) == note.content_hash):
+                extraction = extraction_diagnostics(note)
+                refreshed = (
+                    self.writer.refresh_extraction_metadata(
+                        note, extraction,
+                        vault_root=self.vault_root,
+                        sidecar_dir=self.config.vault.sidecar_dir,
+                        write_sidecars=self.config.vault.write_sidecars,
+                        dry_run=True,
+                    ) if extraction is not None else None
+                )
+                if refreshed and not self.config.output.dry_run:
+                    try:
+                        change_journal = ChangeJournal(self.vault_root)
+                        change_journal.start(
+                            "daemon-scan",
+                            details={"source": "daemon", "path": rel,
+                                     "reason": "extraction_metadata"},
+                        )
+                    except OSError as exc:
+                        logger.warning(
+                            "change_journal_unavailable", path=rel, error=str(exc),
+                        )
+                        change_journal = None
+                    self.writer.refresh_extraction_metadata(
+                        note, extraction,
+                        vault_root=self.vault_root,
+                        sidecar_dir=self.config.vault.sidecar_dir,
+                        write_sidecars=self.config.vault.write_sidecars,
+                        dry_run=False,
+                        change_journal=change_journal,
+                    )
+                    if change_journal is not None:
+                        change_journal.finish()
+                        change_journal = None
+                embedded_chunks = 0
+                if note.format == "pdf" and not self.config.output.dry_run:
+                    with ingest_services(
+                        self.config, self.tagger, self.embedder,
+                        sensitive=force_local,
+                    ) as (_note_tagger, note_embedder):
+                        result = reconcile_unchanged_pdf(
+                            self.db, note_embedder, note, self.config,
+                            clean_content=self.security.sanitize_prompt(note.content),
+                            file_hash=file_hash,
+                            size_bytes=disk_stat.st_size,
+                            mtime_ns=disk_stat.st_mtime_ns,
+                            document_dates=document_dates,
+                        )
+                    embedded_chunks = result.embedded
+                elif not self.config.output.dry_run:
                     self.db.update_file_state(
                         str(file_path), file_hash,
                         disk_stat.st_size, disk_stat.st_mtime_ns,
                     )
-                logger.info("file_unchanged", path=rel)
-                self.event_log.write("skip", path=rel, reason="unchanged")
+                    self.db.record_document_dates(str(file_path), **document_dates)
+                if note.format == "pdf":
+                    logger.info(
+                        "pdf_same_text_refreshed", path=rel,
+                        embedded=embedded_chunks,
+                    )
+                    self.event_log.write(
+                        "preview" if self.config.output.dry_run else "processed",
+                        path=rel, reason="pdf_same_text_refresh",
+                        chunks=embedded_chunks,
+                        extraction_status=extraction["status"],
+                    )
+                    if progress is not None:
+                        if self.config.output.dry_run and refreshed:
+                            try:
+                                refreshed["target"] = str(
+                                    Path(refreshed["target"]).resolve().relative_to(
+                                        self.vault_root,
+                                    )
+                                )
+                            except (OSError, ValueError):
+                                refreshed["target"] = Path(refreshed["target"]).name
+                        progress.record(
+                            "previewed" if self.config.output.dry_run else "processed",
+                            rel, reason="pdf_same_text_refresh",
+                            chunks=embedded_chunks,
+                            changes=refreshed if self.config.output.dry_run else None,
+                        )
+                    if not self.config.output.dry_run:
+                        with self._counter_lock:
+                            self.processed_count += 1
+                        self.last_batch_time = time.monotonic()
+                else:
+                    logger.info("file_unchanged", path=rel)
+                    self.event_log.write("skip", path=rel, reason="unchanged")
+                    if progress is not None:
+                        progress.record("skipped", rel, reason="unchanged_content")
                 return
 
             with ingest_services(
@@ -323,7 +450,10 @@ class GrimoreDaemon:
 
                 # 5. Cognition: Tagging & Summary via LLM
                 clean_content = self.security.sanitize_prompt(note.content)
-                cognition_data = note_tagger.tag_note(clean_content)
+                cognition_data = tag_document(note_tagger, note, clean_content)
+                cognition_data = apply_classification_override(
+                    self.db, str(file_path), cognition_data,
+                )
 
                 # 6. Output: Update note frontmatter (inline for .md, sidecar
                 # for every other format).
@@ -333,6 +463,43 @@ class GrimoreDaemon:
                     "category": cognition_data.get("category", ""),
                     "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 }
+                extraction = extraction_diagnostics(note)
+                if extraction is not None:
+                    metadata_updates["extraction"] = extraction
+                if "section_analysis" in cognition_data:
+                    metadata_updates["section_analysis"] = cognition_data["section_analysis"]
+                elif "section_analysis" in note.metadata:
+                    metadata_updates["section_analysis"] = None
+                if self.config.output.dry_run:
+                    changes = self.writer.preview_metadata(
+                        note,
+                        metadata_updates,
+                        vault_root=self.vault_root,
+                        sidecar_dir=self.config.vault.sidecar_dir,
+                        write_sidecars=self.config.vault.write_sidecars,
+                    )
+                    if changes:
+                        try:
+                            changes["target"] = str(
+                                Path(changes["target"]).resolve().relative_to(
+                                    self.vault_root,
+                                )
+                            )
+                        except (OSError, ValueError):
+                            changes["target"] = Path(changes["target"]).name
+                else:
+                    changes = None
+                    try:
+                        change_journal = ChangeJournal(self.vault_root)
+                        change_journal.start(
+                            "daemon-scan",
+                            details={"source": "daemon", "path": rel},
+                        )
+                    except OSError as exc:
+                        logger.warning(
+                            "change_journal_unavailable", path=rel, error=str(exc),
+                        )
+                        change_journal = None
                 target = self.writer.write_metadata(
                     note,
                     metadata_updates,
@@ -340,11 +507,18 @@ class GrimoreDaemon:
                     sidecar_dir=self.config.vault.sidecar_dir,
                     write_sidecars=self.config.vault.write_sidecars,
                     dry_run=self.config.output.dry_run,
+                    change_journal=change_journal,
                 )
+
+                if change_journal is not None:
+                    change_journal.finish()
+                    change_journal = None
 
                 if self.config.output.dry_run:
                     self.event_log.write("preview", path=rel,
                                          tags=len(cognition_data.get("tags") or []))
+                    if progress is not None:
+                        progress.record("previewed", rel, changes=changes)
                     return
 
                 if not self.config.output.dry_run:
@@ -394,6 +568,12 @@ class GrimoreDaemon:
                     self.db.complete_note_indexing(
                         note_id, note.content_hash, file_hash,
                         disk_stat.st_size, disk_stat.st_mtime_ns,
+                        extraction_profile=(
+                            pdf_index_profile(self.config, extraction)
+                            if note.format == "pdf" else None
+                        ),
+                        extraction=extraction,
+                        **document_dates,
                     )
                     logger.info(
                         "file_embedded", path=rel,
@@ -410,11 +590,25 @@ class GrimoreDaemon:
                     path=rel,
                     tags=len(cognition_data.get("tags") or []),
                     chunks=chunk_count,
+                    extraction_status=(extraction["status"] if extraction else None),
                 )
+                if progress is not None:
+                    progress.record(
+                        "processed", rel, chunks=chunk_count,
+                        reason=("partial_extraction" if extraction and
+                                extraction["status"] == "partial" else None),
+                    )
 
         except Exception as e:
+            if change_journal is not None:
+                try:
+                    change_journal.finish("interrupted")
+                except Exception:
+                    pass
             logger.error("processing_failed", path=rel, error=str(e))
             self.event_log.write("error", path=rel, error=str(e))
+            if progress is not None:
+                progress.record("failed", rel, reason="processing", error=str(e))
             self.notifier.notify("Grimore: Critical Error", f"Error processing {file_path.name}")
 
     def remove_file(self, file_path: Path) -> None:
@@ -428,8 +622,14 @@ class GrimoreDaemon:
             return
         if self.config.output.dry_run:
             self.event_log.write("preview_delete", path=rel)
+            progress = getattr(self, "index_progress", None)
+            if progress is not None:
+                progress.record("previewed", rel, reason="delete")
             return
         removed = self.db.delete_note_by_path(str(resolved))
         if removed:
             logger.info("file_removed_from_index", path=rel)
             self.event_log.write("deleted", path=rel)
+            progress = getattr(self, "index_progress", None)
+            if progress is not None:
+                progress.record("removed", rel)

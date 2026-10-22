@@ -133,8 +133,8 @@ class TestHtmlAdapter:
             HtmlAdapter().extract(f, options=AdapterOptions(vault_root=tmp_path))
 
     def test_blockquote_wrapping_paragraph_is_not_double_counted(self, tmp_path):
-        # Regression: <blockquote><p>X</p></blockquote> used to emit "X"
-        # twice (once for the blockquote, once for the inner paragraph).
+        # A paragraph inside a blockquote must be emitted once, not once for
+        # each nested element.
         f = tmp_path / "q.html"
         f.write_text(
             "<html><body><h1>T</h1>"
@@ -145,9 +145,8 @@ class TestHtmlAdapter:
         assert doc.text.count("quoted text") == 1
 
     def test_nested_list_keeps_both_outer_and_inner_text(self, tmp_path):
-        # Regression: the dedup that fixed the blockquote case must not
-        # drop the outer <li>'s own text. The outer leaf grabs the whole
-        # subtree so we get both bits in one bundle.
+        # Preserve the outer list item's text while collecting its nested
+        # item; the outer leaf includes the whole subtree.
         f = tmp_path / "nest.html"
         f.write_text(
             "<html><body><h1>T</h1>"

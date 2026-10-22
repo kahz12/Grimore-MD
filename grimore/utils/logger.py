@@ -8,7 +8,7 @@ from typing import Any
 
 import structlog
 
-def setup_logger(json_format: bool = False):
+def setup_logger(json_format: bool = False, *, stream=None):
     """
     Configures the global logger with a standard pipeline of processors.
     If json_format is True, output will be structured JSON (ideal for the daemon).
@@ -29,7 +29,7 @@ def setup_logger(json_format: bool = False):
 
     structlog.configure(
         processors=processors,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=stream),
         wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
         cache_logger_on_first_use=True,
     )

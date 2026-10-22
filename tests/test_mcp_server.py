@@ -11,8 +11,8 @@ Tests cover:
 
 * the initialize / tools/list handshake;
 * each tool's contract (input validation + output shape);
-* JSON-RPC error codes for parse errors, unknown methods, unknown
-  tools, and missing required params;
+* JSON-RPC responses for malformed requests, unknown methods or tools,
+  and missing required params;
 * notifications produce no response (per spec).
 """
 from __future__ import annotations
@@ -20,8 +20,10 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from grimore.ingest.adapters.base import ExtractionIssue
 
 from grimore.mcp_server import MCPServer
 
@@ -45,6 +47,9 @@ def _stub_session(*, hits=None, ask_answer="hello", chunk_vectors=None,
 
     # Config knobs the search tool reads via getattr.
     session.config.cognition.hybrid_search = True
+    session.config.cognition.allow_remote = False
+    session.config.cognition.llm_backend = "ollama"
+    session.config.cognition.llm_base_url = ""
 
     # Embedder returns a deterministic 4-vector.
     session.embedder.embed.return_value = [1.0, 0.0, 0.0, 0.0]
@@ -109,15 +114,19 @@ class TestHandshake:
         assert result["serverInfo"]["name"] == "grimore"
         assert "protocolVersion" in result
         assert "tools" in result["capabilities"]
+        assert "execution is local" in result["instructions"]
 
     def test_tools_list_advertises_all_tools(self):
         srv = _server(_stub_session())
         resp = srv.handle_request(_request("tools/list"))
         names = [t["name"] for t in resp["result"]["tools"]]
         assert set(names) == {
+            "grimore_library_info",
             "grimore_ask",
             "grimore_search",
             "grimore_get_note",
+            "grimore_get_source",
+            "grimore_review_inbox",
             "grimore_connect",
             "grimore_list_categories",
         }
@@ -163,6 +172,22 @@ def _content_payload(resp) -> dict:
 
 
 class TestAskTool:
+    def test_model_failure_is_reported_not_disguised_as_missing_evidence(self):
+        session = _stub_session()
+        session.oracle.ask.return_value = {
+            "answer": "The Oracle is silent.", "sources": [],
+            "answer_status": "insufficient_evidence", "generation_error": "no_model_response"}
+        body = _content_payload(_call(_server(session), "grimore_ask", {"question": "What?"}))
+        assert body["generation_error"] == "no_model_response"
+
+    def test_forwards_optional_sufficiency_assessment(self):
+        session = _stub_session()
+        assessment = {"decision": "insufficient", "semantic_support": "unverified"}
+        session.oracle.ask.return_value = {"answer": "Evidencia insuficiente.",
+                                          "sufficiency": assessment}
+        body = _content_payload(_call(_server(session), "grimore_ask", {"question": "What?"}))
+        assert body["sufficiency"] == assessment
+
     def test_returns_answer_sources_and_drop_count(self):
         srv = _server(_stub_session(ask_answer="The answer."))
         resp = _call(srv, "grimore_ask", {"question": "What is X?"})
@@ -170,9 +195,43 @@ class TestAskTool:
         assert body == {
             "answer": "The answer.",
             "sources": ["Gothic#p.42"],
+            "source_details": [],
+            "citation_selections": None,
+            "answer_status": "uncertain",
+            "model_execution": {
+                "mode": "local",
+                "remote_allowed": False,
+                "chat": {"backend": "ollama", "mode": "local"},
+                "embeddings": {"backend": "ollama", "mode": "local"},
+            },
             "dropped_citations": 0,
         }
         srv.session.oracle.ask.assert_called_once_with("What is X?", top_k=5)
+
+    def test_forwards_indexed_pdf_coverage_in_cited_source(self):
+        session = _stub_session()
+        coverage = {
+            "status": "partial", "missing_pages": [2],
+            "missing_page_count": 1,
+        }
+        session.oracle.ask.return_value = {
+            "answer": "Cited [[Gothic#p.1]].",
+            "sources": ["Gothic#p.1"],
+            "source_details": [{
+                "label": "Gothic#p.1", "indexed_extraction": coverage,
+            }],
+            "answer_status": "supported",
+            "citation_selections": [{"citation_index": 0, "label": "Gothic#p.1", "form": "short",
+                                     "citation_ref": "cite:1", "source_detail_indices": [0], "selection": "exact"}],
+        }
+
+        body = _content_payload(_call(
+            _server(session), "grimore_ask", {"question": "What is X?"},
+        ))
+
+        assert body["answer_status"] == "supported"
+        assert body["source_details"][0]["indexed_extraction"] == coverage
+        assert body["citation_selections"] == session.oracle.ask.return_value["citation_selections"]
 
     def test_top_k_is_forwarded(self):
         srv = _server(_stub_session())
@@ -266,6 +325,39 @@ class TestGetNoteTool:
         body = _content_payload(resp)
         assert body["found"] is True
 
+    def test_pdf_result_exposes_missing_page(self, tmp_path, monkeypatch):
+        note_file = tmp_path / "incomplete.pdf"
+        note_file.write_bytes(b"placeholder")
+        sess = _stub_session(note_path=str(note_file))
+        parser = MagicMock()
+        parser.parse_file.return_value = SimpleNamespace(
+            content="Only page two was read.", format="pdf",
+            issues=[ExtractionIssue("page_text_unavailable", page=1, engine="pypdf")],
+        )
+        monkeypatch.setattr("grimore.mcp_server.MarkdownParser", lambda: parser)
+
+        body = _content_payload(_call(_server(sess), "grimore_get_note", {"note_id": 7}))
+
+        assert body["extraction"]["status"] == "partial"
+        assert body["extraction"]["issues"][0]["page"] == 1
+
+    def test_current_file_read_failure_is_explicit(self, tmp_path, monkeypatch):
+        note_file = tmp_path / "unreadable.pdf"
+        note_file.write_bytes(b"placeholder")
+        sess = _stub_session(note_path=str(note_file))
+        parser = MagicMock()
+        parser.parse_file.side_effect = ValueError("invalid PDF")
+        monkeypatch.setattr("grimore.mcp_server.MarkdownParser", lambda: parser)
+
+        body = _content_payload(_call(_server(sess), "grimore_get_note", {"note_id": 7}))
+
+        assert body["found"] is True
+        assert body["body"] == ""
+        assert body["extraction"] == {
+            "status": "failed",
+            "issues": [{"code": "document_read_failed", "page": None}],
+        }
+
     def test_path_outside_vault_returns_not_found(self, tmp_path):
         # A DB row whose path escapes the vault (tampered index, or a
         # symlink swapped after scan) must not become an arbitrary-file
@@ -349,7 +441,7 @@ class TestListCategoriesTool:
         }
 
 
-# ── error handling ──────────────────────────────────────────────────────
+# ── dispatcher outcomes ─────────────────────────────────────────────────
 
 
 class TestErrors:
@@ -360,7 +452,8 @@ class TestErrors:
 
     def test_handler_exception_returned_as_isError_payload(self):
         # Force a non-ValueError exception inside a handler — should be
-        # wrapped in an MCP "isError: true" payload, not a JSON-RPC error.
+        # wrapped in the MCP-specific ``isError`` payload while the JSON-RPC
+        # response retains its success envelope.
         sess = _stub_session()
         sess.oracle.ask.side_effect = RuntimeError("model exploded")
         srv = _server(sess)

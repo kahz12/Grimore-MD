@@ -81,8 +81,8 @@ def _do_ask(
     attachments (``@note`` mentions, ``/pin`` pins) that should ride
     alongside the question into the RAG context.
 
-    Returns the result dict ``{"answer": str, "sources": list[str]}``
-    so the shell can log it as ``session.last_answer``.
+    Returns the result dict with the legacy source labels plus structured
+    ``source_details`` so the shell can inspect the exact indexed passages.
     """
     config = session.config
 
@@ -106,6 +106,8 @@ def _do_ask(
         ui.section("Oracle")
         answer_chunks: list[str] = []
         sources: list[str] = []
+        source_details: list[dict] = []
+        answer_status = "uncertain"
         dropped_citations = 0
         stream_iter = session.oracle.ask_stream(
             question,
@@ -127,6 +129,7 @@ def _do_ask(
                 if event["type"] in ("token", "done"):
                     break
 
+        done_event: dict = {}
         if first_event is not None:
             if first_event["type"] == "token":
                 console.print(
@@ -134,8 +137,7 @@ def _do_ask(
                 )
                 answer_chunks.append(first_event["text"])
             elif first_event["type"] == "done":
-                sources = first_event["sources"]
-                dropped_citations = first_event.get("dropped_citations", 0)
+                done_event = first_event
 
         # Drain the rest of the stream without the spinner — tokens now
         # flow at their natural cadence.
@@ -144,20 +146,27 @@ def _do_ask(
                 console.print(event["text"], end="", soft_wrap=True, markup=False)
                 answer_chunks.append(event["text"])
             elif event["type"] == "done":
-                sources = event["sources"]
-                dropped_citations = event.get("dropped_citations", 0)
+                done_event = event
+        if done_event:
+            sources = done_event.get("sources") or []
+            source_details = done_event.get("source_details") or []
+            answer_status = done_event.get("answer_status") or "uncertain"
+            dropped_citations = done_event.get("dropped_citations", 0)
+        # Some answers arrive whole in the final event (the sufficiency check
+        # buffers its validated claims); nothing was streamed, so show it here.
+        if not answer_chunks and done_event.get("answer"):
+            console.print(done_event["answer"], soft_wrap=True, markup=False)
+            answer_chunks.append(done_event["answer"])
         console.print()
-        if not answer_chunks:
-            console.print()
-            console.print(ui.warn_panel(
-                "The Oracle returned no tokens. Is Ollama running?",
-                title="Silence",
-            ))
         result = {
             "answer": "".join(answer_chunks),
             "sources": sources,
+            "source_details": source_details,
+            "answer_status": answer_status,
             "dropped_citations": dropped_citations,
         }
+        if done_event.get("generation_error"):
+            result["generation_error"] = done_event["generation_error"]
     else:
         with console.status(
             "[grimore.mystic]The Oracle listens to the whispers...[/]",
@@ -166,7 +175,21 @@ def _do_ask(
             result = session.oracle.ask(question,
             filter_note_ids=filter_note_ids, top_k=top_k, **extra_kw)
         console.print()
-        console.print(ui.oracle_panel(result["answer"]))
+        if not result.get("generation_error"):
+            console.print(ui.oracle_panel(result["answer"]))
+
+    # A model that never answered says nothing about the evidence: skip the
+    # sources and status panels, which would read as "insufficient evidence".
+    if result.get("generation_error"):
+        console.print(ui.warn_panel(
+            "The model returned no answer: it may have timed out or Ollama may "
+            "be down. Check [cyan]ollama ps[/]; on slow hardware raise "
+            "[cyan]request_timeout_s[/] (or [cyan]stream_timeout_s[/] for "
+            "streamed answers) under \\[cognition] in grimore.toml."
+            + (" Nothing was exported." if export else ""),
+            title="No answer",
+        ))
+        return result
 
     if result["sources"]:
         ui.section("Cited sources")
@@ -177,6 +200,17 @@ def _do_ask(
             ))
     else:
         ui.tip("The Oracle found no relevant notes. Have you run [cyan]grimore scan[/]?")
+
+    status = result.get("answer_status")
+    if status and status != "supported":
+        labels = {
+            "insufficient_evidence": "Insufficient evidence",
+            "conflicting_evidence": "Conflicting evidence",
+            "uncertain": "Uncertain evidence",
+        }
+        console.print(ui.warn_panel(
+            labels.get(status, status), title="Answer status",
+        ))
 
     if result.get("dropped_citations"):
         n = result["dropped_citations"]
@@ -207,6 +241,7 @@ def _do_ask(
             "title": f"Oracle: {question[:30]}...",
             "date": time.strftime("%Y-%m-%d"),
             "type": "oracle_response",
+            "answer_status": result.get("answer_status") or "uncertain",
         }
         frontmatter_yaml = yaml.safe_dump(
             frontmatter_payload,
@@ -214,12 +249,38 @@ def _do_ask(
             sort_keys=False,
             default_flow_style=False,
         )
+        evidence_blocks = []
+        for detail in result.get("source_details") or []:
+            document = detail.get("document") or {}
+            locator = detail.get("locator") or {}
+            passage = detail.get("passage") or {}
+            anchor = ""
+            if locator.get("page") is not None:
+                anchor = f" · page {locator['page']}"
+            elif locator.get("heading"):
+                anchor = f" · {locator['heading']}"
+            quoted = "\n".join(
+                f"> {line}" if line else ">"
+                for line in str(passage.get("text") or "").splitlines()
+            )
+            evidence_blocks.append(
+                f"### [[{detail.get('label') or document.get('title') or 'Source'}]]\n\n"
+                f"- Path: `{document.get('path') or 'unavailable'}`{anchor}\n"
+                f"- State: `{detail.get('source_state') or 'unverified'}`\n"
+                f"- Passage: `{passage.get('completeness') or 'excerpt'}`\n\n"
+                f"{quoted}\n"
+            )
+        evidence_section = (
+            "\n\n## Evidence\n\n" + "\n".join(evidence_blocks)
+            if evidence_blocks else ""
+        )
         body = (
             f"---\n{frontmatter_yaml}---\n\n"
             f"# 🔮 Question: {question}\n\n"
             f"{result['answer']}"
             f"\n\n## Sources\n"
             + "".join(f"- [[{source}]]\n" for source in result["sources"])
+            + evidence_section
         )
         atomic_write(
             export_path,
@@ -558,6 +619,7 @@ def _do_eval(
     export: Optional[Path] = None,
     history: Optional[Path] = None,
     compare: Optional[Path] = None,
+    checkpoint: Optional[Path] = None,
 ) -> dict:
     """Body of ``grimore eval``: load the YAML golden set, run every case
     through the Oracle, render the Rich summary, optionally dump JSON.
@@ -575,6 +637,10 @@ def _do_eval(
     renders the per-metric delta to quantify what fusion buys. The return
     shape then carries ``comparison``/``hybrid``/``baseline`` instead of a
     single summary.
+
+    ``checkpoint`` resumes a single run from a JSONL file (see
+    :func:`~grimore.cognition.eval.run_eval`); it cannot be combined with
+    ``baseline``, whose two arms would share one file.
     """
     from grimore.cognition.eval import (
         load_golden, run_eval, run_baseline, export_report,
@@ -593,6 +659,14 @@ def _do_eval(
     if retrieval_only:
         judge = False  # nothing to judge without a generated answer
 
+    if baseline and checkpoint is not None:
+        console.print(ui.error_panel(
+            "[cyan]--checkpoint[/] resumes a single run; it can't be combined "
+            "with [cyan]--baseline[/].",
+            title="Eval options",
+        ))
+        raise typer.Exit(code=1)
+
     cases = load_golden(golden_path)
     if not cases:
         console.print(ui.warn_panel(
@@ -604,6 +678,13 @@ def _do_eval(
     mode = "retrieval-only" if retrieval_only else "full"
     if baseline:
         mode += " · baseline(RRF vs dense)"
+    provenance = run_provenance(session, golden_path)
+    provenance["run"] = {
+        "mode": mode,
+        "top_k": top_k,
+        "retrieval_k": retrieval_k,
+        "judge": judge,
+    }
     ui.command_header(
         "eval",
         f"→ {golden_path} · {mode} · top-k={top_k} · retrieval-k={retrieval_k} "
@@ -627,6 +708,8 @@ def _do_eval(
             session, cases, top_k=top_k, retrieval_k=retrieval_k,
             generate=not retrieval_only, judge=judge,
         )
+        hybrid.provenance = {**provenance, "arm": "hybrid"}
+        base.provenance = {**provenance, "arm": "dense-only"}
         render_comparison(hybrid, base, console)
         result = {
             "comparison": comparison_summary(hybrid, base),
@@ -641,10 +724,24 @@ def _do_eval(
             ))
         return result
 
-    report = run_eval(
-        session, cases, top_k=top_k, retrieval_k=retrieval_k,
-        generate=not retrieval_only, judge=judge,
-    )
+    try:
+        report = run_eval(
+            session, cases, top_k=top_k, retrieval_k=retrieval_k,
+            generate=not retrieval_only, judge=judge, checkpoint=checkpoint,
+        )
+    except ValueError as exc:  # checkpoint from a different run
+        console.print(ui.error_panel(str(exc), title="Checkpoint"))
+        raise typer.Exit(code=1) from exc
+    if checkpoint is not None:
+        provenance["run"]["checkpoint"] = report.provenance.get("checkpoint")
+        restored = provenance["run"]["checkpoint"]["restored_cases"]
+        if restored:
+            console.print(ui.info_panel(
+                f"Restored [bold]{restored}[/] of {len(cases)} case(s) from "
+                f"[cyan]{checkpoint}[/].",
+                title="Checkpoint",
+            ))
+    report.provenance = provenance
     report.render(console)
     summary = report.summary()
 
@@ -657,7 +754,6 @@ def _do_eval(
 
     # Append a one-line record to the history ledger for trend tracking.
     if history is not None:
-        provenance = run_provenance(session, golden_path)
         append_history(
             history, summary, provenance,
             run_meta={"mode": mode, "top_k": top_k, "retrieval_k": retrieval_k},
@@ -898,6 +994,21 @@ def _do_mirror_scan(session: Session, *, top_k: int = 5, full: bool = False) -> 
     ))
     if report.contradictions_found:
         ui.tip("Run [cyan]grimore mirror[/] to review the new findings.")
+    if report.coverage_gaps:
+        ui.section(f"Claim extraction incomplete ({len(report.coverage_gaps)} source parts)")
+        vault_root = session.vault_root.resolve()
+        for gap in report.coverage_gaps:
+            try:
+                path = str(Path(gap.note_path).resolve().relative_to(vault_root))
+            except ValueError:
+                path = Path(gap.note_path).name
+            location = f"page {gap.page}" if gap.page is not None else f"section {gap.section}"
+            if gap.heading:
+                location += f" · {gap.heading[:80]}"
+            if gap.part > 1:
+                location += f" · part {gap.part}"
+            reason = "model failed; previous claims kept" if gap.reason == "llm_failed" else "analysis budget"
+            console.print(Text(f"  {path} — {location}: {reason}", style="grimore.warning"))
 
 
 def _do_mirror_show(session: Session, contradiction_id: int) -> None:
@@ -976,6 +1087,7 @@ def _do_distill(
     panel with the resolved sources and the output path.
     """
     from grimore.cognition.synthesizer import Synthesizer
+    from grimore.output.change_journal import ChangeJournal
 
     if not tag and not category:
         console.print(ui.error_panel(
@@ -991,6 +1103,14 @@ def _do_distill(
         return
 
     synth = Synthesizer(session)
+    change_journal = None
+    if not dry_run:
+        try:
+            change_journal = ChangeJournal(session.vault_root)
+            change_journal.start("distill", details={"source": "cli"})
+        except OSError as exc:
+            logger.warning("change_journal_unavailable", error=str(exc))
+            change_journal = None
     with console.status(
         "[grimore.mystic]The Synthesizer distills the chosen notes...[/]",
         spinner="dots12",
@@ -1001,10 +1121,19 @@ def _do_distill(
                 category=category,
                 passages_per_note=passages_per_note,
                 dry_run=dry_run,
+                change_journal=change_journal,
             )
         except ValueError as e:
+            if change_journal is not None:
+                change_journal.finish("interrupted")
             console.print(ui.error_panel(str(e), title="Synthesizer"))
             return
+
+    if change_journal is not None:
+        change_journal.finish(
+            "completed" if report.output_path and not report.skipped_reason
+            else "interrupted",
+        )
 
     if report.skipped_reason:
         console.print(ui.warn_panel(report.skipped_reason, title="Synthesizer"))

@@ -21,6 +21,7 @@ from typing import Any, Iterable, Optional, Union
 from grimore.ingest.adapters import (
     AdapterOptions,
     ExtractedDocument,
+    ExtractionIssue,
     ExtractedSection,
     for_path,
 )
@@ -136,6 +137,7 @@ class ParsedNote:
     file_hash: str = ""
     sections: list[ExtractedSection] = field(default_factory=list)
     size_bytes: int = 0
+    issues: list[ExtractionIssue] = field(default_factory=list)
 
     @classmethod
     def from_extracted(cls, doc: ExtractedDocument) -> "ParsedNote":
@@ -149,8 +151,23 @@ class ParsedNote:
             format=doc.format,
             file_hash=doc.file_hash,
             sections=list(doc.sections),
+            issues=list(doc.issues),
             size_bytes=doc.size_bytes,
         )
+
+
+def extraction_diagnostics(note: ParsedNote) -> dict | None:
+    """Public, bounded account of extraction coverage for supported formats."""
+    issues = list(getattr(note, "issues", []) or [])
+    if getattr(note, "format", None) != "pdf" and not issues:
+        return None
+    return {
+        "status": (
+            "partial" if any(not issue.recovered for issue in issues)
+            else "recovered" if issues else "complete"
+        ),
+        "issues": [issue.as_dict() for issue in issues],
+    }
 
 
 class MarkdownParser:

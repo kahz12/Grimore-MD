@@ -59,9 +59,8 @@ class SchemaMixin(DbBase):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         # Wait for a writer instead of failing instantly. WAL allows N readers
-        # plus one writer, so with the daemon indexing while the CLI queries,
-        # the loser of a write race previously surfaced as "database is
-        # locked". Five seconds is far longer than any single statement here.
+        # plus one writer, so this gives a concurrent index operation time to
+        # finish before a query reports that the database is locked.
         conn.execute("PRAGMA busy_timeout=5000")
         # 16 MB page cache and a 256 MB mmap window. Both are per-connection
         # and were pointless when every query opened its own connection --
@@ -238,7 +237,10 @@ class SchemaMixin(DbBase):
             )
             self._fts_available = self._migrate_fts_index(conn)
             self._migrate_freshness_table(conn)
+            self._migrate_temporal_table(conn)
             self._migrate_mirror_tables(conn)
+            self._migrate_review_tables(conn)
+            self._migrate_classification_override_tables(conn)
             if self._vec_available:
                 self._migrate_vec_table(conn)
             self._migrate_embedding_migration_table(conn)
@@ -387,6 +389,10 @@ class SchemaMixin(DbBase):
             conn.execute("ALTER TABLE notes ADD COLUMN size_bytes INTEGER")
         if "mtime_ns" not in note_cols:
             conn.execute("ALTER TABLE notes ADD COLUMN mtime_ns INTEGER")
+        if "extraction_profile" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN extraction_profile TEXT")
+        if "extraction_json" not in note_cols:
+            conn.execute("ALTER TABLE notes ADD COLUMN extraction_json TEXT")
 
         emb_cols = {row[1] for row in conn.execute("PRAGMA table_info(embeddings)")}
         if "page" not in emb_cols:
@@ -399,6 +405,14 @@ class SchemaMixin(DbBase):
         # first contact, which back-fills naturally without an explicit pass.
         if "chunk_hash" not in emb_cols:
             conn.execute("ALTER TABLE embeddings ADD COLUMN chunk_hash TEXT")
+        # The search/rerank column may deliberately keep only a short prefix,
+        # but citations need the complete indexed passage.  Keeping the full
+        # text beside the embedding preserves the exact version that informed
+        # an answer even if the source file later changes or disappears.
+        if "full_text_content" not in emb_cols:
+            conn.execute(
+                "ALTER TABLE embeddings ADD COLUMN full_text_content TEXT"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_embeddings_chunk_hash "
             "ON embeddings(note_id, chunk_hash)"
@@ -411,16 +425,150 @@ class SchemaMixin(DbBase):
         Only notes with a finite category window land here; exempt
         categories ("never stale") have no row at all.
         """
+        columns = conn.execute("PRAGMA table_info(freshness)").fetchall()
+        needs_rebuild = bool(columns) and (
+            next((row[3] for row in columns if row[1] == "last_verified"), 0) == 1
+            or not any(row[1] == "verification_source" for row in columns)
+        )
+        if needs_rebuild:
+            # Legacy rows used the scan/tag timestamp as last_verified. That
+            # was not a human verification, so migrating it as such would
+            # falsely present imported notes as current. Preserve policy and
+            # decay columns, but deliberately make verification unknown.
+            conn.execute("ALTER TABLE freshness RENAME TO freshness_legacy")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS freshness (
-                note_path       TEXT PRIMARY KEY,
-                last_verified   TEXT NOT NULL,
-                window_days     INTEGER NOT NULL,
-                decay_check_at  TEXT,
-                likely_stale    INTEGER
+                note_path          TEXT PRIMARY KEY,
+                last_verified      TEXT,
+                verification_source TEXT,
+                legacy_anchor_at    TEXT,
+                legacy_anchor_source TEXT,
+                window_days        INTEGER NOT NULL,
+                decay_check_at     TEXT,
+                likely_stale       INTEGER
             )
             """
+        )
+        if needs_rebuild:
+            conn.execute(
+                "INSERT INTO freshness "
+                "(note_path, last_verified, verification_source, legacy_anchor_at, "
+                " legacy_anchor_source, window_days, decay_check_at, likely_stale) "
+                "SELECT note_path, NULL, NULL, last_verified, "
+                "'legacy:last_verified-untrusted', window_days, decay_check_at, "
+                "likely_stale FROM freshness_legacy"
+            )
+            conn.execute("DROP TABLE freshness_legacy")
+        else:
+            current = {row[1] for row in conn.execute("PRAGMA table_info(freshness)")}
+            if "legacy_anchor_at" not in current:
+                conn.execute("ALTER TABLE freshness ADD COLUMN legacy_anchor_at TEXT")
+            if "legacy_anchor_source" not in current:
+                conn.execute("ALTER TABLE freshness ADD COLUMN legacy_anchor_source TEXT")
+
+    @staticmethod
+    def _migrate_temporal_table(conn) -> None:
+        """Create the provenance-bearing document timeline."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS note_temporal (
+                note_id          INTEGER PRIMARY KEY,
+                published_at     TEXT,
+                published_source TEXT,
+                modified_at      TEXT,
+                modified_source  TEXT,
+                indexed_at       TEXT,
+                indexed_source   TEXT,
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE,
+                CHECK((published_at IS NULL) = (published_source IS NULL)),
+                CHECK((modified_at IS NULL) = (modified_source IS NULL)),
+                CHECK((indexed_at IS NULL) = (indexed_source IS NULL))
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_review_tables(conn) -> None:
+        """Create persistent review state and its append-only audit log."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS review_candidate_states (
+                candidate_id   TEXT PRIMARY KEY,
+                kind           TEXT NOT NULL,
+                decision       TEXT NOT NULL
+                               CHECK(decision IN ('confirm','dismiss','postpone')),
+                decided_at     TEXT NOT NULL,
+                postpone_until TEXT,
+                snapshot_json  TEXT NOT NULL,
+                source         TEXT NOT NULL DEFAULT 'web',
+                CHECK(
+                    (decision = 'postpone' AND postpone_until IS NOT NULL)
+                    OR (decision != 'postpone' AND postpone_until IS NULL)
+                )
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS review_decision_log (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id   TEXT NOT NULL,
+                kind           TEXT NOT NULL,
+                decision       TEXT NOT NULL
+                               CHECK(decision IN ('confirm','dismiss','postpone')),
+                decided_at     TEXT NOT NULL,
+                postpone_until TEXT,
+                snapshot_json  TEXT NOT NULL,
+                source         TEXT NOT NULL DEFAULT 'web',
+                CHECK(
+                    (decision = 'postpone' AND postpone_until IS NOT NULL)
+                    OR (decision != 'postpone' AND postpone_until IS NULL)
+                )
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_review_decision_candidate "
+            "ON review_decision_log(candidate_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_review_decision_time "
+            "ON review_decision_log(decided_at DESC)"
+        )
+
+    @staticmethod
+    def _migrate_classification_override_tables(conn) -> None:
+        """Create durable human category/tag overrides and their audit log."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS classification_overrides (
+                note_path  TEXT PRIMARY KEY,
+                category   TEXT,
+                tags_json  TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                source     TEXT NOT NULL DEFAULT 'web'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS classification_override_log (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_path          TEXT NOT NULL,
+                note_id            INTEGER,
+                previous_category  TEXT,
+                previous_tags_json TEXT NOT NULL,
+                category           TEXT,
+                tags_json          TEXT NOT NULL,
+                changed_at         TEXT NOT NULL,
+                source             TEXT NOT NULL DEFAULT 'web'
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_classification_override_log_path "
+            "ON classification_override_log(note_path, id DESC)"
         )
 
     @staticmethod

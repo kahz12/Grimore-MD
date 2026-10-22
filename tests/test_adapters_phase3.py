@@ -463,7 +463,7 @@ class TestDbAnchorRoundTrip:
         assert db.get_chunk_anchors(note_id, "page-one text") == (1, None)
         assert db.get_chunk_anchors(note_id, "page-two text") == (2, None)
         assert db.get_chunk_anchors(note_id, "heading-only text") == (None, "Intro")
-        # Unknown text returns the empty tuple, not an error.
+        # Unknown text has no inferred format.
         assert db.get_chunk_anchors(note_id, "nothing matches") == (None, None)
 
     def test_legacy_embedding_has_no_anchors(self, tmp_path):

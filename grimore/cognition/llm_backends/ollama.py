@@ -43,8 +43,8 @@ class OllamaBackend:
         # between validation and the request.
         # read_retries=0: a read timeout here means the model is still doing
         # prompt eval or generation, not that the request failed. Retrying
-        # throws that work away and re-queues behind it, so the connect-error
-        # retries (which do help when the daemon starts before Ollama is up)
+        # throws that work away and re-queues behind it, so the connection
+        # retries (which help when the daemon starts before Ollama is up)
         # are kept and the read ones are not.
         self.session = build_session(
             pins=SecurityGuard.loopback_pins(raw_host, allow_remote=allow_remote),

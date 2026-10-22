@@ -88,6 +88,35 @@ class TestEmbedTimeoutWiring:
         assert kwargs["timeout"] == 45
 
 
+class TestEmbeddingModelListing:
+    def test_lists_ollama_models_for_setup(self):
+        emb = Embedder(Config())
+        emb.session = MagicMock()
+        response = emb.session.get.return_value
+        response.json.return_value = {
+            "models": [
+                {"name": "nomic-embed-text:latest", "size": 274_000_000},
+                {"name": "qwen2.5:3b", "size": 2_000_000_000},
+                {"size": 1},
+            ],
+        }
+
+        assert emb.list_installed_models() == [
+            {"name": "nomic-embed-text:latest", "size": 274_000_000},
+            {"name": "qwen2.5:3b", "size": 2_000_000_000},
+        ]
+        emb.session.get.assert_called_once_with(
+            "http://localhost:11434/api/tags", timeout=10,
+        )
+
+    def test_listing_failure_is_soft(self):
+        emb = Embedder(Config())
+        emb.session = MagicMock()
+        emb.session.get.side_effect = OSError("offline")
+
+        assert emb.list_installed_models() == []
+
+
 class _DictCache:
     """Minimal EmbeddingCache backed by a dict."""
 

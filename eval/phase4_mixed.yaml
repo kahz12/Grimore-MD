@@ -1,0 +1,48 @@
+version: 1
+corpus_root: ../output/pdf
+documents:
+  - id: humedal-mixed-pdf
+    path: phase4_mixed_humedal.pdf
+    reading_order:
+      - page: 1
+        passages:
+          - Diseño de seguimiento
+          - Estaciones de muestreo
+          - Restauración vegetal
+          - Responsabilidades
+          - Corpus de evaluación Grimore
+      - page: 2
+        passages:
+          - Informe de restauración del Humedal
+          - Resumen ejecutivo
+          - Datos de referencia
+          - Corpus de evaluación Grimore
+      - page: 3
+        passages:
+          - Decisiones y alertas de revisión
+          - Umbrales de actuación
+          - Estado a junio de 2025
+          - Criterio de cierre
+          - Corpus de evaluación Grimore
+    table_rows:
+      - page: 1
+        cells: [Equipo Agua Clara, Muestreo de agua y custodia de resultados]
+      - page: 1
+        cells: [Comité Comunitario, Conteos participativos de aves y anfibios]
+      - page: 2
+        cells: [Fósforo total, "0,18 mg/L", "Menos de 0,10 mg/L"]
+      - page: 2
+        cells: [Cobertura de jacinto invasor, "8 ha", "Menos de 0,5 ha"]
+    page_anchors:
+      - page: 1
+        passage: Norte-01 funciona como punto de referencia
+      - page: 1
+        passage: No se aplican herbicidas dentro del espejo de agua
+      - page: 2
+        passage: El área de intervención aprobada es de 37,5 hectáreas
+      - page: 2
+        passage: Fósforo total
+      - page: 3
+        passage: La estación Sur-02 quedó sin datos en mayo de 2025
+      - page: 3
+        passage: cobertura de jacinto inferior a 0,5 hectáreas

@@ -3,6 +3,7 @@ Command Line Interface (CLI) for Project Grimore.
 This module defines the user commands for scanning vaults, connecting notes,
 consulting the Oracle (RAG), and managing the background daemon.
 """
+import os
 import sys
 import time
 from pathlib import Path
@@ -17,10 +18,17 @@ from grimore.cognition.embedder import Embedder
 from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.reembed import reembed_note
 from grimore.cognition.privacy import ingest_services
-from grimore.cognition.tagger import Tagger
-from grimore.ingest.parser import MarkdownParser, iter_vault_documents
+from grimore.cognition.tagger import Tagger, tag_document
+from grimore.ingest.extraction_profile import (
+    pdf_extraction_profile, pdf_index_profile, pdf_retry_pending,
+)
+from grimore.ingest.pdf_reconcile import reconcile_unchanged_pdf
+from grimore.ingest.parser import MarkdownParser, extraction_diagnostics, iter_vault_documents
+from grimore.memory.classification_overrides import apply_classification_override
 from grimore.memory.db import Database
+from grimore.temporal import derive_document_dates
 from grimore.utils.hashing import sha256_file
+from grimore.utils.index_progress import IndexProgressReporter
 from grimore.memory.maintenance import MaintenanceRunner
 from grimore.memory.taxonomy import load_taxonomy_from_vault, save_taxonomy_to_vault
 from grimore.operations import (
@@ -41,6 +49,7 @@ from grimore.operations import (
     _do_mirror_show,
 )
 from grimore.output.frontmatter_writer import FrontmatterWriter
+from grimore.output.change_journal import ChangeJournal
 from grimore import __version__
 from grimore.output.git_guard import GitGuard
 from grimore.output.link_injector import LinkInjector
@@ -148,6 +157,25 @@ def _preflight_or_exit(config, *, check_git: bool | None = None) -> PreflightRep
     return report
 
 
+def _preflight_for_recovery_ui(config) -> PreflightReport:
+    """Report startup problems without hiding the UI that can explain them."""
+    report = PreflightChecker(config).run(check_git=False)
+    if not report.ok:
+        console.print()
+        console.print(ui.warn_panel(
+            "Grimore is starting in recovery mode. Questions and indexing may "
+            "remain unavailable until the checks below are resolved.",
+            title="Preflight",
+        ))
+        _render_preflight_report(report)
+        console.print()
+    elif report.has_warnings:
+        console.print()
+        _render_preflight_report(report)
+        console.print()
+    return report
+
+
 @app.command(rich_help_panel="Knowledge ops")
 def scan(
     vault_path: Path = typer.Option(None, "--vault-path", "-p", help="Path to the vault"),
@@ -211,6 +239,24 @@ def scan(
         sidecar_dir=config.vault.sidecar_dir,
         sniff_magic=config.ingest.sniff_magic,
     )
+    index_progress = IndexProgressReporter(vault_root, "scan")
+    change_journal = None
+    change_set_id = None
+    if files and not is_dry_run:
+        try:
+            change_journal = ChangeJournal(vault_root)
+            change_set_id = change_journal.start(
+                "scan", details={"source": "cli", "file_count": len(files)},
+            )
+        except OSError as exc:
+            # Snapshot history is an additional safety layer. Keep the
+            # established scan behaviour when the private cache is unavailable
+            # and make the missing protection visible in structured logs.
+            logger.warning("change_journal_unavailable", error=str(exc))
+            change_journal = None
+    index_progress.start(
+        total=len(files), dry_run=is_dry_run, change_set_id=change_set_id,
+    )
 
     if not files:
         formats_label = ", ".join(config.vault.formats) or "md"
@@ -219,41 +265,60 @@ def scan(
             f"[cyan]{actual_vault_path}[/].",
             title="Empty vault",
         ))
+        index_progress.finish()
         return
 
-    stats = {"unchanged": 0, "processed": 0, "skipped": 0, "errors": 0, "chunks": 0}
+    stats = {
+        "unchanged": 0, "processed": 0, "refreshed": 0, "partial": 0,
+        "skipped": 0, "errors": 0, "chunks": 0,
+    }
+    current_pdf_profile = pdf_extraction_profile(config)
     ui.section(f"Scanning {len(files)} notes")
 
     with ui.progress_bar() as progress:
         task = progress.add_task("Scanning", total=len(files))
         for file in files:
             rel = file.relative_to(actual_vault_path)
+            rel_label = str(rel)
+            index_progress.begin_item(rel_label)
             progress.update(task, description=f"[grimore.muted]{rel}[/]")
 
             # Size+mtime is the O(1) fast path. Only read the whole
             # file when that cheap fingerprint changed or is not yet known.
             try:
                 disk_stat = file.stat()
-                stored_state = db.get_file_state(str(file))
-                if stored_state is not None and stored_state[1:] == (
+                stored_state = db.get_ingest_state(str(file))
+                profile_changed = bool(
+                    stored_state
+                    and (stored_state[3] == "pdf" or file.suffix.lower() == ".pdf")
+                    and stored_state[4] != current_pdf_profile
+                )
+                retry_pending = bool(
+                    stored_state and pdf_retry_pending(stored_state[4], config)
+                )
+                temporal_backfill = db.note_timeline_needs_backfill(str(file))
+                if not temporal_backfill and not profile_changed and stored_state is not None and stored_state[1:3] == (
                     disk_stat.st_size, disk_stat.st_mtime_ns,
                 ):
                     stats["unchanged"] += 1
+                    index_progress.record("skipped", rel_label, reason="unchanged_stat")
                     progress.advance(task)
                     continue
                 file_hash = sha256_file(file)
             except OSError as e:
                 stats["errors"] += 1
                 logger.error("file_hash_failed", path=str(file), error=str(e))
+                index_progress.record("failed", rel_label, reason="file_hash", error=str(e))
                 progress.advance(task)
                 continue
             stored_hash = stored_state[0] if stored_state else db.get_file_hash(str(file))
-            if stored_hash == file_hash:
+            if stored_hash == file_hash and not temporal_backfill and not profile_changed:
                 if not is_dry_run:
                     db.update_file_state(
                         str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
                     )
                 stats["unchanged"] += 1
+                index_progress.record("skipped", rel_label, reason="unchanged_bytes")
                 progress.advance(task)
                 continue
 
@@ -263,23 +328,87 @@ def scan(
             except Exception as e:
                 stats["errors"] += 1
                 logger.error("parse_failed", path=str(file), error=str(e))
+                index_progress.record("failed", rel_label, reason="parse", error=str(e))
                 progress.advance(task)
                 continue
+            document_dates = derive_document_dates(
+                note.metadata, note.format, mtime_ns=disk_stat.st_mtime_ns,
+            )
 
             # Respect privacy policy in frontmatter
             if note.metadata.get("privacy") == "never_process":
                 stats["skipped"] += 1
+                index_progress.record("skipped", rel_label, reason="privacy")
                 progress.advance(task)
                 continue
 
-            # Idempotency check: the extracted *text* is unchanged. Keep
-            # the file_hash fresh so the next scan also fast-skips.
-            if db.get_content_hash_by_path(str(file)) == note.content_hash:
-                if not is_dry_run:
+            # Identical extracted text does not imply identical PDF page
+            # anchors. Refresh the sidecar and reconcile the indexed chunks
+            # before publishing the new file fingerprint. A failed write or
+            # embedding stays retryable on the next scan.
+            if ((not profile_changed or retry_pending) and
+                    db.get_content_hash_by_path(str(file)) == note.content_hash):
+                extraction = extraction_diagnostics(note)
+                try:
+                    refreshed = (
+                        writer.refresh_extraction_metadata(
+                            note, extraction,
+                            vault_root=vault_root,
+                            sidecar_dir=config.vault.sidecar_dir,
+                            write_sidecars=config.vault.write_sidecars,
+                            dry_run=is_dry_run,
+                            change_journal=change_journal,
+                        ) if extraction is not None else None
+                    )
+                    embedded_chunks = 0
+                    if note.format == "pdf" and not is_dry_run:
+                        sensitive_findings = security.scan_for_sensitive_data(note.content)
+                        with ingest_services(
+                            config, tagger, embedder,
+                            sensitive=bool(sensitive_findings),
+                        ) as (_note_tagger, note_embedder):
+                            result = reconcile_unchanged_pdf(
+                                db, note_embedder, note, config,
+                                clean_content=security.sanitize_prompt(note.content),
+                                file_hash=file_hash,
+                                size_bytes=disk_stat.st_size,
+                                mtime_ns=disk_stat.st_mtime_ns,
+                                document_dates=document_dates,
+                            )
+                        embedded_chunks = result.embedded
+                except Exception as exc:
+                    stats["errors"] += 1
+                    logger.error("pdf_same_text_refresh_failed", path=str(file), error=str(exc))
+                    index_progress.record(
+                        "failed", rel_label, reason="pdf_same_text_refresh", error=str(exc),
+                    )
+                    progress.advance(task)
+                    continue
+                if note.format != "pdf" and not is_dry_run:
                     db.update_file_state(
                         str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
                     )
-                stats["unchanged"] += 1
+                    db.record_document_dates(str(file), **document_dates)
+                if note.format == "pdf":
+                    stats["refreshed"] += 1
+                    stats["chunks"] += embedded_chunks
+                    if extraction and extraction["status"] == "partial":
+                        stats["partial"] += 1
+                    if is_dry_run and refreshed:
+                        try:
+                            refreshed["target"] = str(
+                                Path(refreshed["target"]).resolve().relative_to(vault_root)
+                            )
+                        except (OSError, ValueError):
+                            refreshed["target"] = Path(refreshed["target"]).name
+                    index_progress.record(
+                        "previewed" if is_dry_run else "processed", rel_label,
+                        reason="pdf_same_text_refresh", chunks=embedded_chunks,
+                        changes=refreshed if is_dry_run else None,
+                    )
+                else:
+                    stats["unchanged"] += 1
+                    index_progress.record("skipped", rel_label, reason="unchanged_content")
                 progress.advance(task)
                 continue
 
@@ -296,20 +425,61 @@ def scan(
                     clean_content = security.sanitize_prompt(note.content)
 
                     # Generate cognitive metadata: tags, summary, category, and links.
-                    cognition_data = note_tagger.tag_note(clean_content)
+                    cognition_data = tag_document(note_tagger, note, clean_content)
+                    cognition_data = apply_classification_override(
+                        db, str(file), cognition_data,
+                    )
+
+                    metadata_updates = {
+                        "tags": cognition_data["tags"],
+                        "summary": cognition_data["summary"],
+                        "category": cognition_data.get("category", ""),
+                        "last_tagged": time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                        ),
+                    }
+                    extraction = extraction_diagnostics(note)
+                    if extraction is not None:
+                        metadata_updates["extraction"] = extraction
+                    if "section_analysis" in cognition_data:
+                        metadata_updates["section_analysis"] = cognition_data["section_analysis"]
+                    elif "section_analysis" in note.metadata:
+                        metadata_updates["section_analysis"] = None
 
                     if is_dry_run:
+                        changes = writer.preview_metadata(
+                            note,
+                            metadata_updates,
+                            vault_root=vault_root,
+                            sidecar_dir=config.vault.sidecar_dir,
+                            write_sidecars=config.vault.write_sidecars,
+                        )
+                        if changes:
+                            try:
+                                changes["target"] = str(
+                                    Path(changes["target"]).resolve().relative_to(vault_root)
+                                )
+                            except (OSError, ValueError):
+                                changes["target"] = Path(changes["target"]).name
                         stats["processed"] += 1
+                        if extraction and extraction["status"] == "partial":
+                            stats["partial"] += 1
                         logger.info(
                             "dry_run_preview",
                             path=str(file),
                             tags=cognition_data["tags"],
                             summary=cognition_data["summary"][:80],
                         )
+                        index_progress.record(
+                            "previewed", rel_label, changes=changes,
+                            reason=("partial_extraction" if extraction and
+                                    extraction["status"] == "partial" else None),
+                        )
                         progress.advance(task)
                         continue
 
                     try:
+                        embedded_chunks = 0
                         # Take the safety snapshot immediately before writing.
                         if config.output.auto_commit and git_guard.is_repo_ready():
                             git_guard.commit_pre_change(str(file))
@@ -318,12 +488,6 @@ def scan(
                         # For .md the writer mutates the source file in place;
                         # for everything else it materialises (or refreshes) a
                         # sidecar .md under <vault>/<sidecar_dir>/.
-                        metadata_updates = {
-                            "tags": cognition_data["tags"],
-                            "summary": cognition_data["summary"],
-                            "category": cognition_data.get("category", ""),
-                            "last_tagged": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        }
                         target = writer.write_metadata(
                             note,
                             metadata_updates,
@@ -331,6 +495,7 @@ def scan(
                             sidecar_dir=config.vault.sidecar_dir,
                             write_sidecars=config.vault.write_sidecars,
                             dry_run=False,
+                            change_journal=change_journal,
                         )
 
                         # Markdown metadata is written into the source itself. Persist
@@ -378,27 +543,55 @@ def scan(
                                 ),
                             )
                             stats["chunks"] += result.embedded
+                            embedded_chunks = result.embedded
                             if result.stored != len(candidate_chunks):
                                 raise RuntimeError("embedding incomplete; file remains pending for retry")
                             db.complete_note_indexing(
                                 note_id, note.content_hash, file_hash,
                                 disk_stat.st_size, disk_stat.st_mtime_ns,
+                                extraction_profile=(
+                                    pdf_index_profile(config, extraction)
+                                    if note.format == "pdf" else None
+                                ),
+                                extraction=extraction,
+                                **document_dates,
                             )
 
                         stats["processed"] += 1
+                        if extraction and extraction["status"] == "partial":
+                            stats["partial"] += 1
+                        index_progress.record(
+                            "processed", rel_label, chunks=embedded_chunks,
+                            reason=("partial_extraction" if extraction and
+                                    extraction["status"] == "partial" else None),
+                        )
                     except Exception as e:
                         stats["errors"] += 1
                         logger.error("processing_failed", path=str(file), error=str(e))
+                        index_progress.record(
+                            "failed", rel_label, reason="processing", error=str(e),
+                        )
 
                     progress.advance(task)
             except Exception as exc:
                 stats["errors"] += 1
                 logger.error("processing_failed", path=str(file), error=str(exc))
+                index_progress.record(
+                    "failed", rel_label, reason="processing", error=str(exc),
+                )
                 progress.advance(task)
+
+    index_progress.finish()
+    if change_journal is not None:
+        change_journal.finish(
+            "completed_with_errors" if stats["errors"] else "completed",
+        )
 
     # ── Summary ────────────────────────────────────────────────────────────
     summary_rows = [
         ("Processed",  Text(str(stats["processed"]), style="grimore.success")),
+        ("PDFs refreshed", Text(str(stats["refreshed"]), style="grimore.accent")),
+        ("Partial extraction", Text(str(stats["partial"]), style="grimore.warning")),
         ("Unchanged",  Text(str(stats["unchanged"]), style="grimore.muted")),
         ("Skipped",    Text(str(stats["skipped"]),   style="grimore.warning")),
         ("Errors",     Text(str(stats["errors"]),    style="grimore.danger" if stats["errors"] else "grimore.muted")),
@@ -407,7 +600,7 @@ def scan(
     console.print()
     console.print(ui.success_panel(ui.kv_table(summary_rows), title="Scan Summary"))
 
-    if is_dry_run and stats["processed"] > 0:
+    if is_dry_run and (stats["processed"] > 0 or stats["refreshed"] > 0):
         ui.tip("This was a dry run. Run [cyan]grimore scan --no-dry-run[/] to apply changes.")
 
 
@@ -469,6 +662,15 @@ def connect(
             title="No vector memory",
         ))
         return
+
+    change_journal = None
+    if not is_dry_run:
+        try:
+            change_journal = ChangeJournal(Path(config.vault.path))
+            change_journal.start("connect", details={"source": "cli"})
+        except OSError as exc:
+            logger.warning("change_journal_unavailable", error=str(exc))
+            change_journal = None
 
     ui.section(f"Searching connections between {len(note_vectors)} notes")
 
@@ -555,6 +757,7 @@ def connect(
                     vault_root=Path(config.vault.path),
                     sidecar_dir=config.vault.sidecar_dir,
                     dry_run=is_dry_run,
+                    change_journal=change_journal,
                 )
 
     console.print()
@@ -565,6 +768,8 @@ def connect(
         ]),
         title="Connection summary",
     ))
+    if change_journal is not None:
+        change_journal.finish()
 
 
 @app.command(rich_help_panel="Knowledge ops")
@@ -659,18 +864,25 @@ def eval(
         None, "--compare",
         help="Diff against a previous --export run; exits non-zero on any regression.",
     ),
+    checkpoint: Optional[Path] = typer.Option(
+        None, "--checkpoint",
+        help="Save each finished case to this JSONL file and resume from it on "
+             "rerun; cases whose generation failed are asked again.",
+    ),
     json_logs: bool = typer.Option(False, "--json", help="Emit logs in JSON format."),
 ):
     """
     📊 Evaluate retrieval + answer quality against a golden YAML.
 
-    Reports Hit@1/Hit@3, MRR, recall@k, citation faithfulness, keyword recall,
+    Reports Hit@1/Hit@3, MRR, recall@k, citation validity and coverage,
+    keyword recall,
     an LLM-as-judge relevance score, and p50/p95 latency. Read-only (no vault
     writes). Skip the judge with --no-judge for fast offline runs, or use
     --retrieval-only to score ranking alone (no answer LLM) on every change.
     Add --baseline to quantify the hybrid-fusion (RRF) uplift over dense-only.
     Track trends with --history <ledger.jsonl> and gate CI with
-    --compare <previous.json> (non-zero exit on regression).
+    --compare <previous.json> (non-zero exit on regression). Long runs can
+    survive interruptions with --checkpoint <run.jsonl>.
     """
     setup_logger(json_format=json_logs)
     config = load_config()
@@ -682,7 +894,7 @@ def eval(
     _do_eval(
         session, golden, top_k=top_k, retrieval_k=retrieval_k,
         retrieval_only=retrieval_only, baseline=baseline, judge=judge,
-        export=export, history=history, compare=compare,
+        export=export, history=history, compare=compare, checkpoint=checkpoint,
     )
 
 
@@ -977,6 +1189,7 @@ def _render_status_dashboard(config) -> None:
     ``load_config()``.
     """
     from grimore.utils.paths import daemon_lock_path
+    from grimore.utils.connectivity import cognition_connectivity
     from grimore.utils.system import is_running
 
     db = Database(config.memory.db_path)
@@ -1015,6 +1228,7 @@ def _render_status_dashboard(config) -> None:
 
     ui.section("Cognition")
     backend_name = getattr(config.cognition, "llm_backend", "ollama") or "ollama"
+    connectivity = cognition_connectivity(config)
     console.print(ui.kv_table([
         ("Backend",      Text(backend_name,                            style="grimore.accent")),
         ("LLM",          Text(config.cognition.model_llm_local,        style="grimore.accent")),
@@ -1022,15 +1236,19 @@ def _render_status_dashboard(config) -> None:
         ("Unique tags",  Text(str(unique_tags),                        style="grimore.accent")),
         ("Categories",   Text(f"{len(category_rows)} active · {categorised_notes} notes",
                               style="grimore.accent")),
-        ("Remote",       Text("allowed" if config.cognition.allow_remote else "local-first",
-                              style="grimore.warning" if config.cognition.allow_remote else "grimore.success")),
+        ("Execution",    Text(connectivity["mode"],
+                              style="grimore.warning" if connectivity["mode"] != "local" else "grimore.success")),
+        ("Chat route",   Text(connectivity["chat"]["mode"], style="grimore.accent")),
+        ("Embed route",  Text(connectivity["embeddings"]["mode"], style="grimore.accent")),
+        ("Remote gate",  Text("allowed" if connectivity["remote_allowed"] else "blocked",
+                              style="grimore.warning" if connectivity["remote_allowed"] else "grimore.success")),
     ]))
 
     ui.section("Daemon")
     pid_file = str(daemon_lock_path())
     active = is_running(pid_file)
     console.print(ui.kv_table([
-        ("Estado", ui.daemon_badge(active)),
+        ("Status", ui.daemon_badge(active)),
         ("PID file", Text(pid_file, style="grimore.muted")),
     ]))
 
@@ -1284,6 +1502,144 @@ def preflight(
     console.print(ui.success_panel(
         "All checks passed. The pipeline is ready.",
         title="Preflight",
+    ))
+
+
+pilot_app = typer.Typer(
+    help="🧭 Prepare and validate a privacy-preserving individual-user pilot.",
+    rich_markup_mode="rich",
+    no_args_is_help=True,
+)
+app.add_typer(pilot_app, name="pilot", rich_help_panel="Operations")
+
+
+@pilot_app.command("init")
+def pilot_init(
+    output: Path = typer.Argument(..., help="New YAML file for the pilot record."),
+    participants: int = typer.Option(
+        5, "--participants", "-n", help="Planned cohort size (5–10).",
+    ),
+    study_id: Optional[str] = typer.Option(
+        None, "--study-id", help="Pseudonymous study identifier.",
+    ),
+) -> None:
+    """Create a private two-week pilot worksheet with three tasks per person."""
+    from grimore.pilot import write_pilot_study
+
+    ui.command_header("pilot init", str(output))
+    try:
+        target = write_pilot_study(
+            output, participant_count=participants, study_id=study_id,
+        )
+    except (FileExistsError, OSError, ValueError) as exc:
+        console.print(ui.error_panel(str(exc), title="Pilot record not created"))
+        raise typer.Exit(code=1) from exc
+    console.print(ui.success_panel(
+        f"Created {target} with {participants} pseudonymous participant records.\n"
+        "Complete consent, three real task goals, success criteria, and the "
+        "usual method for every participant; then run `grimore pilot check`.",
+        title="Pilot worksheet ready",
+    ))
+
+
+@pilot_app.command("check")
+def pilot_check(
+    study_file: Path = typer.Argument(..., help="Pilot YAML to validate."),
+) -> None:
+    """Check cohort size, consent, privacy rules, and the three-task contract."""
+    from grimore.pilot import check_pilot_study, is_private_file, load_pilot_study
+
+    ui.command_header("pilot check", str(study_file))
+    try:
+        result = check_pilot_study(load_pilot_study(study_file))
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        console.print(ui.error_panel(str(exc), title="Invalid pilot record"))
+        raise typer.Exit(code=1) from exc
+    console.print(ui.kv_table([
+        ("Participants", result.participant_count),
+        ("Ready", result.ready_participants),
+        ("Agreed tasks", result.task_count),
+        ("Journey stages observed", result.observed_stages),
+        ("Full journeys observed", result.observed_journeys),
+        ("Full journeys completed", result.completed_journeys),
+        ("Private file", "yes" if is_private_file(study_file) else "check permissions"),
+    ]))
+    for warning in result.warnings:
+        console.print(Text.assemble(("  ⚠ ", "grimore.warning"), warning))
+    if result.errors:
+        details = Text("\n".join(f"• {error}" for error in result.errors))
+        console.print(ui.error_panel(details, title="Pilot is not ready"))
+        raise typer.Exit(code=1)
+    console.print(ui.success_panel(
+        "Every participant has recorded consent and exactly three agreed tasks "
+        "with success criteria and a usual-method baseline.",
+        title="Pilot intake ready",
+    ))
+
+
+@pilot_app.command("observe")
+def pilot_observe(
+    study_file: Path = typer.Argument(..., help="Pilot YAML to update."),
+    participant_id: str = typer.Argument(..., help="Opaque participant code, e.g. P01."),
+    stage: str = typer.Argument(
+        ...,
+        help="configuration | first_answer | source_check | document_review",
+    ),
+    outcome: str = typer.Option(
+        ..., "--outcome", help="Observed outcome: completed | blocked.",
+    ),
+    assistance: str = typer.Option(
+        ...,
+        "--assistance",
+        help="Facilitator help: none | prompt | intervention.",
+    ),
+    observed_at: Optional[str] = typer.Option(
+        None, "--at", help="ISO-8601 timestamp; defaults to current UTC time.",
+    ),
+    replace: bool = typer.Option(
+        False, "--replace", help="Correct a previously observed stage.",
+    ),
+) -> None:
+    """Record one privacy-safe stage of the observed end-to-end journey."""
+    from grimore.pilot import record_pilot_observation
+
+    ui.command_header("pilot observe", f"{participant_id} · {stage}")
+    try:
+        backup = record_pilot_observation(
+            study_file,
+            participant_id=participant_id,
+            stage=stage,
+            outcome=outcome,
+            assistance=assistance,
+            observed_at=observed_at,
+            replace=replace,
+        )
+    except (FileNotFoundError, LookupError, OSError, TypeError, ValueError) as exc:
+        console.print(ui.error_panel(str(exc), title="Observation not recorded"))
+        raise typer.Exit(code=1) from exc
+    console.print(ui.success_panel(
+        f"Recorded {stage} for {participant_id}.\n"
+        f"Previous bytes are recoverable from {backup}.",
+        title="Pilot observation saved",
+    ))
+
+
+@pilot_app.command("restore-backup")
+def pilot_restore_backup(
+    study_file: Path = typer.Argument(..., help="Pilot YAML whose backup should be restored."),
+) -> None:
+    """Restore the last pre-change copy; the current file becomes the backup."""
+    from grimore.pilot import restore_pilot_backup
+
+    ui.command_header("pilot restore-backup", str(study_file))
+    try:
+        restored = restore_pilot_backup(study_file)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        console.print(ui.error_panel(str(exc), title="Pilot backup not restored"))
+        raise typer.Exit(code=1) from exc
+    console.print(ui.success_panel(
+        f"Restored {restored}. The replaced bytes remain in its .bak file.",
+        title="Pilot backup restored",
     ))
 
 
@@ -1628,9 +1984,10 @@ def mcp(
     🔌 Run the Grimore MCP (Model Context Protocol) server over stdio.
 
     Exposes read-only tools — [bold]grimore_ask[/], [bold]grimore_search[/],
-    [bold]grimore_get_note[/], [bold]grimore_connect[/], and
-    [bold]grimore_list_categories[/] — to MCP-aware clients like Claude
-    Desktop, Cursor, and Zed. The vault stays read-only; scan and migrate
+    [bold]grimore_get_note[/], [bold]grimore_get_source[/],
+    [bold]grimore_review_inbox[/], [bold]grimore_library_info[/],
+    [bold]grimore_connect[/], and [bold]grimore_list_categories[/] — to MCP-aware
+    clients like Claude Desktop, Cursor, and Zed. The vault stays read-only; scan and migrate
     operations remain on the CLI.
 
     Typical Claude Desktop setup (in [cyan]claude_desktop_config.json[/]):
@@ -1645,12 +2002,15 @@ def mcp(
           }
         }
     """
-    setup_logger(json_format=json_logs)
+    setup_logger(json_format=json_logs, stream=sys.stderr)
     config = load_config()
-    # Validate before we hand off stdio: a failed preflight at this
-    # point would otherwise be invisible to the client (the server is
-    # supposed to greet the initialize handshake immediately).
-    _preflight_or_exit(config, check_git=False)
+    # Metadata/source/review queries need neither chat nor embeddings.
+    # Do not probe model services before an editor checks vault identity and
+    # remote-query consent. Only validate the local library at startup.
+    vault_root = Path(config.vault.path)
+    if not vault_root.is_dir() or not os.access(vault_root, os.R_OK | os.X_OK):
+        sys.stderr.write("MCP: the configured vault is not an accessible directory. Check grimore.toml.\n")
+        raise typer.Exit(code=1)
 
     from grimore.mcp_server import run_stdio
     session = Session(config)
@@ -1676,7 +2036,8 @@ def serve(
     api_token: Optional[str] = typer.Option(
         None, "--api-token",
         help="Bearer token required on every non-loopback request (all "
-             "methods). Read from env GRIMORE_API_TOKEN if unset. Required "
+             "methods) and on protected writes from every client. Read from "
+             "env GRIMORE_API_TOKEN if unset. Required "
              "for any non-loopback bind. Prefer the env var: a token on "
              "the command line is visible to other local users via ps.",
         envvar="GRIMORE_API_TOKEN",
@@ -1685,9 +2046,8 @@ def serve(
         False, "--strict-token",
         help="Require the bearer token from loopback clients too (needs "
              "--api-token). Recommended on Android/Termux, where any app "
-             "on the device can reach localhost ports. The bundled web UI "
-             "sends no token, so use the API with explicit Authorization "
-             "headers in this mode.",
+             "on the device can reach localhost ports. Enter the token in "
+             "the bundled UI before using API-backed controls.",
     ),
     cors_origin: Optional[str] = typer.Option(
         None, "--cors-origin",
@@ -1698,15 +2058,16 @@ def serve(
     """
     🌐 Run the Grimore HTTP API and minimal web UI.
 
-    Exposes the same read-only surface as the MCP server, plus a single-
-    page UI at [cyan]/[/]. Loopback by default — explicitly pass
+    Exposes the MCP read surface plus token-protected, scoped setup and
+    indexing operations, with a single-page UI at [cyan]/[/]. Loopback by
+    default — explicitly pass
     [cyan]--allow-lan[/] together with a non-loopback [cyan]--host[/] to
     expose on a LAN, in which case [cyan]--api-token[/] becomes
     mandatory.
     """
     setup_logger(json_format=json_logs)
     config = load_config()
-    _preflight_or_exit(config, check_git=False)
+    _preflight_for_recovery_ui(config)
 
     try:
         from grimore.api.app import build_app
@@ -1718,7 +2079,7 @@ def serve(
         ))
         raise typer.Exit(code=1) from None
     try:
-        import uvicorn  # noqa: F401  (validated here so the error lands before the panel)
+        import uvicorn  # noqa: F401  (validate before starting the panel)
     except ImportError:
         console.print(ui.error_panel(
             "uvicorn isn't installed.\n"

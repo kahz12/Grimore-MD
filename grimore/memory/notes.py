@@ -3,7 +3,8 @@ Note-level metadata access: upserts, lookups, dashboard counters,
 category assignment, and the prune path that clears records for files
 deleted from the vault.
 """
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from grimore.memory._base import DbBase
@@ -41,6 +42,14 @@ class NotesMixin(DbBase):
                 "SELECT content_hash FROM notes WHERE path = ?", (path,)
             ).fetchone()
         return row[0] if row else None
+
+    def get_note_id_by_path(self, path: str) -> Optional[int]:
+        """Return an indexed note's ID without mutating its stored state."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM notes WHERE path = ?", (path,)
+            ).fetchone()
+        return int(row[0]) if row else None
 
     def resolve_note_filter(
         self,
@@ -284,6 +293,13 @@ class NotesMixin(DbBase):
     def complete_note_indexing(
         self, note_id: int, content_hash: str, file_hash: str,
         size_bytes: int, mtime_ns: int,
+        *,
+        extraction_profile: Optional[str] = None,
+        extraction: Optional[dict] = None,
+        published_at: Optional[str] = None,
+        published_source: Optional[str] = None,
+        modified_at: Optional[str] = None,
+        modified_source: Optional[str] = None,
     ) -> None:
         """Publish change fingerprints only after all chunks were indexed.
 
@@ -291,11 +307,38 @@ class NotesMixin(DbBase):
         sentinels cannot match a real file, so a failed or interrupted pass is
         retried even when its source has not changed.
         """
+        indexed_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds",
+        ).replace("+00:00", "Z")
+        extraction_json = json.dumps(
+            extraction, ensure_ascii=False, separators=(",", ":"),
+        ) if extraction is not None else None
         with self._get_connection() as conn:
             conn.execute(
                 "UPDATE notes SET content_hash = ?, file_hash = ?, "
-                "size_bytes = ?, mtime_ns = ? WHERE id = ?",
-                (content_hash, file_hash, size_bytes, mtime_ns, note_id),
+                "size_bytes = ?, mtime_ns = ?, extraction_profile = ?, "
+                "extraction_json = ? WHERE id = ?",
+                (content_hash, file_hash, size_bytes, mtime_ns,
+                 extraction_profile, extraction_json, note_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO note_temporal
+                    (note_id, published_at, published_source,
+                     modified_at, modified_source, indexed_at, indexed_source)
+                VALUES (?, ?, ?, ?, ?, ?, 'grimore:index')
+                ON CONFLICT(note_id) DO UPDATE SET
+                    published_at = excluded.published_at,
+                    published_source = excluded.published_source,
+                    modified_at = excluded.modified_at,
+                    modified_source = excluded.modified_source,
+                    indexed_at = excluded.indexed_at,
+                    indexed_source = excluded.indexed_source
+                """,
+                (
+                    note_id, published_at, published_source,
+                    modified_at, modified_source, indexed_at,
+                ),
             )
 
     # ── Multi-format helpers ───────────────────────────────────────────────
@@ -322,6 +365,24 @@ class NotesMixin(DbBase):
         if not row or row[0] is None or row[1] is None or row[2] is None:
             return None
         return str(row[0]), int(row[1]), int(row[2])
+
+    def get_ingest_state(
+        self, path: str,
+    ) -> Optional[tuple[Optional[str], Optional[int], Optional[int], str, Optional[str]]]:
+        """File fingerprint plus stored format and PDF extraction profile."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT file_hash, size_bytes, mtime_ns, format, "
+                "extraction_profile FROM notes WHERE path = ?", (path,),
+            ).fetchone()
+        if not row:
+            return None
+        return (
+            str(row[0]) if row[0] is not None else None,
+            int(row[1]) if row[1] is not None else None,
+            int(row[2]) if row[2] is not None else None,
+            row[3] or "md", row[4],
+        )
 
     def update_file_hash(self, path: str, file_hash: str) -> None:
         """Refresh just the file_hash for an otherwise-unchanged note.
@@ -423,6 +484,7 @@ class NotesMixin(DbBase):
         # Claims use note_path rather than a note FK. Enabling foreign keys
         # above makes their contradiction rows cascade away as intended.
         conn.execute("DELETE FROM claims WHERE note_path = ?", (path,))
+        conn.execute("DELETE FROM note_temporal WHERE note_id = ?", (note_id,))
         conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
 
     def delete_note_by_path(self, path: str) -> bool:

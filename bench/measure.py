@@ -93,7 +93,7 @@ class ConnectionCounter:
     # Statement tracing is opt-in because it is not free: the callback fires
     # once per statement at ~1.2 us, and a single ask executes >17000 of them,
     # so leaving it on would add ~20 ms to a 100 ms measurement and report the
-    # instrumentation as a regression. Timing runs and counting runs are
+    # instrumentation as a slowdown. Timing runs and counting runs are
     # therefore separate passes -- the same reason tracemalloc is isolated in
     # bench_load_dense.
     trace_statements = False

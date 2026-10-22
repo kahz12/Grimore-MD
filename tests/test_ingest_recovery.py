@@ -100,3 +100,73 @@ def test_indexing_retries_missing_chunks_after_restart(tmp_path, monkeypatch, su
         assert embedder.embed_batch.call_count == expected_calls
         process(db)
         assert embedder.embed_batch.call_count == expected_calls
+
+
+@pytest.mark.parametrize("surface", ["daemon", "scan"])
+def test_indexing_preserves_manual_classification_override(tmp_path, monkeypatch, surface):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    source = vault / "note.md"
+    source.write_text("# Note\n\nFirst paragraph.\n\nSecond paragraph.\n")
+    config = Config()
+    config.vault.path = str(vault)
+    config.memory.db_path = str(tmp_path / "index.db")
+    config.output.dry_run = False
+    config.output.auto_commit = False
+    embedder = MagicMock()
+    embedder.model = "stub"
+    embedder.serialize_vector.side_effect = Embedder.serialize_vector
+    embedder.embed_batch.return_value = [[1., 0.], [0., 1.]]
+    tagger = MagicMock()
+    tagger.tag_note.return_value = {
+        "tags": ["generated"], "summary": "Summary", "category": "model/category",
+    }
+    writer = MagicMock()
+    writer.write_metadata.return_value = source
+    chunks = [Chunk("First paragraph."), Chunk("Second paragraph.")]
+    module = "grimore.daemon" if surface == "daemon" else "grimore.cli"
+    monkeypatch.setattr(module + ".build_candidate_chunks", lambda *a: chunks)
+
+    if surface == "scan":
+        from grimore.cli import app
+        monkeypatch.setattr("grimore.cli.load_config", lambda: config)
+        monkeypatch.setattr("grimore.cli._preflight_or_exit", lambda *a, **kw: None)
+        monkeypatch.setattr("grimore.cli.LLMRouter", lambda *a: MagicMock())
+        monkeypatch.setattr("grimore.cli.Embedder", lambda *a, **kw: embedder)
+        monkeypatch.setattr("grimore.cli.Tagger", lambda *a: tagger)
+        monkeypatch.setattr("grimore.cli.FrontmatterWriter", lambda: writer)
+
+    with Database(config.memory.db_path) as db:
+        note_id = db.upsert_note(str(source), "Note", content_hash="old")
+        assert note_id is not None
+        db.set_classification_override(
+            note_id=note_id,
+            category="human/reference",
+            tags=["curated", "trusted"],
+            updated_at="2026-09-25T12:00:00Z",
+        )
+        if surface == "scan":
+            monkeypatch.setattr("grimore.cli.Database", lambda *a: db)
+            result = CliRunner().invoke(app, ["scan", "--no-dry-run"])
+            assert result.exit_code == 0, result.output
+        else:
+            daemon = GrimoreDaemon.__new__(GrimoreDaemon)
+            daemon.config, daemon.db, daemon.vault_root = config, db, vault
+            daemon.parser, daemon.security = MarkdownParser(), SecurityGuard(str(vault))
+            daemon.event_log, daemon.notifier = MagicMock(), MagicMock()
+            daemon.writer, daemon.tagger, daemon.embedder = writer, tagger, embedder
+            daemon._counter_lock = threading.Lock()
+            daemon.processed_count = 0
+            daemon.process_file(source)
+
+        metadata = writer.write_metadata.call_args.args[1]
+        visible = db.get_note_classifications([note_id])[note_id]
+        timeline = db.get_note_timeline(note_id)
+        assert metadata["category"] == "human/reference"
+        assert metadata["tags"] == ["curated", "trusted"]
+        assert visible["category"] == "human/reference"
+        assert visible["tags"] == ["curated", "trusted"]
+        assert timeline["published"] == {"value": None, "source": None}
+        assert timeline["modified"]["source"] == "filesystem:mtime"
+        assert timeline["indexed"]["source"] == "grimore:index"
+        assert timeline["verified"] == {"value": None, "source": None}

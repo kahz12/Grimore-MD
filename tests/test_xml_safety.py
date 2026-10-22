@@ -24,9 +24,8 @@ from grimore.ingest.adapters.safexml import UnsafeXmlError, safe_parse_xml
 
 
 # A classic billion-laughs payload. Five entity levels = 10^5 expansion;
-# a regressed (unprotected) parser would still expand it, so the
-# ``pytest.raises`` below is the real regression guard — we never let it
-# get far enough to matter.
+# an unprotected parser would still expand it. The assertion below verifies
+# that parsing rejects the payload before expansion can become significant.
 _BILLION_LAUGHS = b"""<?xml version="1.0"?>
 <!DOCTYPE lolz [
  <!ENTITY a0 "AAAAAAAAAA">

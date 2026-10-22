@@ -1,0 +1,1094 @@
+version: 2
+set: tuning
+corpus_version: phase0-test-vault-2026-09-22
+questions:
+- id: ai-dartmouth
+  question: When and where was AI officially named as a field?
+  expected_sources:
+  - Artificial Intelligence
+  expected_keywords:
+  - Dartmouth
+  - '1956'
+  expected_answer: At the Dartmouth Summer Research Project on Artificial Intelligence in 1956.
+  expected_evidence:
+  - source: Artificial Intelligence
+    passage: The field of AI was officially christened at the Dartmouth Summer Research Project on Artificial
+      Intelligence in 1956
+    locator: The Birth and Golden Years
+  review_criteria: 'Debe comunicar correctamente: At the Dartmouth Summer Research Project on Artificial
+    Intelligence in 1956.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: ai-dartmouth-organizers
+    question: Who organized that project?
+    expected_sources:
+    - Artificial Intelligence
+    expected_keywords:
+    - McCarthy
+    - Minsky
+    - Rochester
+    - Shannon
+    expected_answer: John McCarthy, Marvin Minsky, Nathaniel Rochester, and Claude Shannon.
+    expected_evidence:
+    - source: Artificial Intelligence
+      passage: organized by John McCarthy, Marvin Minsky, Nathaniel Rochester, and Claude Shannon
+      locator: The Birth and Golden Years
+    review_criteria: 'Debe comunicar correctamente: John McCarthy, Marvin Minsky, Nathaniel Rochester,
+      and Claude Shannon.'
+- id: ai-first-winter
+  question: What limitation did the Lighthill Report identify?
+  expected_sources:
+  - Artificial Intelligence
+  expected_keywords:
+  - combinatorial explosion
+  expected_answer: It said combinatorial explosion kept AI techniques from solving real-world problems.
+  expected_evidence:
+  - source: Artificial Intelligence
+    passage: AI techniques had failed to solve real-world problems due to "combinatorial explosion"
+    locator: The First AI Winter
+  review_criteria: 'Debe comunicar correctamente: It said combinatorial explosion kept AI techniques from
+    solving real-world problems.'
+  category: ambiguous
+  language: en
+  case_type: ambiguous
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: ai-perceptron-followup
+    question: And which non-linear problem could a single-layer perceptron not solve?
+    expected_sources:
+    - Artificial Intelligence
+    expected_keywords:
+    - XOR
+    expected_answer: The exclusive-OR (XOR) problem.
+    expected_evidence:
+    - source: Artificial Intelligence
+      passage: single-layer networks could not solve non-linearly separable functions, such as the exclusive-OR
+        (XOR) problem
+      locator: The First AI Winter
+    review_criteria: 'Debe comunicar correctamente: The exclusive-OR (XOR) problem.'
+- id: apple-water-share
+  question: What share of a mature apple's fresh weight is water?
+  expected_sources:
+  - Apples Malus
+  expected_keywords:
+  - '84'
+  - '86'
+  expected_answer: Approximately 84% to 86%.
+  expected_evidence:
+  - source: Apples Malus
+    passage: Water accounts for approximately 84% to 86% of the fresh weight of a mature apple
+    locator: Water and Turgor Pressure
+  review_criteria: 'Debe comunicar correctamente: Approximately 84% to 86%.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: apple-turgor-followup
+    question: Why does that water make the fruit crisp?
+    expected_sources:
+    - Apples Malus
+    expected_keywords:
+    - turgor
+    - crisp
+    expected_answer: Water in vacuoles creates turgor pressure against the cell walls, producing crispness.
+    expected_evidence:
+    - source: Apples Malus
+      passage: This internal pressure, known as turgor pressure, is chemically responsible for the crispness
+        and crunchiness of the fruit
+      locator: Water and Turgor Pressure
+    review_criteria: 'Debe comunicar correctamente: Water in vacuoles creates turgor pressure against
+      the cell walls, producing crispness.'
+- id: apple-main-sugar
+  question: Which soluble sugar accounts for the largest share in apples?
+  expected_sources:
+  - Apples Malus
+  expected_keywords:
+  - Fructose
+  - '50'
+  - '60'
+  expected_answer: Fructose, at roughly 50% to 60% of total soluble sugars.
+  expected_evidence:
+  - source: Apples Malus
+    passage: Fructose | $C_6H_{12}O_6$ (Hexose) | 1.2 – 1.8 (Temperature dependent) | 50% – 60%
+    locator: Sugar Profile
+  review_criteria: 'Debe comunicar correctamente: Fructose, at roughly 50% to 60% of total soluble sugars.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: apple-acid-followup
+    question: And which organic acid dominates?
+    expected_sources:
+    - Apples Malus
+    expected_keywords:
+    - malic
+    - '90'
+    expected_answer: L-malic acid makes up more than 90% of the total organic acid content.
+    expected_evidence:
+    - source: Apples Malus
+      passage: Over 90% of the total organic acid content in apples consists of L-malic acid
+      locator: Malic Acid
+    review_criteria: 'Debe comunicar correctamente: L-malic acid makes up more than 90% of the total organic
+      acid content.'
+- id: arch-traditional-monolith
+  question: ¿Cómo se despliega un monolito tradicional?
+  expected_sources:
+  - Arquitectura de Software
+  expected_keywords:
+  - única unidad
+  expected_answer: Toda la aplicación se empaqueta y despliega como una sola unidad.
+  expected_evidence:
+  - source: Arquitectura de Software
+    passage: toda la aplicación (interfaz de usuario, lógica de negocio y acceso a datos) se empaqueta
+      y despliega como una única unidad indisoluble
+    locator: Monolito Tradicional
+  review_criteria: 'Debe comunicar correctamente: Toda la aplicación se empaqueta y despliega como una
+    sola unidad.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: arch-monolith-disadvantages
+    question: ¿Y cuáles son dos desventajas al crecer?
+    expected_sources:
+    - Arquitectura de Software
+    expected_keywords:
+    - escalar
+    - acoplamiento
+    expected_answer: Es difícil de escalar y el acoplamiento puede hacer que un error derribe todo el
+      sistema.
+    expected_evidence:
+    - source: Arquitectura de Software
+      passage: Difícil de escalar vertical y horizontalmente, acoplamiento extremo (un error bota todo
+        el sistema)
+      locator: Monolito Tradicional
+    review_criteria: 'Debe comunicar correctamente: Es difícil de escalar y el acoplamiento puede hacer
+      que un error derribe todo el sistema.'
+- id: arch-microservices-properties
+  question: ¿Qué independencia ofrecen los microservicios?
+  expected_sources:
+  - Arquitectura de Software
+  expected_keywords:
+  - independiente
+  - base de datos
+  expected_answer: Cada servicio puede desplegarse de forma independiente y mantiene su propia base de
+    datos.
+  expected_evidence:
+  - source: Arquitectura de Software
+    passage: Despliegue 100% independiente, base de datos privada por servicio
+    locator: Microservicios
+  review_criteria: 'Debe comunicar correctamente: Cada servicio puede desplegarse de forma independiente
+    y mantiene su propia base de datos.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: arch-microservices-cost
+    question: ¿Qué coste operativo introduce esa independencia?
+    expected_sources:
+    - Arquitectura de Software
+    expected_keywords:
+    - complejidad operacional
+    - latencia
+    expected_answer: Complejidad operacional, latencia de red y transacciones distribuidas difíciles.
+    expected_evidence:
+    - source: Arquitectura de Software
+      passage: Complejidad operacional masiva (necesitas Kubernetes, CI/CD maduro, Service Mesh, observabilidad/trazabilidad),
+        problemas por latencia de red
+      locator: Microservicios
+    review_criteria: 'Debe comunicar correctamente: Complejidad operacional, latencia de red y transacciones
+      distribuidas difíciles.'
+- id: astro-au-distance
+  question: ¿Qué distancia representa una unidad astronómica?
+  expected_sources:
+  - Astronomía General
+  expected_keywords:
+  - Tierra
+  - Sol
+  - '149'
+  expected_answer: 'La distancia media Tierra-Sol: aproximadamente 149.597.870,7 km.'
+  expected_evidence:
+  - source: Astronomía General
+    passage: 'Unidad Astronómica (UA): Representa la distancia media entre la Tierra y el Sol'
+    locator: Unidades de Medida
+  review_criteria: 'Debe comunicar correctamente: La distancia media Tierra-Sol: aproximadamente 149.597.870,7
+    km.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: astro-parsec-followup
+    question: ¿Y cuántos años luz equivale un pársec?
+    expected_sources:
+    - Astronomía General
+    expected_keywords:
+    - '3.2616'
+    expected_answer: Aproximadamente 3,2616 años luz.
+    expected_evidence:
+    - source: Astronomía General
+      passage: 1 \text{ pc} \approx 3.2616 \text{ al}
+      locator: Unidades de Medida
+    review_criteria: 'Debe comunicar correctamente: Aproximadamente 3,2616 años luz.'
+- id: astro-kepler-first
+  question: ¿Qué afirma la primera ley de Kepler?
+  expected_sources:
+  - Astronomía General
+  expected_keywords:
+  - elípticas
+  - focos
+  expected_answer: Los planetas siguen órbitas elípticas con el Sol en uno de los focos.
+  expected_evidence:
+  - source: Astronomía General
+    passage: Todos los planetas se desplazan alrededor del Sol siguiendo órbitas elípticas, con el Sol
+      situado en uno de los focos
+    locator: Las Tres Leyes de Kepler
+  review_criteria: 'Debe comunicar correctamente: Los planetas siguen órbitas elípticas con el Sol en
+    uno de los focos.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: astro-kepler-speed
+    question: ¿Qué implica la segunda ley para la velocidad orbital?
+    expected_sources:
+    - Astronomía General
+    expected_keywords:
+    - perihelio
+    - afelio
+    expected_answer: Es máxima en el perihelio y mínima en el afelio.
+    expected_evidence:
+    - source: Astronomía General
+      passage: la velocidad orbital de los planetas es variable (máxima en el perihelio y mínima en el
+        afelio)
+      locator: Las Tres Leyes de Kepler
+    review_criteria: 'Debe comunicar correctamente: Es máxima en el perihelio y mínima en el afelio.'
+- id: socrates-birth
+  question: ¿Cuándo y dónde nació Sócrates?
+  expected_sources:
+  - Sócrates
+  expected_keywords:
+  - '470'
+  - Alopece
+  expected_answer: Alrededor de 470 a.C. en el demo ateniense de Alopece.
+  expected_evidence:
+  - source: Sócrates
+    passage: Sócrates nació alrededor del año 470 a.C. en el demo (distrito) de Alopece, al sur de Atenas
+    locator: Nacimiento y Linaje
+  review_criteria: 'Debe comunicar correctamente: Alrededor de 470 a.C. en el demo ateniense de Alopece.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: socrates-mother-followup
+    question: ¿Qué profesión tenía su madre y qué método inspiró?
+    expected_sources:
+    - Sócrates
+    expected_keywords:
+    - Fainarate
+    - partera
+    - mayéutica
+    expected_answer: Fainarate era partera y su oficio inspiró la mayéutica.
+    expected_evidence:
+    - source: Sócrates
+      passage: Fainarate, una partera u obstetra (maia). La profesión de su madre sirvió de inspiración
+        directa para la concepción de su método filosófico, la mayéutica
+      locator: Nacimiento y Linaje
+    review_criteria: 'Debe comunicar correctamente: Fainarate era partera y su oficio inspiró la mayéutica.'
+- id: socrates-campaigns
+  question: ¿En qué tres campañas militares combatió Sócrates?
+  expected_sources:
+  - Sócrates
+  expected_keywords:
+  - Potidea
+  - Delio
+  - Anfípolis
+  expected_answer: Potidea, Delio y Anfípolis.
+  expected_evidence:
+  - source: Sócrates
+    passage: Combatió en tres campañas militares importantes
+    locator: El Ciudadano-Soldado
+  review_criteria: 'Debe comunicar correctamente: Potidea, Delio y Anfípolis.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: socrates-potidea-followup
+    question: ¿A quién rescató en Potidea?
+    expected_sources:
+    - Sócrates
+    expected_keywords:
+    - Alcibíades
+    expected_answer: Al joven Alcibíades.
+    expected_evidence:
+    - source: Sócrates
+      passage: rescató al joven general Alcibíades cuando este cayó herido
+      locator: El Ciudadano-Soldado
+    review_criteria: 'Debe comunicar correctamente: Al joven Alcibíades.'
+- id: frogs-anura-share
+  question: ¿Qué proporción de los anfibios vivos pertenece a Anura?
+  expected_sources:
+  - Ranas
+  expected_keywords:
+  - '88'
+  expected_answer: Aproximadamente el 88%.
+  expected_evidence:
+  - source: Ranas
+    passage: El orden Anura es el más grande dentro de la clase Amphibia, abarcando aproximadamente el
+      88% de todas las especies de anfíbios vivos
+    locator: Clasificación Taxonómica
+  review_criteria: 'Debe comunicar correctamente: Aproximadamente el 88%.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: frogs-toads-followup
+    question: ¿La distinción entre rana y sapo tiene valor taxonómico estricto?
+    expected_sources:
+    - Ranas
+    expected_keywords:
+    - carece
+    - taxonómico
+    expected_answer: No; es una distinción popular basada en rasgos y hábitos generales.
+    expected_evidence:
+    - source: Ranas
+      passage: Aunque popularmente se distingue entre "rana" y "sapo", esta distinción carece de un valor
+        taxonómico estricto
+      locator: Ranas vs. Sapos
+    review_criteria: 'Debe comunicar correctamente: No; es una distinción popular basada en rasgos y hábitos
+      generales.'
+- id: frogs-respiration
+  question: ¿Qué tres mecanismos respiratorios usan las ranas adultas?
+  expected_sources:
+  - Ranas
+  expected_keywords:
+  - cutánea
+  - bucofaríngea
+  - pulmonar
+  expected_answer: Respiración cutánea, bucofaríngea y pulmonar.
+  expected_evidence:
+  - source: Ranas
+    passage: Las ranas adultas emplean tres mecanismos complementarios para el intercambio gaseoso
+    locator: Sistema Respiratorio
+  review_criteria: 'Debe comunicar correctamente: Respiración cutánea, bucofaríngea y pulmonar.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: frogs-positive-pressure
+    question: ¿Cómo ventilan los pulmones si no tienen diafragma ni costillas?
+    expected_sources:
+    - Ranas
+    expected_keywords:
+    - presión positiva
+    - boca
+    expected_answer: Mediante bombeo de presión positiva con movimientos del piso de la boca.
+    expected_evidence:
+    - source: Ranas
+      passage: Al carecer de diafragma y costillas, las ranas respiran mediante bombeo de presión positiva
+      locator: Sistema Respiratorio
+    review_criteria: 'Debe comunicar correctamente: Mediante bombeo de presión positiva con movimientos
+      del piso de la boca.'
+- id: gothic-origin-phase0
+  question: Where and when did Gothic architecture originate?
+  expected_sources:
+  - gothic_architecture
+  expected_keywords:
+  - France
+  - 12th
+  expected_answer: In 12th-century France, specifically Île-de-France around Paris.
+  expected_evidence:
+  - source: gothic_architecture
+    passage: Originating in 12th-century France and lasting into the 16th century
+    locator: Introduction
+  review_criteria: 'Debe comunicar correctamente: In 12th-century France, specifically Île-de-France around
+    Paris.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - txt
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: gothic-saint-denis-followup
+    question: Which building first incorporated its elements, and who rebuilt it?
+    expected_sources:
+    - gothic_architecture
+    expected_keywords:
+    - Saint-Denis
+    - Suger
+    expected_answer: The Abbey of Saint-Denis, reconstructed by Abbot Suger.
+    expected_evidence:
+    - source: gothic_architecture
+      passage: The first major building to incorporate Gothic elements was the Abbey of Saint-Denis, reconstructed
+        by Abbot Suger
+      locator: Historical Context
+    review_criteria: 'Debe comunicar correctamente: The Abbey of Saint-Denis, reconstructed by Abbot Suger.'
+- id: gothic-trilogy-phase0
+  question: What innovations form the Gothic Trilogy?
+  expected_sources:
+  - gothic_architecture
+  expected_keywords:
+  - pointed arch
+  - ribbed vault
+  - flying buttress
+  expected_answer: The pointed arch, ribbed vault, and flying buttress.
+  expected_evidence:
+  - source: gothic_architecture
+    passage: The "Gothic Trilogy" of architectural innovations consists of
+    locator: Key Architectural Elements
+  review_criteria: 'Debe comunicar correctamente: The pointed arch, ribbed vault, and flying buttress.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - txt
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: gothic-buttress-followup
+    question: Which one transfers lateral load away from the building?
+    expected_sources:
+    - gothic_architecture
+    expected_keywords:
+    - flying buttress
+    expected_answer: The flying buttress.
+    expected_evidence:
+    - source: gothic_architecture
+      passage: transferring the lateral load away from the building
+      locator: Flying Buttress
+    review_criteria: 'Debe comunicar correctamente: The flying buttress.'
+- id: kotlin-platforms
+  question: Who designed Kotlin and which targets does it support?
+  expected_sources:
+  - Kotlin Fundamentals
+  expected_keywords:
+  - JetBrains
+  - JVM
+  - JavaScript
+  - Native
+  expected_answer: JetBrains designed it; it targets the JVM, JavaScript, and native machine code.
+  expected_evidence:
+  - source: Kotlin Fundamentals
+    passage: Kotlin is a modern, cross-platform, statically typed programming language designed by JetBrains
+    locator: Introduction
+  review_criteria: 'Debe comunicar correctamente: JetBrains designed it; it targets the JVM, JavaScript,
+    and native machine code.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: kotlin-safety-followup
+    question: Which common error does its safety pillar target?
+    expected_sources:
+    - Kotlin Fundamentals
+    expected_keywords:
+    - NullPointerException
+    expected_answer: NullPointerException (NPE).
+    expected_evidence:
+    - source: Kotlin Fundamentals
+      passage: 'Safety: Focuses on eliminating common programming errors, most notably NullPointerException
+        (NPE)'
+      locator: Core Philosophy
+    review_criteria: 'Debe comunicar correctamente: NullPointerException (NPE).'
+- id: kotlin-val-var
+  question: How do val and var differ in Kotlin?
+  expected_sources:
+  - Kotlin Fundamentals
+  expected_keywords:
+  - read-only
+  - mutable
+  expected_answer: val is read-only after initialization; var is mutable.
+  expected_evidence:
+  - source: Kotlin Fundamentals
+    passage: 'val (Value): Defines a read-only variable. Once initialized, its reference cannot be reassigned'
+    locator: Mutability
+  review_criteria: 'Debe comunicar correctamente: val is read-only after initialization; var is mutable.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: kotlin-elvis-followup
+    question: Which operator supplies a fallback for null?
+    expected_sources:
+    - Kotlin Fundamentals
+    expected_keywords:
+    - Elvis
+    expected_answer: The Elvis operator (?:).
+    expected_evidence:
+    - source: Kotlin Fundamentals
+      passage: 'Elvis Operator | str?.length ?: 0 | Provides a fallback value if the left-hand expression
+        evaluates to null'
+      locator: Null-Safety Operators
+    review_criteria: 'Debe comunicar correctamente: The Elvis operator (?:).'
+- id: rome-transition
+  question: Was Rome's transition from republic to empire sudden?
+  expected_sources:
+  - Roman Empire
+  expected_keywords:
+  - century-long
+  - civil wars
+  expected_answer: No; it was a century-long process of decay, civil wars, and concentrated military power.
+  expected_evidence:
+  - source: Roman Empire
+    passage: The transition from the Roman Republic to the Roman Empire was not a sudden event, but a
+      century-long process of political decay, civil wars
+    locator: Fall of the Republic
+  review_criteria: 'Debe comunicar correctamente: No; it was a century-long process of decay, civil wars,
+    and concentrated military power.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: rome-princeps-followup
+    question: How did Octavian disguise his absolute power?
+    expected_sources:
+    - Roman Empire
+    expected_keywords:
+    - Principate
+    - Princeps
+    expected_answer: He created the Principate and used the modest title Princeps, or First Citizen.
+    expected_evidence:
+    - source: Roman Empire
+      passage: he established the Principate—a system where he retained absolute power under the modest
+        title of Princeps (First Citizen)
+      locator: Augustan Settlement
+    review_criteria: 'Debe comunicar correctamente: He created the Principate and used the modest title
+      Princeps, or First Citizen.'
+- id: rome-territorial-peak
+  question: Under which emperor did Rome reach its greatest territorial extent?
+  expected_sources:
+  - Roman Empire
+  expected_keywords:
+  - Trajan
+  - '117'
+  expected_answer: Trajan, who reigned from 98 to 117 AD.
+  expected_evidence:
+  - source: Roman Empire
+    passage: Under Trajan (reigned 98–117 AD), the empire reached its greatest geographic extent
+    locator: Nerva-Antonine Dynasty
+  review_criteria: 'Debe comunicar correctamente: Trajan, who reigned from 98 to 117 AD.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: rome-hadrian-followup
+    question: How did his successor change policy?
+    expected_sources:
+    - Roman Empire
+    expected_keywords:
+    - Hadrian
+    - borders
+    expected_answer: Hadrian reversed expansion and focused on securing borders.
+    expected_evidence:
+    - source: Roman Empire
+      passage: Hadrian (reigned 117–138 AD) reversed the expansionist policy, focusing on securing the
+        borders
+      locator: Nerva-Antonine Dynasty
+    review_criteria: 'Debe comunicar correctamente: Hadrian reversed expansion and focused on securing
+      borders.'
+- id: social-definition-phase0
+  question: What does social engineering exploit in information security?
+  expected_sources:
+  - Social Engineering
+  expected_keywords:
+  - cognitive biases
+  - trust
+  expected_answer: It manipulates people by exploiting cognitive biases, trust, and psychological triggers.
+  expected_evidence:
+  - source: Social Engineering
+    passage: social engineering exploits cognitive biases, trust, and psychological triggers
+    locator: Introduction
+  review_criteria: 'Debe comunicar correctamente: It manipulates people by exploiting cognitive biases,
+    trust, and psychological triggers.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: social-human-element-followup
+    question: Why is it unlike a traditional cyberattack?
+    expected_sources:
+    - Social Engineering
+    expected_keywords:
+    - human element
+    - software vulnerabilities
+    expected_answer: It targets the human element rather than software vulnerabilities or network misconfiguration.
+    expected_evidence:
+    - source: Social Engineering
+      passage: Unlike traditional cyberattacks that target software vulnerabilities or network misconfigurations,
+        social engineering exploits cognitive biases
+      locator: Introduction
+    review_criteria: 'Debe comunicar correctamente: It targets the human element rather than software
+      vulnerabilities or network misconfiguration.'
+- id: social-authority
+  question: How is the authority principle weaponized?
+  expected_sources:
+  - Social Engineering
+  expected_keywords:
+  - Impersonating
+  - CEO
+  expected_answer: Attackers impersonate executives, law enforcement, IT staff, or auditors.
+  expected_evidence:
+  - source: Social Engineering
+    passage: Impersonating a CEO demanding urgent wire transfers or an external auditor demanding access
+    locator: Cialdini Principles
+  review_criteria: 'Debe comunicar correctamente: Attackers impersonate executives, law enforcement, IT
+    staff, or auditors.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: social-authority-defense
+    question: What countermeasure does the guide recommend?
+    expected_sources:
+    - Social Engineering
+    expected_keywords:
+    - out-of-band
+    - hierarchical
+    expected_answer: Out-of-band verification that bypasses hierarchical pressure.
+    expected_evidence:
+    - source: Social Engineering
+      passage: Establish out-of-band verification protocols that bypass hierarchical pressure
+      locator: Cialdini Principles
+    review_criteria: 'Debe comunicar correctamente: Out-of-band verification that bypasses hierarchical
+      pressure.'
+- id: wetland-start-area
+  question: ¿Cuándo comenzó el proyecto y qué área interviene?
+  expected_sources:
+  - Humedal La Esperanza
+  expected_keywords:
+  - 14 de marzo
+  - 37,5
+  expected_answer: Comenzó el 14 de marzo de 2024 y cubre 37,5 hectáreas.
+  expected_evidence:
+  - source: Humedal La Esperanza
+    passage: El proyecto de restauración del Humedal La Esperanza comenzó el 14 de marzo de 2024. El área
+      de intervención aprobada es de 37,5 hectáreas
+    locator: p.1
+  review_criteria: 'Debe comunicar correctamente: Comenzó el 14 de marzo de 2024 y cubre 37,5 hectáreas.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - pdf
+  user_task: find-fact
+  difficulty: extraction-hard
+  split: tuning
+  follow_ups:
+  - id: wetland-target-followup
+    question: ¿Cuál era su meta operativa principal?
+    expected_sources:
+    - Humedal La Esperanza
+    expected_keywords:
+    - 8 hectáreas
+    - 31 de diciembre
+    expected_answer: Retirar el jacinto invasor de 8 hectáreas antes del 31 de diciembre de 2025.
+    expected_evidence:
+    - source: Humedal La Esperanza
+      passage: La meta operativa principal es retirar el jacinto de agua invasor de 8 hectáreas antes
+        del 31 de diciembre de 2025
+      locator: p.1
+    review_criteria: 'Debe comunicar correctamente: Retirar el jacinto invasor de 8 hectáreas antes del
+      31 de diciembre de 2025.'
+- id: wetland-stations
+  question: ¿Cuáles son las estaciones de seguimiento y dónde están?
+  expected_sources:
+  - Humedal La Esperanza
+  expected_keywords:
+  - Norte-01
+  - Sur-02
+  expected_answer: Norte-01 está aguas arriba y Sur-02 aguas abajo.
+  expected_evidence:
+  - source: Humedal La Esperanza
+    passage: Norte-01, situada aguas arriba de la zona intervenida, y Sur-02, situada aguas abajo
+    locator: p.2
+  review_criteria: 'Debe comunicar correctamente: Norte-01 está aguas arriba y Sur-02 aguas abajo.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - pdf
+  user_task: find-fact
+  difficulty: extraction-hard
+  split: tuning
+  follow_ups:
+  - id: wetland-schedule-followup
+    question: ¿Cuándo se mide la calidad del agua?
+    expected_sources:
+    - Humedal La Esperanza
+    expected_keywords:
+    - primer martes
+    - 30 mm
+    expected_answer: El primer martes de cada mes, con muestra extra tras lluvias superiores a 30 mm en
+      24 horas.
+    expected_evidence:
+    - source: Humedal La Esperanza
+      passage: La calidad del agua se mide el primer martes de cada mes
+      locator: p.2
+    review_criteria: 'Debe comunicar correctamente: El primer martes de cada mes, con muestra extra tras
+      lluvias superiores a 30 mm en 24 horas.'
+- id: neg-es-clima-bogota
+  question: ¿Qué tiempo hará mañana en Bogotá?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-en-bitcoin-live
+  question: What is Bitcoin's live price right now?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-es-receta-arepas
+  question: ¿Cuál es una receta de arepas para cuatro personas?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-en-train-london
+  question: What time is the last train from London to Edinburgh tonight?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning
+- id: neg-es-presidente-actual
+  question: ¿Quién es el presidente actual de Chile?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-en-mars-weather
+  question: What is today's weather at the Jezero crater on Mars?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-es-sensor-serial
+  question: ¿Cuál es el número de serie del sensor averiado de Sur-02?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-en-wetland-budget
+  question: What was the exact approved budget for the wetland project?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning
+- id: neg-es-socrates-estatura
+  question: ¿Cuánto medía Sócrates exactamente?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning
+- id: neg-en-kotlin-release
+  question: What is the latest stable Kotlin compiler version today?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning
+- id: neg-es-ranas-poblacion
+  question: ¿Cuántas ranas viven hoy en el Humedal La Esperanza?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning
+- id: neg-en-rome-weather
+  question: What was the weather in Rome on 4 September 476 AD?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning
+- id: neg-es-manzana-precio
+  question: ¿Cuánto cuesta hoy un kilo de manzanas en Medellín?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-en-gothic-budget
+  question: What was the exact construction budget of Amiens Cathedral?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-es-ai-acciones
+  question: ¿Qué acción tecnológica subirá más esta semana?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: tuning
+- id: neg-en-private-email
+  question: What is the private email address of the wetland project manager?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: tuning

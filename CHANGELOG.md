@@ -7,6 +7,141 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-10-22
+
+Answers you can check, a web UI that covers the whole journey without a
+terminal, and review tools for keeping a library current. Every addition to
+the API, MCP and report formats adds new fields; existing ones keep their
+meaning.
+
+### Added
+- **Inspectable evidence.** Answers carry `source_details`: the document, the
+  exact indexed passage, a page or heading locator, and the source state
+  (current, modified since indexing, or missing). Truncated passages are
+  recovered in full. Answers also carry `citation_selections`, which tie each
+  citation to the fragment it came from rather than the first title match. An
+  `answer_status` (`supported`, `insufficient_evidence`,
+  `conflicting_evidence`, `uncertain`) separates missing evidence from sources
+  that disagree. Available in the CLI, shell, web UI, JSON API and MCP.
+- **Optional sufficiency check before answering.** Enable it with
+  `[cognition].answer_sufficiency_check` and tune it with
+  `answer_sufficiency_timeout_s`. It is off by default and adds one model call.
+  Answers must then cite explicit references per claim, and a failed or
+  negative check blocks factual generation instead of guessing.
+- **Harder PDFs.**
+  - `[ingest].pdf_engine = "pdfplumber"` (extra `pdf-plumber`) reads by layout
+    blocks and keeps ruled-table rows. On layouts it does not support, it falls
+    back to the previous text.
+  - Opt-in per-page OCR for pages without a text layer (extra `ocr`), with
+    `ocr_language`, `ocr_max_pages` and `ocr_timeout_s`.
+  - Per-page extraction coverage reaches sidecars, the source viewer, MCP and
+    answers, so a partially read PDF is never presented as complete.
+  - Changing the engine or OCR settings re-extracts on the next scan and
+    reuses vectors for unchanged passages.
+- **Web UI journey.**
+  - Guided setup: pick a folder and models, validate them, and preview what a
+    scan would write.
+  - Live indexing progress, with skipped and failed files listed.
+  - Category, tag and format scope applied to both the answer and the related
+    passages; a scope with no matches never silently widens.
+  - Conversation memory with a reset button.
+  - A source viewer that highlights the cited passage.
+  - Spanish and English interface, keyboard navigation, clearer errors.
+  - Bundled fonts: the page makes no external requests.
+  - A local/remote model indicator.
+- **Scoped, token-protected writes from the web.** Applying setup, starting
+  indexing, recording review decisions and correcting a note's
+  classification. Operations that modify documents show a preview first,
+  keep private backups and can be restored if nothing changed since.
+- **Review inbox.** It gathers possible contradictions, near-duplicates and
+  notes due for review, with their passages, the reason for each alert and
+  analysis coverage. Confirm, dismiss and postpone decisions persist with a
+  log. Human corrections to tags and categories survive later scans.
+- **Topic syntheses** (preview only). A reviewable draft for a tag or
+  category, with its sources and coverage warnings. Nothing is written.
+- **Dates with provenance.** Publication, modification, indexing and last
+  verification are stored separately. An unknown date stays unknown, and a
+  recent import never makes a note look current.
+- **MCP.** New tools: `grimore_library_info`, `grimore_get_source` (an exact
+  indexed passage by identity, with a version check) and
+  `grimore_review_inbox` (read-only).
+- **Obsidian.** A read-only desktop plugin (`integrations/obsidian/`) for
+  search, exact passages and review alerts. It talks to Grimore over MCP, is
+  packaged reproducibly and is verified against its sources. It is not
+  installed automatically, and manual acceptance in Obsidian is pending.
+- **`grimore pilot init|check|observe`** prepares and records a pseudonymous
+  user pilot without storing vault content.
+- **Sensitive documents stay local.** A document containing personal data
+  (such as e-mail addresses or IPs) is tagged and embedded only through
+  loopback models, even when `allow_remote` is on; a remote-only setup refuses
+  it before sending anything.
+- **Evaluation.**
+  - Phase-0 datasets: 100 cases in Spanish and English, split into tuning and
+    evaluation sets.
+  - Separate metrics for retrieval, citation validity, cited answers, expected
+    passage in context, cited and selected, judge-estimated claim support, and
+    abstention cues.
+  - Human review queues, and full provenance (config, corpus, hardware).
+  - `eval/run_phase0_baseline.py` runs the baseline in an isolated workspace.
+- **Collaboration groundwork.** A library-scoped permission policy kernel
+  (`grimore.collaboration`) with tests. It is not connected to any surface;
+  Grimore remains single-user.
+- `grimore eval --checkpoint <run.jsonl>` makes long real-model runs
+  resumable. Each finished case is saved as it completes, and a rerun restores
+  those cases instead of asking again. Cases whose generation failed are asked
+  again. A checkpoint from a different run (cases, config, corpus, code, mode,
+  k values or judge) is refused rather than merged.
+- Eval provenance records `code_fingerprint`, a hash of the package sources
+  and prompts, which identifies the code even in a dirty checkout.
+
+### Changed
+- In eval reports, `faithfulness` is now a deprecated alias of
+  `citation_validity`, and it is `null` rather than `1.0` for an answer
+  without citations.
+- Default Ollama timeouts raised from 60/120 s to 300/300 s
+  (`request_timeout_s` / `stream_timeout_s`). On a 4-core CPU without a GPU,
+  the documented default model `qwen2.5:3b` took 72 s to answer a first
+  question, most of it reading an 817-token prompt. With the old defaults a
+  new user's first question timed out. Configs that set these keys explicitly
+  are unaffected.
+
+### Fixed
+- A failed note write or index step is retried on the next scan instead of
+  being recorded as done.
+- A model that returned nothing (for example Ollama restarting after an
+  out-of-memory kill) was indistinguishable from an abstention in eval
+  reports: the "The Oracle is silent." sentinel earned negative-case credit
+  and counted as an incorrect abstention on answerable cases. Turns now
+  record `generation_error`, skip the judges, and are counted in
+  `generation_failure_n`, with a warning panel. Historical metric definitions
+  are unchanged.
+- Eval provenance reported `git_sha: null` whenever `grimore eval` ran
+  outside the repository, such as from an isolated evaluation workspace. Git
+  is now queried in the package's own directory.
+- A model that gave no answer (timeout, Ollama down) was reported to users as
+  "Insufficient evidence", with its retrieved notes listed as cited sources.
+  `grimore ask` and the shell now show a "No answer" panel naming the timeout
+  settings. The web UI shows an error status. The JSON API, the streamed
+  `done` event and the MCP `grimore_ask` result gain a `generation_error` key,
+  present only on failure; existing fields are unchanged.
+- The streaming shell blamed Ollama ("returned no tokens. Is Ollama
+  running?") when no note was relevant enough to ask the model. It also
+  dropped answers delivered whole in the final event, as the opt-in
+  sufficiency check does. The web UI likewise shows "no passages" instead of
+  blaming the model in that case.
+- Running the test suite from the repository root rewrote the suggested
+  connections in the developer's own vault: one CLI test ran `grimore connect`
+  against the real `grimore.toml`. It now runs in a temporary directory. Two
+  tests that only passed with a local `grimore.toml` or with Pillow installed
+  now use the tracked example config or skip.
+- The test suite left files in the developer's user cache
+  (`~/.cache/grimore`) on every run: shell history, indexing progress and
+  private change backups. All tests now use a temporary cache.
+- `grimore daemon status` listed "?" rows in its recent-events table. A
+  background daemon's console output shares the event log, and those lines
+  were shown as events. They are now skipped, so the table shows the last
+  real events.
+
 ## [3.3.1] - 2026-08-11
 
 ### Fixed
@@ -241,7 +376,8 @@ summarizes the capabilities present at this version.
 - Preserve intentional exception suppression with `raise ... from None` at the
   CLI/validation boundaries that convert internal errors into clean exits.
 
-[Unreleased]: https://github.com/kahz12/Grimore-MD/compare/v3.3.1...HEAD
+[Unreleased]: https://github.com/kahz12/Grimore-MD/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/kahz12/Grimore-MD/releases/tag/v3.4.0
 [3.3.1]: https://github.com/kahz12/Grimore-MD/releases/tag/v3.3.1
 [3.3.0]: https://github.com/kahz12/Grimore-MD/releases/tag/v3.3.0
 [3.2.0]: https://github.com/kahz12/Grimore-MD/releases/tag/v3.2.0

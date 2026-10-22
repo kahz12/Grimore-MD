@@ -1,0 +1,55 @@
+version: 2
+set: tuning
+corpus_version: phase4-controlled-layout-2026-10-06
+questions:
+  - id: phase4-column-sampling-day
+    question: ¿Qué día se mide la calidad del agua?
+    expected_sources: [Control de extracción compleja del Humedal]
+    expected_keywords: [primer martes]
+    expected_answer: El primer martes de cada mes.
+    expected_evidence:
+      - source: Control de extracción compleja del Humedal
+        passage: La calidad del agua se mide el primer martes de cada mes.
+        locator: p.1
+    review_criteria: Debe indicar el día de muestreo de la columna izquierda y localizarlo en la página física 1.
+    category: extraction
+    language: es
+    case_type: direct
+    document_formats: [pdf]
+    user_task: find-fact
+    difficulty: multi-column
+    split: tuning
+  - id: phase4-wrapped-table-responsibility
+    question: ¿Qué tarea tiene la Cooperativa Verde Vivo?
+    expected_sources: [Control de extracción compleja del Humedal]
+    expected_keywords: [jacinto, revegetación]
+    expected_answer: Retiro de jacinto y revegetación.
+    expected_evidence:
+      - source: Control de extracción compleja del Humedal
+        passage: "Cooperativa Verde Vivo\nRetiro de jacinto\ny revegetación"
+        locator: p.2
+    review_criteria: Debe conservar la relación entre responsable y función de la misma fila, sin atribuirle tareas de filas vecinas; comprobar en la tabla visual.
+    category: extraction
+    language: es
+    case_type: direct
+    document_formats: [pdf]
+    user_task: find-fact
+    difficulty: wrapped-table
+    split: tuning
+  - id: phase4-degraded-scan-area
+    question: ¿Cuántas hectáreas tiene el área de intervención aprobada?
+    expected_sources: [Control de extracción compleja del Humedal]
+    expected_keywords: ["37,5", hectáreas]
+    expected_answer: 37,5 hectáreas.
+    expected_evidence:
+      - source: Control de extracción compleja del Humedal
+        passage: El área de intervención aprobada es de 37,5 hectáreas
+        locator: p.3
+    review_criteria: Debe recuperar número y unidad del escaneo degradado y citar la página física 3, no el folio impreso 1.
+    category: extraction
+    language: es
+    case_type: direct
+    document_formats: [pdf]
+    user_task: find-fact
+    difficulty: degraded-scan
+    split: tuning

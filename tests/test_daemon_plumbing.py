@@ -271,6 +271,20 @@ class TestEventLogParse:
         out = tail_events(log_path, n=3)
         assert [e["path"] for e in out] == ["f4.md", "f5.md", "f6.md"]
 
+    def test_tail_skips_console_lines_sharing_the_log(self, tmp_path):
+        """A background daemon's structlog output lands in the same file."""
+        from grimore.utils.event_log import DaemonEventLog, tail_events
+
+        log_path = tmp_path / "daemon.log"
+        log = DaemonEventLog(log_path)
+        log.write("daemon_started", pid=1)
+        log.write("processed", path="a.md")
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write("\x1b[2m2026-08-11T16:37:20Z\x1b[0m [info] observer_started\n")
+            fh.write("[info] daemon_stopping\n")
+        out = tail_events(log_path, n=5)
+        assert [e["event"] for e in out] == ["daemon_started", "processed"]
+
     def test_tail_missing_file_returns_empty(self, tmp_path):
         from grimore.utils.event_log import tail_events
         assert tail_events(tmp_path / "does-not-exist.log", n=5) == []

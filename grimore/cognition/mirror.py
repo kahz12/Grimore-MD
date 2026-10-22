@@ -22,7 +22,7 @@ keeping claim ids stable when the underlying claim text is unchanged
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -30,7 +30,7 @@ from typing import Optional
 import numpy as np
 
 from grimore.cognition.claims import ClaimExtractor
-from grimore.ingest.parser import read_document_text
+from grimore.ingest.parser import MarkdownParser, read_document_text
 from grimore.session import Session
 from grimore.utils.logger import get_logger
 
@@ -63,6 +63,17 @@ class MirrorRunReport:
     claims_extracted: int = 0
     pairs_checked: int = 0
     contradictions_found: int = 0
+    coverage_gaps: list[ClaimCoverageGap] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ClaimCoverageGap:
+    note_path: str
+    section: int
+    part: int
+    page: Optional[int]
+    heading: Optional[str]
+    reason: str
 
 
 @dataclass
@@ -115,7 +126,13 @@ class Mirror:
     ) -> None:
         self.session = session
         self.similarity_floor = similarity_floor
-        self._extractor = ClaimExtractor(session.router)
+        cognition = session.config.cognition
+        self._extractor = ClaimExtractor(
+            session.router,
+            max_chars=cognition.claim_max_chars,
+            max_sections=cognition.claim_max_sections,
+            max_claims_per_section=cognition.claim_max_claims_per_section,
+        )
 
     # ── scan ───────────────────────────────────────────────────────────
 
@@ -146,8 +163,9 @@ class Mirror:
         for i, note_path in enumerate(notes_to_extract):
             if progress:
                 progress("extract", i, len(notes_to_extract))
-            inserted = self._extract_and_persist(note_path)
+            inserted, gaps = self._extract_and_persist(note_path)
             report.claims_extracted += inserted
+            report.coverage_gaps.extend(gaps)
 
         # Stages 1+2 — pair candidate claims and check for contradictions
         all_claims = self.session.db.get_all_claims_with_vectors()
@@ -288,23 +306,34 @@ class Mirror:
                 ).fetchall()
         return {int(r[0]) for r in rows}
 
-    def _extract_and_persist(self, note_path: str) -> int:
+    def _extract_and_persist(self, note_path: str) -> tuple[int, list[ClaimCoverageGap]]:
         """Read note → extract claims → embed → persist."""
         try:
-            content = read_document_text(
+            note = MarkdownParser().parse_file(
                 note_path,
                 vault_root=self.session.vault_root,
                 config=self.session.config,
             )
         except (OSError, UnicodeError, ValueError) as e:
             logger.warning("mirror_read_failed", path=note_path, error=str(e))
-            return 0
-        extracted = self._extractor.extract(content)
+            return 0, []
+        extraction = self._extractor.extract_with_coverage(
+            note.content, sections=note.sections,
+        )
+        gaps = [ClaimCoverageGap(
+            note_path, ref.section, ref.part, ref.page, ref.heading, ref.reason,
+        ) for ref in extraction.unanalyzed_sections]
+        if extraction.failed:
+            # Do not erase earlier claims or stamp a successful extraction
+            # timestamp when the model failed on a selected source part.
+            logger.warning("mirror_claim_extraction_incomplete", path=note_path)
+            return 0, gaps
+        extracted = extraction.claims
         if not extracted:
             # Even if no claims came back, drop existing rows so we
             # don't keep stale claims around.
             self.session.db.replace_claims_for_note(note_path, [], _now_iso())
-            return 0
+            return 0, gaps
         embedder = self.session.embedder
         vectors = embedder.embed_batch([claim.text for claim in extracted])
         rows: list[tuple[str, Optional[int], Optional[int], Optional[bytes]]] = []
@@ -313,7 +342,7 @@ class Mirror:
             rows.append((c.text, c.char_start, c.char_end, blob))
         return self.session.db.replace_claims_for_note(
             note_path, rows, _now_iso()
-        )
+        ), gaps
 
     def _neighbor_map(
         self,

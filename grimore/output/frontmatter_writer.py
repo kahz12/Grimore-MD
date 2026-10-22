@@ -51,6 +51,7 @@ class FrontmatterWriter:
         sidecar_dir: str = ".grimore/sidecars",
         write_sidecars: bool = True,
         dry_run: bool = True,
+        change_journal=None,
     ) -> Optional[Path]:
         """Write ``updates`` to the right target for ``note``.
 
@@ -59,7 +60,10 @@ class FrontmatterWriter:
         ``write_sidecars=False`` for a non-MD note).
         """
         if note.format == "md":
-            self.write_inline(note.path, updates, dry_run=dry_run)
+            self.write_inline(
+                note.path, updates, dry_run=dry_run,
+                change_journal=change_journal,
+            )
             return None if dry_run else note.path
 
         if not write_sidecars:
@@ -81,8 +85,94 @@ class FrontmatterWriter:
             )
 
         sidecar = sidecar_path_for(note.path, vault_root, sidecar_dir)
-        self._write_sidecar(note, sidecar, updates, dry_run=dry_run)
+        self._write_sidecar(
+            note, sidecar, updates, dry_run=dry_run,
+            change_journal=change_journal,
+        )
         return None if dry_run else sidecar
+
+    def preview_metadata(
+        self,
+        note: ParsedNote,
+        updates: dict[str, Any],
+        *,
+        vault_root: Union[str, Path],
+        sidecar_dir: str = ".grimore/sidecars",
+        write_sidecars: bool = True,
+    ) -> Optional[dict]:
+        """Describe the file-level metadata change without writing it."""
+        if note.format == "md":
+            target = Path(note.path)
+            existing = dict(note.metadata or {})
+            desired = dict(updates)
+        else:
+            if not write_sidecars:
+                return None
+            target = sidecar_path_for(note.path, vault_root, sidecar_dir)
+            existing = {}
+            if target.exists():
+                try:
+                    existing = dict(frontmatter.load(target).metadata)
+                except Exception:
+                    existing = {}
+            desired = dict(updates)
+            desired.update({
+                "source": str(note.path),
+                "format": note.format,
+                "content_hash": note.content_hash,
+                SIDECAR_FLAG_KEY: True,
+                "title": existing.get("title") or note.title,
+            })
+            if note.file_hash:
+                desired["file_hash"] = note.file_hash
+        fields = [
+            {"name": key, "before": existing.get(key), "after": value}
+            for key, value in desired.items()
+            if existing.get(key) != value
+        ]
+        return {
+            "target": str(target),
+            "action": "update" if target.exists() else "create",
+            "fields": fields,
+        }
+
+    def refresh_extraction_metadata(
+        self,
+        note: ParsedNote,
+        extraction: dict,
+        *,
+        vault_root: Union[str, Path],
+        sidecar_dir: str = ".grimore/sidecars",
+        write_sidecars: bool = True,
+        dry_run: bool = True,
+        change_journal=None,
+    ) -> Optional[dict]:
+        """Refresh an existing PDF sidecar without replacing cognitive metadata.
+
+        This is for a changed source whose extracted text is unchanged. It
+        updates the extraction diagnosis and source hash, while preserving
+        tags, summaries and user-authored sidecar content. It does not create
+        a partial sidecar when none existed before.
+        """
+        if note.format != "pdf" or not write_sidecars:
+            return None
+        target = sidecar_path_for(note.path, vault_root, sidecar_dir)
+        if not target.is_file():
+            return None
+        updates = {"extraction": extraction}
+        changes = self.preview_metadata(
+            note, updates, vault_root=vault_root,
+            sidecar_dir=sidecar_dir, write_sidecars=write_sidecars,
+        )
+        if not changes or not changes["fields"]:
+            return None
+        if not dry_run:
+            self.write_metadata(
+                note, updates, vault_root=vault_root,
+                sidecar_dir=sidecar_dir, write_sidecars=write_sidecars,
+                dry_run=False, change_journal=change_journal,
+            )
+        return changes
 
     # ── Inline (Markdown) ─────────────────────────────────────────────────
 
@@ -92,6 +182,7 @@ class FrontmatterWriter:
         metadata_updates: dict[str, Any],
         *,
         dry_run: bool = True,
+        change_journal=None,
     ) -> None:
         """Original Markdown round-trip: merge YAML frontmatter in place."""
         if dry_run:
@@ -105,6 +196,8 @@ class FrontmatterWriter:
         try:
             post = frontmatter.load(file_path)
             post.metadata.update(metadata_updates)
+            if change_journal is not None:
+                change_journal.capture_before(file_path)
             # Encode explicitly rather than relying on frontmatter.dump()'s
             # handling of a binary handle — that differs across versions
             # (1.1.0 encodes; 1.3.0 writes str, which fails on a "wb" file).
@@ -113,6 +206,8 @@ class FrontmatterWriter:
                 lambda fh: fh.write(frontmatter.dumps(post).encode("utf-8")),
                 mode="wb",
             )
+            if change_journal is not None:
+                change_journal.capture_after(file_path)
             logger.info("metadata_updated", path=str(file_path))
         except Exception as e:
             logger.error(
@@ -129,6 +224,7 @@ class FrontmatterWriter:
         metadata_updates: dict[str, Any],
         *,
         dry_run: bool,
+        change_journal=None,
     ) -> None:
         """Materialise (or refresh) the sidecar ``.md`` for a non-MD note.
 
@@ -186,11 +282,15 @@ class FrontmatterWriter:
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)
         post = frontmatter.Post(body, **merged)
         try:
+            if change_journal is not None:
+                change_journal.capture_before(sidecar_path)
             atomic_write(
                 sidecar_path,
                 lambda fh: fh.write(frontmatter.dumps(post).encode("utf-8")),
                 mode="wb",
             )
+            if change_journal is not None:
+                change_journal.capture_after(sidecar_path)
             logger.info(
                 "sidecar_written", source=str(note.path), sidecar=str(sidecar_path),
             )

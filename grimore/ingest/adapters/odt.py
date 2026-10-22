@@ -96,6 +96,8 @@ def _parse_meta(zf: zipfile.ZipFile) -> dict[str, str]:
     grab("subject",     "dc", "subject")
     grab("description", "dc", "description")
     grab("language",    "dc", "language")
+    grab("creation-date", "meta", "created")
+    grab("date",          "dc", "modified")
     return out
 
 

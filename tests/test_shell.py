@@ -212,6 +212,48 @@ def test_ask_no_stream_uses_oracle_ask(shell_config, patched_services, capsys):
     assert "Oracle says hi." in out
 
 
+_FAILED = {"answer": "The Oracle is silent.", "sources": ["Note A"],
+           "answer_status": "insufficient_evidence", "generation_error": "no_model_response"}
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_model_failure_is_not_shown_as_insufficient_evidence(
+        shell_config, patched_services, capsys, stream):
+    session = Session(shell_config)
+    session.oracle.ask = lambda *a, **kw: _FAILED
+    session.oracle.ask_stream = lambda *a, **kw: iter([{"type": "done", **_FAILED, "answer": ""}])
+    GrimoreShell(session).dispatch("ask Tell me" if stream else "ask --no-stream Tell me")
+    out = capsys.readouterr().out
+    assert "No answer" in out
+    assert "Insufficient evidence" not in out
+    assert "Cited sources" not in out
+    assert "The Oracle is silent" not in out
+
+
+def test_stream_without_relevant_notes_does_not_blame_the_model(
+        shell_config, patched_services, capsys):
+    session = Session(shell_config)
+    session.oracle.ask_stream = lambda *a, **kw: iter([{
+        "type": "done", "sources": [], "source_details": [],
+        "answer_status": "insufficient_evidence"}])
+    GrimoreShell(session).dispatch("ask Tell me")
+    out = capsys.readouterr().out
+    assert "No answer" not in out and "no tokens" not in out
+    assert "found no relevant notes" in out
+
+
+def test_answer_delivered_only_in_the_final_event_is_shown(
+        shell_config, patched_services, capsys):
+    session = Session(shell_config)
+    session.oracle.ask_stream = lambda *a, **kw: iter([{
+        "type": "done", "answer": "Validated claim.", "sources": ["Note A"],
+        "answer_status": "supported"}])
+    GrimoreShell(session).dispatch("ask Tell me")
+    out = capsys.readouterr().out
+    assert "Validated claim." in out
+    assert session.last_answer["answer"] == "Validated claim."
+
+
 # ── history file hygiene ────────────────────────────────────────────────
 
 
@@ -428,6 +470,8 @@ def test_status_reflects_session_model_swap(
     shell.dispatch("status")
     out = capsys.readouterr().out
     assert "ministral-3:14b" in out
+    assert "Execution" in out
+    assert "local" in out
 
 
 def test_models_unknown_subcommand_does_not_kill_loop(

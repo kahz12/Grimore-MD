@@ -23,9 +23,14 @@ Metrics computed per case (and aggregated over the suite):
                         retrieved sources for the ask.
 * ``mrr``             — mean reciprocal rank of the first ``expected_sources``
                         hit (0 when none of them appear).
-* ``faithfulness``    — ``1 - dropped_citations / total_citations``; 1.0 means
-                        every ``[[wikilink]]`` the model emitted was grounded
-                        in a retrieved source.
+* ``citation_validity`` — ``1 - dropped_citations / total_citations``; 1.0
+                          means every ``[[wikilink]]`` the model emitted names
+                          a retrieved source. It is ``None`` when no citation
+                          was emitted: absence of citations is not perfect
+                          faithfulness.
+* ``cited_answer_rate`` — fraction of generated, answerable turns that emitted
+                          at least one citation. This is answer-level coverage;
+                          claim-level support is a separate human-review metric.
 * ``keyword_recall``  — fraction of ``expected_keywords`` present in the
                         answer, matched accent-folded and word-boundary
                         anchored (see :func:`_keyword_pattern`).
@@ -60,8 +65,9 @@ determinism profiles:
   generated answer, so every metric is populated.
 * **Retrieval-only** (``generate=False``) — ``oracle.retrieve`` per turn:
   ranks sources without an answer LLM call. Fast and deterministic given the
-  index, so it's the mode to gate CI on. Generation metrics (faithfulness,
-  keyword recall, judge) are reported as ``None``, not 0.0.
+  index, so it's the mode to gate CI on. Generation metrics (citation
+  validity, cited-answer rate, keyword recall, judge) are reported as
+  ``None``, not 0.0.
 
 Ranking depth is decoupled from context depth: ``top_k`` sizes the answer's
 context window, while ``retrieval_k`` (≥ ``top_k``, default 10) sizes the
@@ -77,6 +83,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
+import platform
 import re
 import statistics
 import subprocess
@@ -89,20 +97,33 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
+from grimore import __version__
+from grimore.cognition.answer_protocol import technical_failure
 from grimore.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Schema version of the golden YAML. Bumped only when the file shape
-# changes incompatibly; current loaders accept v1.
-_GOLDEN_SCHEMA_VERSION = 1
+# The loader supports both schema versions. Version 2 adds evidence and
+# review metadata without changing runtime scoring.
+_GOLDEN_SCHEMA_VERSIONS = {1, 2}
+_TOP_LEVEL_KEYS = {"version", "set", "corpus_version", "questions"}
 
 # Allowed keys on each case (top-level and follow-ups). Anything else is a
 # typo we want to catch loudly rather than silently ignore.
 _CASE_KEYS = {
     "id", "question", "expected_sources", "expected_keywords", "follow_ups",
-    "category", "negative",
+    "category", "negative", "language", "case_type", "document_formats",
+    "expected_answer", "expected_evidence", "review_criteria", "user_task",
+    "difficulty", "split",
 }
+_EVIDENCE_KEYS = {"source", "passage", "locator"}
+_LANGUAGES = {"es", "en"}
+_CASE_TYPES = {
+    "direct", "ambiguous", "follow-up", "unanswerable", "contradictory",
+    "similar-documents", "comparison",
+}
+_USER_TASKS = {"find-fact", "compare-documents", "review-note"}
+_SPLITS = {"tuning", "evaluation"}
 
 # Wikilink pattern used to count citations the model actually emitted in
 # the answer text. Same shape as Oracle's verify_citations regex so the
@@ -135,6 +156,18 @@ class EvalCase:
     # abstention, and excluded from the ranking aggregates (where empty
     # expectations would otherwise count as vacuous hits).
     negative: bool = False
+    # Defaults preserve compatibility with older datasets; newer datasets can
+    # provide these fields explicitly, where they are validated at load time.
+    language: str = "unspecified"
+    case_type: str = "direct"
+    document_formats: list[str] = field(default_factory=list)
+    expected_answer: str = ""
+    expected_evidence: list[dict[str, str]] = field(default_factory=list)
+    review_criteria: str = ""
+
+    user_task: str = "find-fact"
+    difficulty: str = "standard"
+    split: str = "tuning"
 
 
 @dataclass
@@ -166,7 +199,7 @@ class TurnResult:
     # ── stratification + negative-case signal ──
     category: str = "uncategorized"
     negative: bool = False
-    abstained: Optional[bool] = None       # set only for negative cases
+    abstained: Optional[bool] = None       # set for every generated turn
     # ── failure taxonomy ──
     # Which pipeline stage broke (or "ok"), so reports identify the responsible
     # component when a number drops. See ``classify_outcome``. ``expected_sources`` and
@@ -175,10 +208,42 @@ class TurnResult:
     expected_sources: list[str] = field(default_factory=list)
     missing_keywords: list[str] = field(default_factory=list)
     # ── per-stage latency (embed/retrieve/rerank/generate/…) ──
-    # The Oracle's stage breakdown for this turn, so a latency regression can be
-    # pinned to a stage instead of just "slower". Empty when the Oracle didn't
+    # The Oracle's stage breakdown for this turn, so latency changes can be
+    # attributed to a stage instead of just "slower". Empty when the Oracle didn't
     # report timings (e.g. a hand-built TurnResult).
     timings: dict[str, float] = field(default_factory=dict)
+    generated: bool = True
+    # Canonical metric name. ``faithfulness`` above remains populated for
+    # compatibility with consumers of older exported reports.
+    citation_validity: Optional[float] = None
+    language: str = "unspecified"
+    case_type: str = "direct"
+    document_formats: list[str] = field(default_factory=list)
+    split: str = "tuning"
+    answer_status: str = "unassessed"
+    source_details: list[dict[str, Any]] = field(default_factory=list)
+    # Automated evidence judge. Kept explicitly separate from citation
+    # validity and from the human review fields below.
+    automated_claim_support: Optional[float] = None
+    claim_citation_coverage: Optional[float] = None
+    supported_claims: Optional[int] = None
+    unsupported_claims: Optional[int] = None
+    unverifiable_claims: Optional[int] = None
+    expected_evidence: list[dict[str, str]] = field(default_factory=list)
+    review_criteria: str = ""
+    # Literal reference presence, not semantic claim support. None denotes an
+    # unassessed turn (legacy payload, retrieval-only, or no reference).
+    context_evidence_recall: Optional[float] = None
+    cited_evidence_recall: Optional[float] = None
+    selected_evidence_recall: Optional[float] = None
+    citation_selections: Optional[list[dict[str, Any]]] = None
+    sufficiency: Optional[dict[str, Any]] = None
+    evidence_checks: list[dict[str, Any]] = field(default_factory=list)
+    # Why no answer could be generated (transport failure, missing answer
+    # field, raised ask), or None. The historical metrics still score the
+    # silent sentinel as before; this flag makes the contamination countable
+    # and lets a checkpointed run retry the case instead of keeping it.
+    generation_error: Optional[str] = None
 
 
 @dataclass
@@ -190,21 +255,37 @@ class EvalReport:
     """
     top_k: int
     turns: list[TurnResult]
+    provenance: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         if not self.turns:
-            return {"top_k": self.top_k, "n": 0, "aggregate": {}, "turns": []}
+            result = {"top_k": self.top_k, "n": 0, "aggregate": {}, "turns": []}
+            if self.provenance:
+                result["provenance"] = self.provenance
+            return result
         # Ranking metrics are scored over positive turns only — a negative
         # case has empty expectations, which the metrics treat as a vacuous
         # 1.0, and that would silently inflate Hit@k / MRR.
         pos = [t for t in self.turns if not t.negative]
         neg = [t for t in self.turns if t.negative]
+        citation_validity = _present_mean(
+            t.citation_validity if t.citation_validity is not None else t.faithfulness
+            for t in self.turns
+        )
+        generated_positives = [t for t in pos if t.generated]
         agg: dict[str, Any] = {
             "hit_at_1":    _mean(1.0 if t.source_hit_at_1 else 0.0 for t in pos),
             "hit_at_3":    _mean(1.0 if t.source_hit_at_3 else 0.0 for t in pos),
             "recall_at_k": _mean(t.recall_at_k for t in pos),
             "mrr":         _mean(t.mrr for t in pos),
-            "faithfulness": _present_mean(t.faithfulness for t in self.turns),
+            "citation_validity": citation_validity,
+            "cited_answer_rate": (
+                _mean(1.0 if t.total_citations > 0 else 0.0 for t in generated_positives)
+                if generated_positives else None
+            ),
+            # Deprecated compatibility alias. Citation-free answers now
+            # contribute None, never a vacuous 1.0.
+            "faithfulness": citation_validity,
             "keyword_recall": _present_mean(t.keyword_recall for t in self.turns),
             "latency_p50": _quantile([t.latency_s for t in self.turns], 0.50),
             "latency_p95": _quantile([t.latency_s for t in self.turns], 0.95),
@@ -215,11 +296,49 @@ class EvalReport:
         judged = [t.answer_relevance for t in self.turns if t.answer_relevance is not None]
         agg["answer_relevance"] = _mean(judged) if judged else None
         agg["judged_n"] = len(judged)
+        support = [
+            t.automated_claim_support for t in self.turns
+            if t.automated_claim_support is not None
+        ]
+        coverage = [
+            t.claim_citation_coverage for t in self.turns
+            if t.claim_citation_coverage is not None
+        ]
+        agg["automated_claim_support"] = _mean(support) if support else None
+        agg["claim_citation_coverage"] = _mean(coverage) if coverage else None
+        agg["support_judged_n"] = len(support)
+        evidence_turns = [t for t in pos if t.context_evidence_recall is not None]
+        agg["context_evidence_recall"] = _present_mean(
+            t.context_evidence_recall for t in evidence_turns
+        )
+        agg["cited_evidence_recall"] = _present_mean(
+            t.cited_evidence_recall for t in evidence_turns
+        )
+        agg["evidence_assessed_n"] = len(evidence_turns)
+        agg["expected_evidence_n"] = sum(len(t.evidence_checks) for t in evidence_turns)
+        agg["context_evidence_hits"] = sum(
+            bool(check["in_context"]) for t in evidence_turns for check in t.evidence_checks
+        )
+        agg["cited_evidence_hits"] = sum(
+            bool(check["cited"]) for t in evidence_turns for check in t.evidence_checks
+        )
+        selected_turns = [t for t in evidence_turns if t.selected_evidence_recall is not None]
+        agg["selected_evidence_recall"] = _present_mean(t.selected_evidence_recall for t in selected_turns)
+        agg["selection_assessed_n"] = len(selected_turns)
+        agg["selection_expected_evidence_n"] = sum(len(t.evidence_checks) for t in selected_turns)
+        agg["selected_evidence_hits"] = sum(
+            bool(check["selected"]) for t in selected_turns for check in t.evidence_checks
+        )
         # Negative cases: did the Oracle correctly abstain instead of
         # confabulating an answer? Higher is better.
         if neg:
             agg["abstention_rate"] = _mean(1.0 if t.abstained else 0.0 for t in neg)
             agg["negatives_n"] = len(neg)
+        generated_pos = [t for t in pos if t.generated]
+        agg["incorrect_abstention_rate"] = (
+            _mean(1.0 if t.abstained else 0.0 for t in generated_pos)
+            if generated_pos else None
+        )
         # Failure taxonomy: which stage broke, and how often. ``pass_rate`` is
         # the fraction of turns whose outcome is "ok" (excluding the
         # not-assessable ones).
@@ -229,16 +348,67 @@ class EvalReport:
         agg["outcomes"] = outcomes
         scored = [t for t in self.turns if t.outcome != "na"]
         agg["pass_rate"] = _mean(1.0 if t.outcome == "ok" else 0.0 for t in scored)
-        return {
+        agg["evidence_control_failure_n"] = sum(technical_failure(t.sufficiency) for t in self.turns)
+        agg["generation_failure_n"] = sum(t.generation_error is not None for t in self.turns)
+        result = {
             "top_k": self.top_k,
             "n": len(self.turns),
             "positives_n": len(pos),
             "negatives_n": len(neg),
             "aggregate": agg,
             "by_category": _by_category(pos),
+            "by_language": _by_dimension(pos, "language"),
+            "by_case_type": _by_dimension(pos, "case_type"),
             "failures": [_failure_detail(t) for t in self.turns if t.outcome not in ("ok", "na")],
+            "evidence_gaps": [
+                {"case_id": t.case_id, "turn_index": t.turn_index,
+                 "checks": t.evidence_checks}
+                for t in evidence_turns if t.cited_evidence_recall != 1.0
+            ],
+            "manual_review": [
+                {
+                    "case_id": t.case_id,
+                    "turn_index": t.turn_index,
+                    "question": t.question,
+                    "answer": t.answer,
+                    "answer_status": t.answer_status,
+                    "source_details": t.source_details,
+                    "citation_selections": t.citation_selections,
+                    "sufficiency": t.sufficiency,
+                    "expected_evidence": t.expected_evidence,
+                    "review_criteria": t.review_criteria,
+                    "claim_support": "pending",
+                }
+                for t in pos if t.generated and t.review_criteria
+            ],
+            # A refusal cue is not proof of abstention: a response may refuse
+            # one detail and still invent another. Keep the negative review
+            # queue separate from positive expected-passage claim support.
+            "negative_manual_review": [
+                {
+                    "case_id": t.case_id,
+                    "turn_index": t.turn_index,
+                    "question": t.question,
+                    "answer": t.answer,
+                    "answer_status": t.answer_status,
+                    "source_details": t.source_details,
+                    "citation_selections": t.citation_selections,
+                    "sufficiency": t.sufficiency,
+                    "abstention_detected": t.abstained,
+                    "review_criteria": t.review_criteria,
+                    "abstention_verdict": "pending",
+                }
+                for t in neg if t.generated and t.review_criteria
+            ],
             "turns": [asdict(t) for t in self.turns],
+            "selection_gaps": [
+                {"case_id": t.case_id, "turn_index": t.turn_index, "checks": t.evidence_checks}
+                for t in selected_turns if t.selected_evidence_recall != 1.0
+            ],
         }
+        if self.provenance:
+            result["provenance"] = self.provenance
+        return result
 
     def render(self, console) -> None:
         """Pretty-print the report. Lazy-imports Rich so eval.py can be
@@ -260,9 +430,12 @@ class EvalReport:
         table.add_column("H@3", justify="center")
         table.add_column(f"Recall@{self.top_k}", justify="right")
         table.add_column("MRR", justify="right")
-        table.add_column("Faith.", justify="right")
+        table.add_column("Cit.valid", justify="right")
+        table.add_column("Cited", justify="center")
         table.add_column("KW", justify="right")
         table.add_column("Judge", justify="right")
+        table.add_column("Support", justify="right")
+        table.add_column("Claim cit.", justify="right")
         table.add_column("Outcome", no_wrap=True)
         table.add_column("Latency", justify="right")
         for t in self.turns:
@@ -278,8 +451,17 @@ class EvalReport:
                 "—" if neg else f"{t.recall_at_k:.2f}",
                 "—" if neg else f"{t.mrr:.2f}",
                 "—" if t.faithfulness is None else f"{t.faithfulness:.2f}",
+                "—" if not t.generated else ("✓" if t.total_citations else "·"),
                 "—" if t.keyword_recall is None else f"{t.keyword_recall:.2f}",
                 "—" if t.answer_relevance is None else f"{t.answer_relevance:.2f}",
+                (
+                    "—" if t.automated_claim_support is None
+                    else f"{t.automated_claim_support:.2f}"
+                ),
+                (
+                    "—" if t.claim_citation_coverage is None
+                    else f"{t.claim_citation_coverage:.2f}"
+                ),
                 _outcome_markup(t.outcome),
                 f"{t.latency_s:.1f}s",
             )
@@ -288,22 +470,47 @@ class EvalReport:
         summary = self.summary()
         agg = summary["aggregate"]
         judge = "—" if agg.get("answer_relevance") is None else f"{agg['answer_relevance']:.2f} (n={agg['judged_n']})"
-        faith = "—" if agg.get("faithfulness") is None else f"{agg['faithfulness']:.2f}"
+        validity = (
+            "—" if agg.get("citation_validity") is None
+            else f"{agg['citation_validity']:.2f}"
+        )
+        cited = (
+            "—" if agg.get("cited_answer_rate") is None
+            else f"{agg['cited_answer_rate']:.2f}"
+        )
         kw = "—" if agg.get("keyword_recall") is None else f"{agg['keyword_recall']:.2f}"
+        support = (
+            "—" if agg.get("automated_claim_support") is None
+            else f"{agg['automated_claim_support']:.2f}"
+        )
+        claim_citations = (
+            "—" if agg.get("claim_citation_coverage") is None
+            else f"{agg['claim_citation_coverage']:.2f}"
+        )
         body = (
             f"Hit@1: [bold]{agg['hit_at_1']:.2f}[/]   "
             f"Hit@3: [bold]{agg['hit_at_3']:.2f}[/]   "
             f"(over {summary['positives_n']} positive turn(s))\n"
             f"Recall@{self.top_k}: [bold]{agg['recall_at_k']:.2f}[/]   "
             f"MRR: [bold]{agg['mrr']:.2f}[/]   "
-            f"Faithfulness: [bold]{faith}[/]   "
+            f"Citation validity: [bold]{validity}[/]   "
+            f"Cited answers: [bold]{cited}[/]   "
             f"Keyword recall: [bold]{kw}[/]\n"
             f"Answer relevance (judge): [bold]{judge}[/]\n"
+            f"Automated claim support: [bold]{support}[/]   "
+            f"Claim citation coverage: [bold]{claim_citations}[/]   "
+            f"(n={agg['support_judged_n']})\n"
         )
         if summary["negatives_n"]:
             body += (
                 f"Abstention (negatives): [bold]{agg['abstention_rate']:.2f}[/] "
                 f"(n={agg['negatives_n']})\n"
+            )
+        if agg.get("incorrect_abstention_rate") is not None:
+            body += (
+                "Incorrect abstention (answerable): "
+                f"[bold]{agg['incorrect_abstention_rate']:.2f}[/] "
+                f"(n={summary['positives_n']})\n"
             )
         # Pass rate + failure-stage distribution (ok hidden — it's the pass).
         dist = "  ".join(
@@ -323,6 +530,20 @@ class EvalReport:
             )
             body += f"\nStage means: {parts}"
         console.print(Panel(body, title="Aggregate", border_style="grimore.primary"))
+
+        if agg.get("generation_failure_n"):
+            failed = [t for t in self.turns if t.generation_error is not None]
+            lines = [
+                f"[bold]{t.case_id}[/] (turn {t.turn_index}) — {t.generation_error}"
+                for t in failed
+            ]
+            console.print(Panel(
+                f"{len(failed)} turn(s) produced no model answer. Their silent "
+                "sentinel still counts in the historical metrics above (an "
+                "abstention cue), so these results are contaminated: rerun "
+                "with --checkpoint to retry them.\n" + "\n".join(lines),
+                title="Generation failures", border_style="grimore.warning",
+            ))
 
         # Per-category ranking breakdown — where retrieval actually struggles.
         by_cat = summary["by_category"]
@@ -375,19 +596,45 @@ def load_golden(path: Path) -> list[EvalCase]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: top level must be a mapping")
+    unknown_top = set(raw) - _TOP_LEVEL_KEYS
+    if unknown_top:
+        raise ValueError(f"{path}: unknown top-level key(s): {sorted(unknown_top)}")
     version = raw.get("version")
-    if version != _GOLDEN_SCHEMA_VERSION:
+    if version not in _GOLDEN_SCHEMA_VERSIONS:
         raise ValueError(
             f"{path}: unsupported schema version {version!r} "
-            f"(expected {_GOLDEN_SCHEMA_VERSION})"
+            f"(expected one of {sorted(_GOLDEN_SCHEMA_VERSIONS)})"
         )
+    dataset_split = raw.get("set")
+    if version == 2 and dataset_split not in _SPLITS:
+        raise ValueError(
+            f"{path}: v2 requires top-level 'set' to be one of {sorted(_SPLITS)}"
+        )
+    if version == 2 and not str(raw.get("corpus_version") or "").strip():
+        raise ValueError(f"{path}: v2 requires a non-empty 'corpus_version'")
     questions = raw.get("questions") or []
     if not isinstance(questions, list):
         raise ValueError(f"{path}: 'questions' must be a list")
-    return [_parse_case(q, path) for q in questions]
+    cases = [
+        _parse_case(q, path, schema_version=version, dataset_split=dataset_split)
+        for q in questions
+    ]
+    ids = [case.id for case in _walk_cases(cases)]
+    duplicates = sorted({case_id for case_id in ids if ids.count(case_id) > 1})
+    if duplicates:
+        raise ValueError(f"{path}: duplicate case id(s): {duplicates}")
+    return cases
 
 
-def _parse_case(node: dict, path: Path, *, parent_category: str = "uncategorized") -> EvalCase:
+def _parse_case(
+    node: dict,
+    path: Path,
+    *,
+    parent_category: str = "uncategorized",
+    parent_metadata: Optional[dict[str, Any]] = None,
+    schema_version: int = 1,
+    dataset_split: Optional[str] = None,
+) -> EvalCase:
     if not isinstance(node, dict):
         raise ValueError(f"{path}: case is not a mapping: {node!r}")
     unknown = set(node) - _CASE_KEYS
@@ -408,15 +655,187 @@ def _parse_case(node: dict, path: Path, *, parent_category: str = "uncategorized
     # Follow-ups inherit the parent's category unless they declare their own,
     # so a multi-turn case stays grouped under one stratum.
     category = str(node.get("category", parent_category))
+    inherited = parent_metadata or {}
+    language = str(node.get("language", inherited.get("language", "unspecified")))
+    case_type = str(node.get(
+        "case_type", "follow-up" if parent_metadata is not None else inherited.get("case_type", "direct")
+    ))
+    document_formats = list(node.get(
+        "document_formats", inherited.get("document_formats", [])
+    ) or [])
+    user_task = str(node.get("user_task", inherited.get("user_task", "find-fact")))
+    difficulty = str(node.get("difficulty", inherited.get("difficulty", "standard")))
+    split = str(node.get("split", dataset_split or inherited.get("split", "tuning")))
+    expected_answer = str(node.get("expected_answer", ""))
+    review_criteria = str(node.get("review_criteria", ""))
+    expected_evidence = _parse_evidence(node.get("expected_evidence") or [], path, str(node["id"]))
+
+    if schema_version == 2:
+        _validate_v2_case(
+            path=path, case_id=str(node["id"]), negative=negative,
+            expected_sources=expected_sources, language=language,
+            case_type=case_type, document_formats=document_formats,
+            expected_answer=expected_answer, expected_evidence=expected_evidence,
+            review_criteria=review_criteria, user_task=user_task,
+            difficulty=difficulty, split=split, dataset_split=dataset_split,
+        )
+    child_metadata = {
+        "language": language,
+        "case_type": case_type,
+        "document_formats": document_formats,
+        "user_task": user_task,
+        "difficulty": difficulty,
+        "split": split,
+    }
     return EvalCase(
         id=str(node["id"]),
         question=str(node["question"]),
         expected_sources=expected_sources,
         expected_keywords=list(node.get("expected_keywords") or []),
-        follow_ups=[_parse_case(fu, path, parent_category=category) for fu in follow_ups_raw],
+        follow_ups=[
+            _parse_case(
+                fu, path, parent_category=category, parent_metadata=child_metadata,
+                schema_version=schema_version, dataset_split=dataset_split,
+            )
+            for fu in follow_ups_raw
+        ],
         category=category,
         negative=negative,
+        language=language,
+        case_type=case_type,
+        document_formats=document_formats,
+        expected_answer=expected_answer,
+        expected_evidence=expected_evidence,
+        review_criteria=review_criteria,
+        user_task=user_task,
+        difficulty=difficulty,
+        split=split,
     )
+
+
+def _parse_evidence(raw: Any, path: Path, case_id: str) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}: expected_evidence on {case_id!r} must be a list")
+    evidence: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError(f"{path}: evidence on {case_id!r} must be a mapping")
+        unknown = set(item) - _EVIDENCE_KEYS
+        if unknown:
+            raise ValueError(
+                f"{path}: unknown evidence key(s) on {case_id!r}: {sorted(unknown)}"
+            )
+        source = str(item.get("source") or "").strip()
+        passage = str(item.get("passage") or "").strip()
+        locator = str(item.get("locator") or "").strip()
+        if not source or not passage:
+            raise ValueError(
+                f"{path}: evidence on {case_id!r} requires source and passage"
+            )
+        evidence.append({"source": source, "passage": passage, "locator": locator})
+    return evidence
+
+
+def _validate_v2_case(
+    *, path: Path, case_id: str, negative: bool, expected_sources: list[str],
+    language: str, case_type: str, document_formats: list[str],
+    expected_answer: str, expected_evidence: list[dict[str, str]],
+    review_criteria: str, user_task: str, difficulty: str, split: str,
+    dataset_split: Optional[str],
+) -> None:
+    if language not in _LANGUAGES:
+        raise ValueError(f"{path}: case {case_id!r} has invalid language {language!r}")
+    if case_type not in _CASE_TYPES:
+        raise ValueError(f"{path}: case {case_id!r} has invalid case_type {case_type!r}")
+    if user_task not in _USER_TASKS:
+        raise ValueError(f"{path}: case {case_id!r} has invalid user_task {user_task!r}")
+    if split not in _SPLITS or split != dataset_split:
+        raise ValueError(
+            f"{path}: case {case_id!r} split {split!r} must match dataset set {dataset_split!r}"
+        )
+    if not document_formats:
+        raise ValueError(f"{path}: case {case_id!r} requires document_formats")
+    if not difficulty.strip() or not review_criteria.strip():
+        raise ValueError(
+            f"{path}: case {case_id!r} requires difficulty and review_criteria"
+        )
+    if negative:
+        if case_type != "unanswerable":
+            raise ValueError(f"{path}: negative case {case_id!r} must be unanswerable")
+        if expected_answer.strip().lower() != "abstain":
+            raise ValueError(f"{path}: negative case {case_id!r} expected_answer must be 'abstain'")
+        if expected_evidence:
+            raise ValueError(f"{path}: negative case {case_id!r} must not include evidence")
+    else:
+        if not expected_sources or not expected_answer.strip() or not expected_evidence:
+            raise ValueError(
+                f"{path}: positive case {case_id!r} requires sources, answer, and evidence"
+            )
+        evidence_sources = [item["source"] for item in expected_evidence]
+        missing = [
+            source for source in expected_sources
+            if not any(_title_matches(source, evidence_source) for evidence_source in evidence_sources)
+        ]
+        if missing:
+            raise ValueError(
+                f"{path}: case {case_id!r} lacks evidence for expected source(s) {missing}"
+            )
+
+
+def _walk_cases(cases: Iterable[EvalCase]) -> Iterable[EvalCase]:
+    for case in cases:
+        yield case
+        yield from _walk_cases(case.follow_ups)
+
+
+def validate_golden_evidence(
+    cases: list[EvalCase], vault_path: Path, *, config: Any = None,
+) -> list[str]:
+    """Return evidence/source errors against the actual reference vault.
+
+    Validation is intentionally separate from :func:`load_golden`: loading a
+    historical report must not require its corpus to be mounted. Dataset tests
+    and maintainers can call this function to catch stale titles, invented
+    passages, or a PDF whose text layer stopped extracting.
+    """
+    from grimore.ingest.parser import MarkdownParser
+
+    vault_path = Path(vault_path)
+    parser = MarkdownParser()
+    documents: list[tuple[str, str, str]] = []
+    errors: list[str] = []
+    supported = {fmt.lower().lstrip(".") for case in _walk_cases(cases)
+                 for fmt in case.document_formats}
+    for file_path in sorted(p for p in vault_path.rglob("*") if p.is_file()):
+        if supported and file_path.suffix.lower().lstrip(".") not in supported:
+            continue
+        try:
+            parsed = parser.parse_file(file_path, vault_root=vault_path, config=config)
+        except Exception as e:
+            errors.append(f"corpus:{file_path.name}: extraction failed: {e}")
+            continue
+        documents.append((parsed.title, parsed.content, parsed.format))
+
+    for case in _walk_cases(cases):
+        for item in case.expected_evidence:
+            matching = [doc for doc in documents if _title_matches(item["source"], doc[0])]
+            if not matching:
+                errors.append(f"{case.id}: source not found: {item['source']}")
+                continue
+            needle = _normalise_passage(item["passage"])
+            if not any(needle in _normalise_passage(content) for _, content, _ in matching):
+                errors.append(
+                    f"{case.id}: passage not found in source {item['source']}: "
+                    f"{item['passage'][:80]}"
+                )
+    return errors
+
+
+def _normalise_passage(text: str) -> str:
+    """Whitespace/markup-tolerant normalisation for evidence fixture checks."""
+    folded = _fold(text)
+    folded = re.sub(r"[`*_]+", "", folded)
+    return re.sub(r"\s+", " ", folded).strip()
 
 
 # ── metrics ─────────────────────────────────────────────────────────────────
@@ -522,20 +941,34 @@ def mrr(retrieved_sources: list[str], expected: list[str]) -> float:
     return 0.0
 
 
-def faithfulness(answer: str, dropped_citations: int) -> tuple[float, int]:
-    """Returns ``(score, total_citations_in_answer)``.
+def citation_validity(answer: str, dropped_citations: int) -> tuple[Optional[float], int]:
+    """Return ``(validity, total_citations_in_answer)``.
 
     ``dropped_citations`` is the count Oracle's ``verify_citations`` already
     computed (citations that didn't match any retrieved source); ``total`` is
     every ``[[...]]`` the cleaned answer still carries plus the dropped ones,
-    so ``1 - dropped/total`` is well-defined. A citation-free answer scores
-    1.0 (nothing to be unfaithful about).
+    so ``1 - dropped/total`` is well-defined.
+
+    A citation-free answer returns ``None``. It has no invalid reference, but
+    it also provides no evidence that its claims are supported; scoring it as
+    1.0 used to inflate the old ``faithfulness`` aggregate. This metric only
+    validates reference membership. It does not establish that a cited passage
+    entails the claim next to it.
     """
     kept = len(_WIKILINK_RE.findall(answer or ""))
     total = kept + max(dropped_citations, 0)
     if total == 0:
-        return 1.0, 0
+        return None, 0
     return 1.0 - (dropped_citations / total), total
+
+
+def faithfulness(answer: str, dropped_citations: int) -> tuple[Optional[float], int]:
+    """Deprecated compatibility alias for :func:`citation_validity`.
+
+    The former name overstated what the calculation proves. Kept so library
+    callers do not break while reports migrate to ``citation_validity``.
+    """
+    return citation_validity(answer, dropped_citations)
 
 
 def _keyword_pattern(keyword: str) -> Optional[re.Pattern[str]]:
@@ -599,7 +1032,9 @@ _ABSTENTION_CUES = (
     "could not find", "do not have", "don't have", "not in the vault",
     "no information", "i don't know", "i do not know", "cannot answer",
     "can't answer", "unable to", "nothing in the vault", "no mention",
-    "isn't anything", "is not anything",
+    "isn't anything", "is not anything", "evidencia insuficiente",
+    "no hay información", "no hay informacion", "no consta",
+    "no se menciona", "no puedo responder",
 )
 
 
@@ -633,6 +1068,7 @@ OUTCOMES = (
     "ranking_miss",     # in the pool, but ranked below the context cutoff (top_k)
     "generation_miss",  # right context, but the answer missed the expected content
     "citation_miss",    # right answer, but citations were ungrounded/dropped
+    "incorrect_abstention",  # answerable case declined despite available evidence
     "hallucinated",     # negative case: answered instead of abstaining
     "na",               # not assessable (e.g. retrieval-only negative)
 )
@@ -668,6 +1104,8 @@ def classify_outcome(
         return "ranking_miss"                 # retrieved, but below the context cut
     if not generate:
         return "ok"                           # retrieval succeeded; generation unseen
+    if abstained:
+        return "incorrect_abstention"         # evidence existed, but no answer was given
     if keyword_recall is not None and keyword_recall < kw_threshold:
         return "generation_miss"              # had the context, missed the content
     if faithfulness is not None and faithfulness < 1.0:
@@ -682,6 +1120,7 @@ _OUTCOME_STYLE: dict[str, tuple[str, str]] = {
     "ranking_miss": ("ranking", "yellow"),
     "generation_miss": ("generation", "yellow"),
     "citation_miss": ("citation", "yellow"),
+    "incorrect_abstention": ("abstain", "red"),
     "hallucinated": ("halluc", "red"),
     "na": ("n/a", "grimore.muted"),
 }
@@ -732,12 +1171,260 @@ def judge_relevance(router, question: str, answer: str) -> Optional[float]:
     return max(0.0, min(1.0, score / 10.0))
 
 
+_SUPPORT_JUDGE_SYSTEM = (
+    "Audit an answer only against the supplied indexed passages. Split it into "
+    "atomic, externally verifiable factual claims. Count a claim as supported "
+    "only when a passage entails it; unsupported when a passage contradicts it "
+    "or does not justify it; unverifiable when the supplied passages cannot "
+    "decide. Also count how many verifiable claims carry a nearby [[source]] "
+    "citation to a passage that supports that claim. Do not reward citation "
+    "existence alone. Return counts, not opinions."
+)
+
+
+def judge_claim_support(router, question: str, answer: str,
+                        source_details: list[dict]) -> Optional[dict[str, Any]]:
+    """Audit factual claims against exact indexed passages.
+
+    This is an automated, directional metric and never replaces the human
+    review criteria exported with each turn. ``None`` means the answer had no
+    inspectable evidence or the judge failed.
+    """
+    if not (question and answer and source_details):
+        return None
+    passages: list[str] = []
+    used = 0
+    for detail in source_details:
+        label = str(detail.get("label") or "source")
+        text = str((detail.get("passage") or {}).get("text") or "")
+        if not text:
+            continue
+        block = f"[[{label}]]\n{text}\n"
+        if used + len(block) > 12_000:
+            break
+        passages.append(block)
+        used += len(block)
+    if not passages:
+        return None
+    prompt = (
+        f"Question:\n{question}\n\nAnswer:\n{answer[:6000]}\n\n"
+        f"Indexed passages:\n{''.join(passages)}\n"
+        'Return ONLY JSON: {"supported": <int>, "unsupported": <int>, '
+        '"unverifiable": <int>, "cited_supported": <int>}.'
+    )
+    try:
+        response = router.complete(
+            prompt=prompt, system_prompt=_SUPPORT_JUDGE_SYSTEM, json_format=True,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("eval_support_judge_failed", error=str(exc))
+        return None
+    if not isinstance(response, dict):
+        return None
+    counts: dict[str, int] = {}
+    for key in ("supported", "unsupported", "unverifiable", "cited_supported"):
+        raw = response.get(key)
+        if isinstance(raw, bool):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return None
+        counts[key] = value
+    verifiable = counts["supported"] + counts["unsupported"]
+    if counts["cited_supported"] > counts["supported"]:
+        return None
+    return {
+        **counts,
+        "support": (
+            counts["supported"] / verifiable if verifiable else None
+        ),
+        "citation_coverage": (
+            counts["cited_supported"] / verifiable if verifiable else None
+        ),
+    }
+
+
+def _literal_evidence(text: str) -> str:
+    """Only case, Unicode composition and whitespace are insignificant.
+
+    Keep accents, numbers and punctuation: papá is not papa; 37,5 is not 375.
+    This tests reference presence, never semantic entailment of the answer.
+    """
+    return " ".join(unicodedata.normalize("NFC", text).casefold().split())
+
+
+def expected_evidence_checks(
+    expected: list[dict[str, str]], source_details: Optional[list[dict]], answer: str,
+    citation_selections: Optional[list[dict]] = None,
+) -> list[dict[str, Any]]:
+    """Match each reference within ONE delivered passage at its exact locator.
+
+    Missing legacy details are unassessed; an explicitly empty context fails.
+    Bare-title citations do not satisfy a page/heading-specific reference.
+    """
+    if not expected or source_details is None:
+        return []
+    citations = {label.strip() for label in _WIKILINK_RE.findall(answer or "")}
+    selected_indices = _selected_detail_indices(source_details, answer, citation_selections)
+    checks = []
+    for reference in expected:
+        locator = reference.get("locator", "").strip()
+        needle = _literal_evidence(reference["passage"])
+        context_labels, cited_labels, selected_details = [], [], []
+        for index, detail in enumerate(source_details):
+            label = str(detail.get("label") or "")
+            title = (detail.get("document") or {}).get("title") or label.split("#", 1)[0]
+            if not _title_matches(reference["source"], title):
+                continue
+            passage = (detail.get("passage") or {}).get("text") or ""
+            if not needle or needle not in _literal_evidence(passage):
+                continue
+            anchor = detail.get("locator") or {}
+            if re.fullmatch(r"p\.\d+", locator):
+                page = anchor.get("page")
+                if type(page) is not int or page <= 0 or locator != f"p.{page}":
+                    continue
+            elif locator and _literal_evidence(anchor.get("heading") or "") != _literal_evidence(locator):
+                continue
+            context_labels.append(label)
+            # Validate the emitted anchor as well as the passage's metadata.
+            # Never grant credit to a label inconsistent with the physical page.
+            label_anchor = label.partition("#")[2]
+            anchor_matches = not locator or _literal_evidence(label_anchor) == _literal_evidence(locator)
+            if label in citations and anchor_matches:
+                cited_labels.append(label)
+                if index in selected_indices:
+                    selected_details.append(index)
+        checks.append({**reference, "in_context": bool(context_labels),
+                       "cited": bool(cited_labels), "context_labels": context_labels,
+                       "cited_labels": cited_labels,
+                       "selected": bool(selected_details) if citation_selections is not None else None,
+                       "selected_detail_indices": selected_details})
+    return checks
+
+
+def _selected_detail_indices(details: list[dict], answer: str, selections) -> set[int]:
+    """Require an exact, unique map consistent with an actual cited occurrence.
+
+    An empty trace is assessed as no selection. A missing historical trace
+    remains unassessed; it is never reconstructed from a matching title/page.
+    """
+    cited = [label.strip() for label in _WIKILINK_RE.findall(answer or "")]
+    selected = set()
+    if not isinstance(selections, list):
+        return selected
+    for selection in selections:
+        if not isinstance(selection, dict) or selection.get("selection") != "exact":
+            continue
+        occurrence = selection.get("citation_index")
+        if type(occurrence) is not int or not 0 <= occurrence < len(cited):
+            continue
+        label = selection.get("label")
+        if label != cited[occurrence]:
+            continue
+        indices = selection.get("source_detail_indices")
+        if not isinstance(indices, list) or len(indices) != 1 or type(indices[0]) is not int:
+            continue
+        index = indices[0]
+        if not 0 <= index < len(details) or not isinstance(details[index], dict):
+            continue
+        if selection.get("form") == "short":
+            ref = selection.get("citation_ref")
+            if not isinstance(ref, str) or not re.fullmatch(r"cite:[1-9]\d*", ref):
+                continue
+            matches = [i for i, d in enumerate(details) if isinstance(d, dict) and d.get("citation_ref") == ref]
+            if matches != [index] or details[index].get("label") != label:
+                continue
+        elif selection.get("form") == "wikilink":
+            matches = [i for i, d in enumerate(details) if isinstance(d, dict) and
+                       (d.get("label") == label or ("#" not in label and
+                        str(d.get("label") or "").split("#", 1)[0].strip() == label))]
+            if matches != [index] or selection.get("citation_ref") is not None:
+                continue
+        else:
+            continue
+        selected.add(index)
+    return selected
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
+
+
+# ── resumable runs ──────────────────────────────────────────────────────────
+
+_CHECKPOINT_FORMAT = "grimore-eval-checkpoint/1"
+
+
+def checkpoint_identity(session, cases: list[EvalCase], *, top_k: int,
+                        retrieval_k: int, generate: bool, judge: bool) -> dict[str, Any]:
+    """Everything that must match for checkpointed turns to be reusable.
+
+    Cases are hashed from their parsed form, so a reformatted YAML resumes
+    while an edited question, expectation or follow-up does not.
+    """
+    cognition = getattr(getattr(session, "config", None), "cognition", None)
+    fingerprint = {k: getattr(cognition, k, None) for k in _FINGERPRINT_KEYS}
+    return {
+        "format": _CHECKPOINT_FORMAT,
+        "cases_hash": _short_hash([asdict(c) for c in cases]),
+        "config_hash": _short_hash(fingerprint),
+        "corpus_fingerprint": _corpus_provenance(session)["fingerprint"],
+        "code_fingerprint": _code_fingerprint(),
+        "top_k": top_k,
+        "retrieval_k": retrieval_k,
+        "generate": generate,
+        "judge": judge,
+    }
+
+
+def _read_checkpoint(path: Path, identity: dict[str, Any]) -> dict[str, list[TurnResult]]:
+    """Finished cases from ``path``, keyed by case id; creates the file if new.
+
+    A later record for the same case replaces an earlier one, which is how a
+    retried case supersedes its failed attempt. A torn final line (the run
+    died mid-write) is ignored; any other unreadable line is an error.
+    """
+    path = Path(path)
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(identity, ensure_ascii=False) + "\n", encoding="utf-8")
+        return {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    if header != identity:
+        changed = sorted(k for k in set(header) | set(identity) if header.get(k) != identity.get(k))
+        raise ValueError(
+            f"checkpoint {path} belongs to a different run (differs in: {', '.join(changed)}); "
+            "use a new checkpoint file"
+        )
+    done: dict[str, list[TurnResult]] = {}
+    for number, line in enumerate(lines[1:], start=2):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            if number == len(lines):
+                logger.warning("eval_checkpoint_torn_line", path=str(path), line=number)
+                continue
+            raise ValueError(f"checkpoint {path} line {number} is not valid JSON") from exc
+        done[record["case_id"]] = [TurnResult(**t) for t in record["turns"]]
+    return done
+
+
+def _append_checkpoint(path: Path, case_id: str, turns: list[TurnResult]) -> None:
+    """Durably record one finished case before the next one starts."""
+    with Path(path).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"case_id": case_id, "turns": [asdict(t) for t in turns]},
+                            ensure_ascii=False) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def run_eval(session, cases: list[EvalCase], *, top_k: int = 5,
              retrieval_k: int = 10, generate: bool = True,
-             judge: bool = True) -> EvalReport:
+             judge: bool = True, checkpoint: Optional[Path] = None) -> EvalReport:
     """Drive one Oracle call per turn, walking ``follow_ups`` with the
     session's conversation memory in between.
 
@@ -752,16 +1439,50 @@ def run_eval(session, cases: list[EvalCase], *, top_k: int = 5,
     ``oracle.retrieve`` instead of ``oracle.ask``, skipping the answer LLM —
     fast, deterministic ranking data with the generation metrics reported as
     ``None``.
+
+    ``checkpoint`` makes a long run resumable: every finished top-level case
+    is appended to that JSONL file, and rerunning with the same file restores
+    those cases instead of asking again. Its first line pins
+    :func:`checkpoint_identity`; a mismatch raises ``ValueError`` so turns
+    from different runs never merge. A case with a generation failure is
+    not restored, so the rerun asks it again. The returned report's
+    ``provenance["checkpoint"]`` counts restored and freshly run cases.
     """
+    done: dict[str, list[TurnResult]] = {}
+    if checkpoint is not None:
+        identity = checkpoint_identity(session, cases, top_k=top_k, retrieval_k=retrieval_k,
+                                       generate=generate, judge=judge)
+        done = {
+            case_id: case_turns
+            for case_id, case_turns in _read_checkpoint(checkpoint, identity).items()
+            if not any(t.generation_error for t in case_turns)
+        }
+        logger.info("eval_checkpoint_resumed", path=str(checkpoint),
+                    restored=sum(c.id in done for c in cases), total=len(cases))
     turns: list[TurnResult] = []
+    restored = 0
     for case in cases:
+        if case.id in done:
+            turns.extend(done[case.id])
+            restored += 1
+            continue
         # Reset conversation state between top-level cases; follow-ups in the
         # SAME case must see history, which is what record_turn below builds.
         if hasattr(session, "forget"):
             session.forget()
+        case_turns: list[TurnResult] = []
         _eval_case(session, case, turn_index=0, top_k=top_k,
-                   retrieval_k=retrieval_k, generate=generate, judge=judge, out=turns)
-    return EvalReport(top_k=top_k, turns=turns)
+                   retrieval_k=retrieval_k, generate=generate, judge=judge, out=case_turns)
+        turns.extend(case_turns)
+        if checkpoint is not None:
+            _append_checkpoint(checkpoint, case.id, case_turns)
+    report = EvalReport(top_k=top_k, turns=turns)
+    if checkpoint is not None:
+        report.provenance = {"checkpoint": {
+            "path": str(checkpoint), "restored_cases": restored,
+            "run_cases": len(cases) - restored,
+        }}
+    return report
 
 
 def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
@@ -777,7 +1498,8 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
             )
         except Exception as e:
             logger.warning("eval_ask_failed", case=case.id, error=str(e))
-            result = {"answer": "", "sources": [], "retrieved": [], "dropped_citations": 0}
+            result = {"answer": "", "sources": [], "retrieved": [], "dropped_citations": 0,
+                      "generation_error": "ask_failed"}
     else:
         # Retrieval-only: rank sources without paying for an answer. Pass a
         # timings dict so the stage breakdown survives even here (no generate).
@@ -796,14 +1518,27 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
     timings = {k: float(v) for k, v in (result.get("timings") or {}).items()}
 
     answer = result.get("answer", "") or ""
+    generation_error = (result.get("generation_error") or None) if generate else None
+    # A judge would only rate the silent sentinel, so failed turns skip it.
+    control_failed = technical_failure(result.get("sufficiency")) or generation_error is not None
     sources = result.get("sources", []) or []
+    source_details = result.get("source_details", []) or []
+    evidence_checks = (
+        expected_evidence_checks(case.expected_evidence, result.get("source_details"), answer,
+                                 result.get("citation_selections"))
+        if generate and not case.negative and not (
+            result.get("sufficiency") and result["sufficiency"].get("decision") == "unassessed"
+        ) else []
+    )
+    status = str(result.get("answer_status") or "unassessed")
     # Rank-ordered retrieval list — the honest input for Hit@k / MRR. The
-    # citation-facing ``sources`` stays separate and feeds faithfulness only.
+    # citation-facing ``sources`` stays separate and feeds citation validity.
     ranked = ranked_sources(result)
     dropped = int(result.get("dropped_citations", 0) or 0)
+    abstained = answer_abstained(answer) if generate else None
 
     if generate:
-        faith, total_cit = faithfulness(answer, dropped)
+        faith, total_cit = citation_validity(answer, dropped)
         # Present/missing come from one matcher so recall and the Failures
         # section's ``missing_keywords`` can't disagree.
         present_kw, missing_kw = _keyword_hits(answer, case.expected_keywords)
@@ -813,15 +1548,18 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
             len(present_kw) / len(case.expected_keywords)
             if case.expected_keywords else None
         )
-        rel = judge_relevance(session.router, case.question, answer) if judge else None
+        rel = judge_relevance(session.router, case.question, answer) if judge and not control_failed else None
+        support_judgment = (
+            judge_claim_support(
+                session.router, case.question, answer, list(source_details),
+            )
+            if judge and not case.negative and not abstained and not control_failed else None
+        )
     else:
         # No answer → generation metrics are not applicable (not zero).
         faith, total_cit, kw, rel = None, 0, None, None
         missing_kw = []
-
-    # Negative cases score on whether the Oracle abstained (only meaningful
-    # when an answer was actually generated).
-    abstained = answer_abstained(answer) if (case.negative and generate) else None
+        support_judgment = None
 
     outcome = classify_outcome(
         negative=case.negative, generate=generate, ranked=ranked,
@@ -853,6 +1591,48 @@ def _eval_case(session, case: EvalCase, *, turn_index: int, top_k: int,
         expected_sources=list(case.expected_sources),
         missing_keywords=missing_kw,
         timings=timings,
+        generated=generate,
+        citation_validity=faith,
+        language=case.language,
+        case_type=case.case_type,
+        document_formats=list(case.document_formats),
+        split=case.split,
+        answer_status=status,
+        source_details=list(source_details),
+        citation_selections=result.get("citation_selections") if generate else None,
+        sufficiency=result.get("sufficiency") if generate else None,
+        automated_claim_support=(
+            support_judgment.get("support") if support_judgment else None
+        ),
+        claim_citation_coverage=(
+            support_judgment.get("citation_coverage")
+            if support_judgment else None
+        ),
+        supported_claims=(
+            support_judgment.get("supported") if support_judgment else None
+        ),
+        unsupported_claims=(
+            support_judgment.get("unsupported") if support_judgment else None
+        ),
+        unverifiable_claims=(
+            support_judgment.get("unverifiable") if support_judgment else None
+        ),
+        expected_evidence=list(case.expected_evidence),
+        review_criteria=case.review_criteria,
+        evidence_checks=evidence_checks,
+        context_evidence_recall=(
+            _mean(float(check["in_context"]) for check in evidence_checks)
+            if evidence_checks else None
+        ),
+        cited_evidence_recall=(
+            _mean(float(check["cited"]) for check in evidence_checks)
+            if evidence_checks else None
+        ),
+        selected_evidence_recall=(
+            _mean(float(check["selected"]) for check in evidence_checks)
+            if evidence_checks and result.get("citation_selections") is not None else None
+        ),
+        generation_error=generation_error,
     ))
 
     # Feed this turn into conversation memory before walking follow-ups.
@@ -897,9 +1677,13 @@ _COMPARE_METRICS: tuple[tuple[str, str], ...] = (
     ("mrr", "MRR"),
     ("recall_at_k", "Recall@k"),
     ("keyword_recall", "Keyword recall"),
-    ("faithfulness", "Faithfulness"),
+    ("citation_validity", "Citation validity"),
+    ("cited_answer_rate", "Cited answers"),
+    ("automated_claim_support", "Automated claim support"),
+    ("claim_citation_coverage", "Claim citation coverage"),
     ("answer_relevance", "Judge relevance"),
     ("abstention_rate", "Abstention"),
+    ("incorrect_abstention_rate", "Incorrect abstention"),
 )
 
 
@@ -978,14 +1762,16 @@ def export_comparison(comparison: dict, path: Path) -> None:
     path.write_text(json.dumps(comparison, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-# ── provenance, history ledger & regression comparison ───────────────────────
+# ── provenance, history ledger & comparison ──────────────────────────────────
 
 # Config fields that actually move retrieval/answer quality. Two runs with the
 # same fingerprint are comparable; a different fingerprint explains a metric
-# shift without it being a code regression.
+# shift without a code change.
 _FINGERPRINT_KEYS = (
-    "model_embeddings_local", "model_llm_local", "hybrid_search", "rrf_k",
-    "rerank", "rerank_engine", "rerank_model", "rerank_pool", "vector_backend",
+    "model_embeddings_local", "model_llm_local", "llm_backend",
+    "hybrid_search", "rrf_k", "rerank", "rerank_engine", "rerank_model",
+    "rerank_pool", "vector_backend", "context_max_chars", "chunk_store_chars",
+    "conditional_rewrite",
 )
 
 # Aggregate metrics compared run-over-run (ranking + generation + pass rate).
@@ -999,12 +1785,22 @@ def _short_hash(obj: Any) -> str:
     return hashlib.sha256(blob).hexdigest()[:12]
 
 
+# The installed ``grimore`` package directory: the code being measured.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _git_provenance() -> dict[str, Any]:
-    """Best-effort current commit + dirty flag; ``None`` outside a git repo."""
+    """Best-effort commit + dirty flag of the Grimore checkout that runs.
+
+    Git is asked about the package directory, not the cwd, so a run from an
+    isolated evaluation workspace still names its code. ``None`` when Grimore
+    is not running from a git checkout.
+    """
     def _git(*args: str) -> str:
         try:
             return subprocess.run(
                 ["git", *args], capture_output=True, text=True, timeout=5,
+                cwd=_PACKAGE_ROOT,
             ).stdout.strip()
         except Exception:
             return ""
@@ -1013,10 +1809,70 @@ def _git_provenance() -> dict[str, Any]:
     return {"git_sha": sha, "git_dirty": dirty}
 
 
+def _code_fingerprint() -> str:
+    """Hash of the package's Python sources and prompt templates.
+
+    ``git_sha`` cannot identify a dirty checkout (or an installed wheel); this
+    can, so two reports with equal fingerprints ran the same code.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(_PACKAGE_ROOT.rglob("*")):
+        if (path.suffix not in (".py", ".txt") or "__pycache__" in path.parts
+                or not path.is_file()):
+            continue
+        digest.update(path.relative_to(_PACKAGE_ROOT).as_posix().encode("utf-8") + b"\0")
+        digest.update(path.read_bytes() + b"\0")
+    return digest.hexdigest()[:12]
+
+
+def _hardware_provenance() -> dict[str, Any]:
+    """Small, privacy-safe machine fingerprint for latency comparisons."""
+    return {
+        "platform": platform.system(),
+        "platform_release": platform.release(),
+        "architecture": platform.machine(),
+        "python": platform.python_version(),
+        "cpu_count": os.cpu_count(),
+    }
+
+
+def _corpus_provenance(session) -> dict[str, Any]:
+    """Fingerprint the indexed corpus without exporting paths or contents.
+
+    The hash is built from each note's stored content hash and format. Counts
+    make accidental evaluation against a partial index visible in the report.
+    This is best-effort so hand-built sessions and older databases remain
+    usable by the evaluation library.
+    """
+    try:
+        db = getattr(session, "db", None)
+        if db is None:
+            return {"fingerprint": None, "notes": None, "chunks": None, "formats": {}}
+        with db._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT COALESCE(content_hash, ''), COALESCE(format, 'md') "
+                "FROM notes ORDER BY COALESCE(content_hash, ''), COALESCE(format, 'md'), id"
+            ).fetchall()
+            chunks = int(conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0])
+        formats: dict[str, int] = {}
+        manifest: list[tuple[str, str]] = []
+        for content_hash, fmt in rows:
+            fmt = str(fmt)
+            formats[fmt] = formats.get(fmt, 0) + 1
+            manifest.append((str(content_hash), fmt))
+        return {
+            "fingerprint": _short_hash(manifest),
+            "notes": len(rows),
+            "chunks": chunks,
+            "formats": dict(sorted(formats.items())),
+        }
+    except Exception as e:  # pragma: no cover - defensive / legacy DB
+        logger.warning("eval_corpus_provenance_failed", error=str(e))
+        return {"fingerprint": None, "notes": None, "chunks": None, "formats": {}}
+
+
 def run_provenance(session, golden_path: Path) -> dict[str, Any]:
-    """Identity of a run — commit, working-tree cleanliness, a fingerprint of
-    the retrieval-relevant config, and a hash of the golden file. Lets the
-    history ledger separate genuine regressions from "different inputs"."""
+    """Reproducible identity of a run and all inputs that affect its results."""
     fingerprint = {
         k: getattr(getattr(session.config, "cognition", None), k, None)
         for k in _FINGERPRINT_KEYS
@@ -1031,6 +1887,10 @@ def run_provenance(session, golden_path: Path) -> dict[str, Any]:
         ),
         "config_hash": _short_hash(fingerprint),
         "config": fingerprint,
+        "grimore_version": __version__,
+        "code_fingerprint": _code_fingerprint(),
+        "hardware": _hardware_provenance(),
+        "corpus": _corpus_provenance(session),
     }
     prov.update(_git_provenance())
     return prov
@@ -1038,7 +1898,10 @@ def run_provenance(session, golden_path: Path) -> dict[str, Any]:
 
 _LEDGER_METRICS = (
     "hit_at_1", "hit_at_3", "mrr", "recall_at_k", "keyword_recall",
-    "faithfulness", "answer_relevance", "abstention_rate", "pass_rate",
+    "citation_validity", "cited_answer_rate", "answer_relevance",
+    "automated_claim_support", "claim_citation_coverage",
+    "abstention_rate", "incorrect_abstention_rate", "pass_rate",
+    "context_evidence_recall", "cited_evidence_recall", "selected_evidence_recall",
 )
 
 
@@ -1223,7 +2086,7 @@ def _present_mean(values: Iterable[Optional[float]]) -> Optional[float]:
 
 # Pipeline stages in execution order, for the latency breakdown. Reporting
 # order only — a stage absent from every turn's timings is dropped.
-_STAGE_ORDER = ("rewrite_s", "embed_s", "retrieve_s", "rerank_s", "generate_s")
+_STAGE_ORDER = ("rewrite_s", "embed_s", "retrieve_s", "rerank_s", "sufficiency_s", "generate_s")
 
 
 def _stage_latency_means(turns: list["TurnResult"]) -> dict[str, float]:
@@ -1249,6 +2112,7 @@ def _failure_detail(t: "TurnResult") -> dict[str, Any]:
         "category": t.category,
         "outcome": t.outcome,
         "question": t.question,
+        "answer_status": t.answer_status,
         "expected_sources": t.expected_sources,
         "retrieved_top": t.retrieved[:5],
         "missing_keywords": t.missing_keywords,
@@ -1270,6 +2134,23 @@ def _by_category(turns: list["TurnResult"]) -> dict[str, dict[str, Any]]:
             "mrr": _mean(t.mrr for t in ts),
         }
         for cat, ts in sorted(groups.items())
+    }
+
+
+def _by_dimension(turns: list["TurnResult"], field_name: str) -> dict[str, dict[str, Any]]:
+    """Ranking metrics grouped by a scalar Phase-0 case dimension."""
+    groups: dict[str, list["TurnResult"]] = {}
+    for turn in turns:
+        value = str(getattr(turn, field_name, "unspecified") or "unspecified")
+        groups.setdefault(value, []).append(turn)
+    return {
+        value: {
+            "n": len(group),
+            "hit_at_1": _mean(1.0 if t.source_hit_at_1 else 0.0 for t in group),
+            "hit_at_3": _mean(1.0 if t.source_hit_at_3 else 0.0 for t in group),
+            "mrr": _mean(t.mrr for t in group),
+        }
+        for value, group in sorted(groups.items())
     }
 
 

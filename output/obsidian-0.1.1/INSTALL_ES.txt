@@ -1,0 +1,25 @@
+Grimore para Obsidian — entrega local pendiente de aceptación
+
+Este paquete no ha sido instalado ni aceptado en un Obsidian real.
+No lo consideres una publicación del catálogo comunitario.
+
+1. Verifica el ZIP con package_plugin.py verify y el repositorio de confianza.
+   Una suma SHA-256 aislada no autentica al autor ni certifica la seguridad.
+2. Extrae el ZIP en una carpeta temporal, nunca encima de una instalación.
+3. Conserva una copia de seguridad de la bóveda y de cualquier complemento
+   existente con el mismo ID antes de sustituirlo manualmente.
+4. Copia grimore-readonly (tres archivos de ejecución y LICENSE) al directorio
+   de complementos de tu bóveda de prueba. No copies release.json ni bases
+   de datos. No se modifica el modo restringido automáticamente.
+5. Habilita el complemento y configura sus rutas. No se conecta al cargar.
+   La configuración de Grimore debe apuntar a la misma bóveda física.
+6. Prueba búsqueda, fuentes, alertas, apertura y desconexión siguiendo la guía
+   docs/OBSIDIAN_PLUGIN_ES.md del repositorio.
+
+Solo escritorio. Sin generación de respuestas ni edición de notas/decisiones.
+Los embeddings remotos requieren autorización expresa. Grimore puede mantener
+sus cachés normales. Un timeout no garantiza cancelar un modelo remoto.
+
+Para retirar: desconecta, deshabilita y guarda tus ajustes antes de quitar
+manualmente la carpeta. No hay cambios de notas que restaurar por este plugin.
+Las pruebas de aceptación y el piloto de dos semanas siguen pendientes.

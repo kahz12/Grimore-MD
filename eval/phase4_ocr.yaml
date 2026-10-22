@@ -1,0 +1,22 @@
+version: 1
+corpus_root: ../test_vault/test_vault
+documents:
+  - id: humedal-scan-page-1
+    path: informe_humedal_escaneado.pdf
+    reading_order:
+      - page: 1
+        passages:
+          - Informe de restauración del Humedal
+          - Resumen ejecutivo
+          - Datos de referencia
+          - Corpus de evaluación Grimore
+    table_rows:
+      - page: 1
+        cells: [Fósforo total, "0,18 mg/L", "Menos de 0,10 mg/L"]
+      - page: 1
+        cells: [Cobertura de jacinto invasor, "8 ha", "Menos de 0,5 ha"]
+    page_anchors:
+      - page: 1
+        passage: El área de intervención aprobada es de 37,5 hectáreas
+      - page: 1
+        passage: Fósforo total

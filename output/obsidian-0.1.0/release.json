@@ -1,0 +1,34 @@
+{
+  "acceptance": "pending_user",
+  "artifact": {
+    "name": "grimore-readonly-0.1.0.zip",
+    "sha256": "6de86e6851397c919c2a819b0e48b2d80883e65230f4a20aa7e0fa7b672f5fe8",
+    "size_bytes": 31284
+  },
+  "files": [
+    {
+      "path": "grimore-readonly/LICENSE",
+      "sha256": "0c3a7e0d87f362fa3c92c6b60584c0e93afb46606963e232e44a17a901b61d80",
+      "size_bytes": 1063
+    },
+    {
+      "path": "grimore-readonly/main.js",
+      "sha256": "4a0a734dcba40bb7efd9feebb351259996fdb905ce78abd7fdeb21afc458e059",
+      "size_bytes": 28587
+    },
+    {
+      "path": "grimore-readonly/manifest.json",
+      "sha256": "1f158b66cfa340fff38bdd1346e01b24674b37250b6525c402b42957785fea0a",
+      "size_bytes": 281
+    },
+    {
+      "path": "grimore-readonly/styles.css",
+      "sha256": "b1c9fa8d661194482bb0bb16bfbf675dffcc77001775af761f3e0fd6ddb526e1",
+      "size_bytes": 817
+    }
+  ],
+  "format_version": 1,
+  "installed": false,
+  "plugin_id": "grimore-readonly",
+  "plugin_version": "0.1.0"
+}

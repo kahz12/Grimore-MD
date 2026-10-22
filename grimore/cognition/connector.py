@@ -316,6 +316,7 @@ class Connector:
         dedupe_by_note: bool = False,
         with_text: bool = True,
         filter_note_ids: "set[int] | None" = None,
+        include_embedding_id: bool = False,
     ):
         """
         Finds the top_k most similar chunks in the database compared to a query vector.
@@ -348,8 +349,15 @@ class Connector:
             hits = self._vec_filtered(query, top_k, exclude_note_id,
                                       filter_note_ids, dedupe_by_note)
             if hits is not None:
-                return [{"note_id": nid, "text": text if with_text else "", "score": score}
-                        for _eid, nid, text, score in hits]
+                return [
+                    {
+                        **({"embedding_id": eid} if include_embedding_id else {}),
+                        "note_id": nid,
+                        "text": text if with_text else "",
+                        "score": score,
+                    }
+                    for eid, nid, text, score in hits
+                ]
 
         keys, matrix, blobs = self._load_dense()
         rows, scores = self._candidate_scores(
@@ -372,8 +380,10 @@ class Connector:
             self.db.get_chunk_texts([eid for eid, _nid, _s in picks])
             if with_text else {}
         )
-        return self._hits_from_picks(picks, texts, exclude_note_id,
-                                     dedupe_by_note, top_k)
+        return self._hits_from_picks(
+            picks, texts, exclude_note_id, dedupe_by_note, top_k,
+            include_embedding_id=include_embedding_id,
+        )
 
     def _select_indices(self, scores, keys, rows, top_k, exclude_note_id=None,
                         dedupe_by_note=False):
@@ -428,7 +438,8 @@ class Connector:
 
     @staticmethod
     def _hits_from_picks(picks, texts, exclude_note_id,
-                         dedupe_by_note, top_k) -> list[dict]:
+                         dedupe_by_note, top_k, *,
+                         include_embedding_id: bool = False) -> list[dict]:
         """Turn ranked ``(embedding_id, note_id, score)`` picks into results.
 
         Picks carry their score rather than an index into the score array, so
@@ -446,8 +457,12 @@ class Connector:
             if exclude_note_id is not None and note_id == exclude_note_id:
                 continue
             hits.append(
-                {"note_id": note_id, "text": texts.get(emb_id, ""),
-                 "score": score}
+                {
+                    **({"embedding_id": emb_id} if include_embedding_id else {}),
+                    "note_id": note_id,
+                    "text": texts.get(emb_id, ""),
+                    "score": score,
+                }
             )
 
         if dedupe_by_note:
@@ -622,6 +637,7 @@ class Connector:
         rerank_pool: int = 20,
         timings: Optional[dict] = None,
         filter_note_ids: "set[int] | None" = None,
+        include_embedding_id: bool = False,
     ) -> list[dict]:
         """
         Fuse dense retrieval and FTS5 BM25 with Reciprocal Rank Fusion.
@@ -711,9 +727,14 @@ class Connector:
 
         survivors = ranked[:top_k]
         self._log_rrf_inputs(dense, sparse, survivors)
-        # Drop the internal embedding_id — callers key on note_id/text/score.
+        # Embedding identity is opt-in for the Oracle's structured evidence
+        # contract. Existing search consumers retain the historical shape.
         return [
-            {k: v for k, v in item.items() if k != "embedding_id"}
+            (
+                dict(item)
+                if include_embedding_id
+                else {k: v for k, v in item.items() if k != "embedding_id"}
+            )
             for item in survivors
         ]
 

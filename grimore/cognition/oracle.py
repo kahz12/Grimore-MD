@@ -14,7 +14,10 @@ from grimore.cognition.embedder import Embedder
 from grimore.cognition.connector import Connector
 from grimore.memory.db import Database
 from grimore.utils.logger import get_logger
+from grimore.utils.hashing import sha256_file
 from grimore.utils.security import SecurityGuard
+from grimore.cognition.sufficiency import assess, blocked_answer
+from grimore.cognition.answer_protocol import PROTOCOL_VERSION, render_claims, response_snapshot
 
 logger = get_logger(__name__)
 
@@ -39,6 +42,108 @@ _REWRITE_TIMEOUT_S = 60
 
 # Matches a single ``[[wikilink]]`` citation; group 1 is the inner label.
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
+# Generation-only references, never document ids or physical page numbers.
+_CITATION_REF_RE = re.compile(r"(?<!\[)\[(cite:[^\[\]\r\n]{0,32})\](?!\])")
+_EMITTED_CITATION_RE = re.compile(
+    r"\[\[([^\[\]]+)\]\]|(?<!\[)\[(cite:[^\[\]\r\n]{0,32})\](?!\])"
+)
+
+
+def _citation_only(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    has_reference = _WIKILINK_RE.search(text) or _CITATION_REF_RE.search(text)
+    remainder = _CITATION_REF_RE.sub("", _WIKILINK_RE.sub("", text))
+    return bool(has_reference) and all(
+        char.isspace() or unicodedata.category(char).startswith("P")
+        for char in remainder
+    )
+
+
+def _answer_template(template: str, *, streaming: bool = False) -> str:
+    """Remove only the trusted output-format block, before inserting evidence.
+
+    Both routes retain identical grounding instructions. Legacy templates can
+    number their final JSON rule differently; never strip at a rule number.
+    Custom templates without a format block pass through unchanged.
+    """
+    start, end = "<json-output-format>", "</json-output-format>"
+    before, marker, remainder = template.partition(start)
+    block, closed, after = remainder.partition(end)
+    if marker and closed:
+        return before + ("" if streaming else block) + after
+    if streaming:
+        # Compatibility for the historical template: its JSON rule and
+        # example were the final instructions before the Context placeholder.
+        rule = re.search(r"(?m)^\d+\.\s+Return ONLY\b", template)
+        if rule:
+            context = template.find("Context:", rule.end())
+            if context != -1:
+                return template[:rule.start()] + template[context:]
+    return template
+
+
+def _answer_request(question: str) -> str:
+    """Keep grounding instructions salient at the generation boundary.
+
+    This is the same reminder for both output modes, not a retrieval rewrite,
+    a claim-specific hint, a citation repair or an additional model call.
+    """
+    return (
+        f"Question: {question}\n\n"
+        "Answer with the requested fact in prose, followed by the citation of "
+        "the passage that explicitly states that fact. A citation alone is not "
+        "an answer. Copy the passage's short citation token [cite:N] when "
+        "provided; its number identifies a passage, NOT a page. Otherwise copy "
+        "its exact [[...]] source header label, including any #page or #section "
+        "anchor. Do not cite a different passage. "
+        "Keep only explicitly supported relationships. Do not omit the citations."
+    )
+
+ANSWER_STATUSES = frozenset({
+    "supported", "insufficient_evidence", "conflicting_evidence", "uncertain",
+})
+_INSUFFICIENT_CUES = (
+    "don't know", "do not know", "not in the context", "not in the vault",
+    "no information", "insufficient evidence", "not enough evidence",
+    "cannot answer", "can't answer", "no hay información", "no hay informacion",
+    "evidencia insuficiente", "no consta", "no se menciona",
+)
+_CONFLICT_CUES = (
+    "conflicting", "conflict between", "sources disagree", "contradict",
+    "en conflicto", "se contradicen", "fuentes discrepan", "discrepancia",
+)
+_UNCERTAINTY_CUES = (
+    "uncertain", "unclear", "ambiguous", "may indicate", "might indicate",
+    "no está claro", "no esta claro", "incierto", "ambigua", "ambiguo",
+)
+
+
+def answer_status(answer: str, sources, declared=None) -> str:
+    """Normalise the answer's evidence state to the public four-value contract.
+
+    The model declares the state in non-streaming mode. Streaming and older
+    backends fall back to conservative text cues. No retrieved source always
+    wins over a model claiming support.
+    """
+    text = (answer or "").strip().lower()
+    if not sources or not text:
+        return "insufficient_evidence"
+    # A model can obey citation formatting while omitting the actual answer.
+    # Do not let its declared "supported" disguise a citation-only response.
+    # Preserve meaningful symbols (e.g. an emoji), numbers and ordinary prose.
+    if _citation_only(text):
+        return "insufficient_evidence"
+    raw = str(declared or "").strip().lower()
+    if raw in ANSWER_STATUSES:
+        return raw
+    if any(cue in text for cue in _INSUFFICIENT_CUES):
+        return "insufficient_evidence"
+    if any(cue in text for cue in _CONFLICT_CUES):
+        return "conflicting_evidence"
+    if any(cue in text for cue in _UNCERTAINTY_CUES):
+        return "uncertain"
+    return "supported"
 
 
 def _format_source_label(title: str, page, heading) -> str:
@@ -57,6 +162,50 @@ def _format_source_label(title: str, page, heading) -> str:
             return f"{title}#{clean}"
     return title
 
+
+def _indexed_extraction_summary(record: dict) -> dict | None:
+    """Bounded PDF coverage at indexing time, distinct from live file state."""
+    if record.get("format") != "pdf":
+        return None
+    raw = record.get("extraction")
+    if not isinstance(raw, dict) or raw.get("status") not in {
+        "complete", "recovered", "partial",
+    }:
+        return {"status": "unknown", "missing_pages": [], "missing_page_count": None}
+    issues = raw.get("issues") if isinstance(raw.get("issues"), list) else []
+    missing_pages = sorted({
+        issue["page"] for issue in issues
+        if isinstance(issue, dict)
+        and not issue.get("recovered")
+        and isinstance(issue.get("page"), int)
+        and not isinstance(issue.get("page"), bool)
+        and issue["page"] > 0
+    })
+    return {
+        "status": raw["status"],
+        "missing_pages": missing_pages[:24],
+        "missing_page_count": len(missing_pages),
+    }
+
+
+def _coverage_context_note(detail: dict) -> str:
+    """Trusted instruction beside a source whose indexed PDF was incomplete."""
+    coverage = detail.get("indexed_extraction") or {}
+    if coverage.get("status") == "partial":
+        pages = ", ".join(map(str, coverage.get("missing_pages") or []))
+        pages_label = f" (including page(s) {pages})" if pages else ""
+        return (
+            "[PDF extraction warning: text was unavailable from part of this "
+            f"document{pages_label} when indexed. Do not infer that the "
+            "retrieved passages cover the whole PDF.]\n"
+        )
+    if coverage.get("status") == "unknown":
+        return (
+            "[PDF extraction coverage was not recorded for this indexed "
+            "document. Do not assume it was fully extracted.]\n"
+        )
+    return ""
+
 class Oracle:
     """
     Implements the RAG pipeline to provide context-aware answers to user queries.
@@ -68,6 +217,8 @@ class Oracle:
     context_max_chars = _ORACLE_CONTEXT_MAX_CHARS
     conditional_rewrite = True
     rewrite_timeout_s = _REWRITE_TIMEOUT_S
+    answer_sufficiency_check = False
+    answer_sufficiency_timeout_s = 180
 
     def __init__(self, config, db: Database, router: LLMRouter, embedder: Embedder):
         self.config = config
@@ -98,6 +249,8 @@ class Oracle:
             config.cognition, "rewrite_timeout_s", _REWRITE_TIMEOUT_S
         ))
         self.system_prompt_template = self._load_prompt()
+        self.answer_sufficiency_check = getattr(config.cognition, "answer_sufficiency_check", False) is True
+        self.answer_sufficiency_timeout_s = getattr(config.cognition, "answer_sufficiency_timeout_s", 180)
 
     def _load_prompt(self):
         """Loads the Oracle's system prompt template."""
@@ -129,7 +282,7 @@ class Oracle:
         t_rewrite = time.perf_counter()
         retrieval_query = self._rewrite_query(question, history)
         timings["rewrite_s"] = time.perf_counter() - t_rewrite
-        full_context, sources, retrieved = self._build_context(
+        full_context, sources, retrieved, source_details = self._build_context_payload(
             retrieval_query, top_k, extra_sources=extra_sources,
             retrieval_k=retrieval_k, timings=timings,
             filter_note_ids=filter_note_ids,
@@ -140,38 +293,133 @@ class Oracle:
             return {
                 "answer": "Your vault seems empty of relevant whispers on this subject.",
                 "sources": [],
+                "source_details": [],
+                "citation_selections": [],
+                "answer_status": "insufficient_evidence",
                 "retrieved": retrieved,
                 "dropped_citations": 0,
                 "timings": timings,
             }
 
-        system_prompt = self.system_prompt_template.replace("{context}", full_context)
+        full_context, sources, source_details, sufficiency, blocked = self._check_evidence(
+            retrieval_query, full_context, sources, retrieved, source_details, question, timings,
+        )
+        if blocked is not None:
+            timings["generate_s"] = 0.0
+            timings["total_s"] = time.perf_counter() - t_total
+            return {**blocked, "timings": timings}
+        if sufficiency is not None:
+            result = self._generate_checked(question, full_context, sources, retrieved,
+                                            source_details, history, sufficiency, timings)
+            timings["total_s"] = time.perf_counter() - t_total
+            return {**result, "timings": timings}
+        system_prompt = _answer_template(self.system_prompt_template).replace("{context}", full_context)
         if history:
             system_prompt = self._format_history(history) + "\n\n" + system_prompt
         t_gen = time.perf_counter()
         response = self.router.complete(
-            prompt=f"Question: {question}",
+            prompt=_answer_request(question),
             system_prompt=system_prompt,
         )
         timings["generate_s"] = time.perf_counter() - t_gen
 
+        # ``generation_error`` is internal: the API and MCP whitelist their
+        # fields, so only the evaluator sees it. It separates a model that
+        # could not answer (transport failure, missing answer field) from a
+        # model that chose to abstain; both render the same silent sentinel.
         if not response or not isinstance(response, dict):
             logger.warning("oracle_no_response")
             timings["total_s"] = time.perf_counter() - t_total
             return {"answer": "The Oracle is silent.", "sources": sources,
-                    "retrieved": retrieved, "dropped_citations": 0, "timings": timings}
+                    "citation_selections": [],
+                    "source_details": source_details, "retrieved": retrieved,
+                    "answer_status": "insufficient_evidence",
+                    "dropped_citations": 0, "timings": timings, "sufficiency": sufficiency,
+                    "generation_error": "no_model_response"}
 
-        answer, dropped = self.verify_citations(
-            response.get("answer", "The Oracle is silent."), sources
+        raw_answer = response.get("answer", "The Oracle is silent.")
+        answer, dropped, selections = self.resolve_citations(
+            raw_answer, sources, source_details
         )
         timings["total_s"] = time.perf_counter() - t_total
         return {
             "answer": answer,
             "sources": sources,
+            "source_details": source_details,
+            "citation_selections": selections,
+            "answer_status": answer_status(
+                answer, sources,
+                "insufficient_evidence" if _citation_only(raw_answer) else response.get("status")
+            ),
             "retrieved": retrieved,
             "dropped_citations": dropped,
             "timings": timings,
+            "sufficiency": sufficiency,
+            **({} if "answer" in response else {"generation_error": "missing_answer_field"}),
         }
+
+    def _check_evidence(self, query, context, sources, retrieved, details, question, timings):
+        if self.answer_sufficiency_check is not True:
+            return context, sources, details, None, None
+        selected_context, selected, audit = assess(
+            self.router, query, context, details, _coverage_context_note,
+            timeout_s=self.answer_sufficiency_timeout_s,
+        )
+        timings["sufficiency_s"] = audit["elapsed_s"]
+        if audit["decision"] == "answerable":
+            return selected_context, list(dict.fromkeys(d["label"] for d in selected)), selected, audit, None
+        failed = audit["decision"] == "unassessed"
+        blocked = {"answer": blocked_answer(question, failed=failed), "sources": sources,
+                   "source_details": details, "retrieved": retrieved, "citation_selections": [],
+                   "answer_status": "uncertain" if failed else "insufficient_evidence",
+                   "dropped_citations": 0, "sufficiency": audit}
+        return context, sources, details, audit, blocked
+
+    def _generate_checked(self, question, context, sources, retrieved, details, history, audit, timings):
+        """Opt-in all-or-nothing cited claims; never repair an uncited answer.
+
+        Both UI delivery modes use this same structured protocol. Validation
+        precedes any display, and failure never triggers retries or a fallback
+        with looser evidence rules. Literal references are not semantic proof.
+        """
+        started = time.perf_counter()
+        generation = {"protocol_version": PROTOCOL_VERSION, "decision": "unassessed",
+                      "error": None, "model_response": None, "model_calls": 0,
+                      "semantic_support": "unverified"}
+        audit["generation"] = generation
+        result = {"sources": sources, "source_details": details, "retrieved": retrieved,
+                  "sufficiency": audit, "citation_selections": [], "dropped_citations": 0,
+                  "answer_status": "uncertain", "answer": blocked_answer(question, failed=True, stage="generation")}
+        try:
+            template = (Path(__file__).parent / "prompts/cited_answer.txt").read_text(encoding="utf-8")
+            system_prompt = template.replace("{context}", context)
+            if history:
+                system_prompt = self._format_history(history) + "\n\n" + system_prompt
+            safe_question = SecurityGuard.wrap_untrusted(
+                SecurityGuard.sanitize_prompt(question), label="question")
+            generation["model_calls"] = 1
+            response = self.router.complete(prompt=f"Question:\n{safe_question}", system_prompt=system_prompt)
+            generation["model_response"] = response_snapshot(response)
+            raw, status, error = render_claims(response, details)
+            generation["error"] = error
+            if error:
+                return result
+            if status == "insufficient_evidence":
+                generation["decision"] = "insufficient"
+                return {**result, "answer": blocked_answer(question), "answer_status": status}
+            answer, dropped, selections = self.resolve_citations(raw, sources, details)
+            if dropped or not selections:
+                generation["error"] = "answer_reference_resolution_failed"
+                return result
+            generation["decision"] = "accepted"
+            return {**result, "answer": answer, "answer_status": status,
+                    "citation_selections": selections}
+        except Exception:
+            generation["error"] = "answer_generation_failed"
+            return result
+        finally:
+            timings["generate_s"] = time.perf_counter() - started
+            generation["elapsed_s"] = timings["generate_s"]
 
     def retrieve(self, question: str, top_k: int = 10, history=None,
                  timings: "dict | None" = None,
@@ -207,8 +455,17 @@ class Oracle:
         )
         return retrieved
 
+    def rewrite_retrieval_query(self, question: str, history=None) -> str:
+        """Return the history-aware query used by the retrieval pipeline.
+
+        The HTTP search companion uses this public boundary so related
+        passages resolve follow-up references exactly like answer retrieval,
+        while retaining its lightweight hit payload.
+        """
+        return self._rewrite_query(question, self._normalize_history(history))
+
     @staticmethod
-    def verify_citations(text: str, sources) -> tuple[str, int]:
+    def verify_citations(text: str, sources, source_details=None) -> tuple[str, int]:
         """Unlink any ``[[wikilink]]`` the model emitted that wasn't among the
         retrieved ``sources`` — a hallucinated citation.
 
@@ -218,24 +475,80 @@ class Oracle:
         tolerant of a missing ``#anchor`` (a bare ``[[Title]]`` is accepted for
         a retrieved ``[[Title#p.4]]``) so legitimate citations aren't stripped.
         """
+        cleaned, dropped, _ = Oracle.resolve_citations(text, sources, source_details)
+        return cleaned, dropped
+
+    @staticmethod
+    def resolve_citations(text: str, sources, source_details=None) -> tuple[str, int, list[dict]]:
+        """Verify once, recording each accepted occurrence in answer order.
+
+        Indices address this response's delivered ``source_details``, not the
+        database or physical pages. A canonical label shared by several
+        passages remains ambiguous; never choose one by content or rank.
+        No raw answer or rejected model text is retained in the trace.
+        """
         if not text:
-            return text, 0
+            return text, 0, []
         allowed = set(sources or [])
         allowed_titles = {s.split("#", 1)[0].strip() for s in (sources or [])}
         dropped = 0
+        # Only references explicitly published with the delivered context can
+        # resolve. No ranking heuristic, page-number inference or cached map.
+        references: dict[str, tuple[str, int]] = {}
+        selections: list[dict] = []
+        details = source_details or []
+        duplicate_refs = set()
+        for index, detail in enumerate(details):
+            if not isinstance(detail, dict):
+                continue
+            ref, label = detail.get("citation_ref"), detail.get("label")
+            if not isinstance(ref, str) or not re.fullmatch(r"cite:[1-9]\d*", ref):
+                continue
+            if not isinstance(label, str) or label not in allowed:
+                continue
+            if ref in references:
+                duplicate_refs.add(ref)
+            references[ref] = (label, index)
+        for ref in duplicate_refs:
+            references.pop(ref)
 
         def _sub(match: "re.Match") -> str:
             nonlocal dropped
-            label = match.group(1).strip()
+            wiki, short = match.groups()
+            label = wiki.strip() if wiki is not None else short
             title = label.split("#", 1)[0].strip()
-            if label in allowed or title in allowed_titles:
-                return match.group(0)
-            dropped += 1
-            logger.warning("oracle_citation_hallucinated", citation=label)
-            return label
+            ref = None
+            if wiki is not None and (label in allowed or ("#" not in label and title in allowed_titles)):
+                indices = [i for i, detail in enumerate(details) if isinstance(detail, dict)
+                           and isinstance(detail.get("label"), str)
+                           and (detail["label"] == label or
+                                ("#" not in label and detail["label"].split("#", 1)[0].strip() == title))
+                           and detail["label"] in allowed]
+                replacement = match.group(0)
+            # Some models retain double brackets around the short token. It
+            # is unambiguous because the builder skips canonical-name clashes.
+            elif label in references:
+                ref = label
+                label, index = references[ref]
+                indices = [index]
+                replacement = f"[[{label}]]"
+            else:
+                dropped += 1
+                if short is not None:
+                    logger.warning("oracle_citation_ref_unknown", citation_ref=label)
+                else:
+                    logger.warning("oracle_citation_hallucinated", citation=label)
+                return label
+            selections.append({
+                "citation_index": len(selections), "label": label,
+                "form": "short" if ref is not None else "wikilink",
+                "citation_ref": ref, "source_detail_indices": indices,
+                "selection": "exact" if len(indices) == 1 else "ambiguous" if indices else "unmapped",
+            })
+            return replacement
 
-        cleaned = _WIKILINK_RE.sub(_sub, text)
-        return cleaned, dropped
+        cleaned = _EMITTED_CITATION_RE.sub(_sub, text)
+        return cleaned, dropped, selections
 
     # ── conversation memory ──────────────────────────────────────────────
 
@@ -433,16 +746,15 @@ class Oracle:
             [(it['note_id'], it['text']) for it in items]
         )
 
-    def _build_context(self, question: str, top_k: int, extra_sources=None,
-                       retrieval_k: "int | None" = None,
-                       timings: "dict | None" = None,
-                       filter_note_ids: "set[int] | None" = None):
-        """Run retrieval + context-cap and return (full_context, sources, retrieved).
+    def _build_context_payload(self, question: str, top_k: int, extra_sources=None,
+                               retrieval_k: "int | None" = None,
+                               timings: "dict | None" = None,
+                               filter_note_ids: "set[int] | None" = None):
+        """Run retrieval and return context plus structured source details.
 
-        Returns ``(None, [], retrieved)`` when no context is usable, so the
-        caller can short-circuit without a second branch. Pulled out of
-        ``ask()`` so ``ask_stream()`` can reuse the exact same retrieval
-        logic — keeping JSON and streaming paths in lockstep.
+        Returns ``(context, sources, retrieved, source_details)``.  The public
+        compatibility wrapper below keeps the historical three-tuple for
+        callers that use this helper directly.
 
         ``extra_sources`` is a list of ``(title, raw_body)`` pairs from
         user-explicit attachments (``@note``, ``/pin``). They are prepended
@@ -457,6 +769,15 @@ class Oracle:
         context, so the answer the model sees is unchanged. ``None`` ⇒ the
         legacy behaviour where ranking depth == context depth == ``top_k``.
         """
+        # An explicitly empty scope is a final answer, not a cue to retry
+        # globally. Avoid even embedding the question so direct Oracle users
+        # get the same fail-closed behaviour as the HTTP API. Pinned sources
+        # remain usable because they were selected explicitly by the caller.
+        if filter_note_ids is not None and not filter_note_ids and not extra_sources:
+            if timings is not None:
+                timings.update({"embed_s": 0.0, "retrieve_s": 0.0, "rerank_s": 0.0})
+            return None, [], [], []
+
         n_retrieve = max(top_k, retrieval_k) if retrieval_k else top_k
         t_embed = time.perf_counter()
         query_vector = self.embedder.embed(question)
@@ -478,11 +799,14 @@ class Oracle:
                 rerank=getattr(self.config.cognition, "rerank", False),
                 rerank_pool=getattr(self.config.cognition, "rerank_pool", 20),
                 timings=search_timings,
+                include_embedding_id=True,
             )
             rerank_s = search_timings.get("rerank_s", 0.0)
         elif query_vector:
             similar = self.connector.find_similar_notes(
-                query_vector, top_k=n_retrieve, filter_note_ids=filter_note_ids)
+                query_vector, top_k=n_retrieve, filter_note_ids=filter_note_ids,
+                include_embedding_id=True,
+            )
         else:
             similar = []
         # "retrieve" is dense + BM25 + fusion; the optional rerank is subtracted
@@ -493,7 +817,7 @@ class Oracle:
             timings["rerank_s"] = rerank_s
 
         if not similar and not extra_sources:
-            return None, [], []
+            return None, [], [], []
 
         # Ranked, note-deduped retrieval order. Captured here because the
         # ``set()`` dedup and the char-budget cap below both destroy rank
@@ -505,7 +829,7 @@ class Oracle:
         retrieved: list[dict] = []
         _seen_notes: set[int] = set()
 
-        candidate_parts: list[tuple[str, str]] = []
+        candidate_parts: list[tuple[str, str, dict]] = []
 
         # User-explicit attachments first — they're the highest signal.
         for title, raw_body in (extra_sources or []):
@@ -514,15 +838,41 @@ class Oracle:
                 label="source",
             )
             candidate_parts.append(
-                (title, f"--- Source: [[{title}]] (pinned) ---\n{safe_text}")
+                (
+                    title,
+                    f"--- Source: [[{title}]] (pinned) ---\n{safe_text}",
+                    {
+                        "id": f"pinned:{title}",
+                        "label": title,
+                        "document": {
+                            "note_id": None, "title": title,
+                            "path": None, "format": None,
+                        },
+                        "locator": {
+                            "chunk_index": None, "page": None, "heading": None,
+                        },
+                        "passage": {"text": raw_body, "completeness": "full"},
+                        "source_state": "provided",
+                        "indexed_file_hash": None,
+                        "current_file_hash": None,
+                    },
+                )
             )
 
-        # Metadata for the whole result set in two statements instead of two
-        # per chunk. Titles cover the full ranking pool (``retrieved`` spans
-        # it); anchors only the head that actually reaches the context, since
-        # that's all that gets cited.
+        # Fetch metadata in bulk. Titles cover the full ranking pool;
+        # evidence identifies the exact embedding occurrence. The text-based
+        # anchor lookup remains a fallback for legacy retrieval without IDs.
         titles = self._titles_for(similar)
         anchors = self._anchors_for(similar[:top_k])
+        embedding_ids = [
+            int(item["embedding_id"])
+            for item in similar[:top_k]
+            if item.get("embedding_id") is not None
+        ]
+        evidence_records = self.db.get_evidence_records(embedding_ids) \
+            if embedding_ids else {}
+        if not isinstance(evidence_records, dict):
+            evidence_records = {}
 
         for rank_pos, item in enumerate(similar):
             title = titles.get(item['note_id'])
@@ -543,29 +893,66 @@ class Oracle:
             # the ranking pool (e.g. MRR@10 behind a top-5 answer).
             if rank_pos >= top_k:
                 continue
-            page, heading = anchors.get(
-                (item['note_id'], item['text']), (None, None)
-            )
+            record = evidence_records.get(item.get("embedding_id"))
+            if record is not None and record.get("note_id") != note_id:
+                # A stale/malformed retrieval result must never associate
+                # evidence from a different document with this citation.
+                record = None
+            if record is not None:
+                # Excerpts can repeat on different pages, or collide after
+                # truncation. Even absent anchors belong to THIS occurrence;
+                # don't borrow the first matching excerpt's page or heading.
+                page, heading = record.get("page"), record.get("heading")
+            else:
+                page, heading = anchors.get(
+                    (item['note_id'], item['text']), (None, None)
+                )
             label = _format_source_label(title, page, heading)
+            detail = self._source_detail(
+                item, title=title, label=label, page=page,
+                heading=heading,
+                record=record,
+            )
+            # Generation sees the same complete indexed passage exposed to
+            # the reviewer.  Legacy rows fall back to their bounded excerpt
+            # only when safe reconstruction is impossible.
+            context_text = detail["passage"]["text"] or item["text"]
             safe_text = SecurityGuard.wrap_untrusted(
-                SecurityGuard.sanitize_prompt(item['text']),
+                SecurityGuard.sanitize_prompt(context_text),
                 label="source",
             )
             candidate_parts.append(
-                (label, f"--- Source: [[{label}]] ---\n{safe_text}")
+                (
+                    label,
+                    f"--- Source: [[{label}]] ---\n"
+                    f"{_coverage_context_note(detail)}{safe_text}",
+                    detail,
+                )
             )
 
         accepted_parts: list[str] = []
         sources: list[str] = []
+        source_details: list[dict] = []
         used = 0
         dropped = 0
-        for title, part in candidate_parts:
+        reserved_refs = {
+            name for label, _part, _detail in candidate_parts
+            for name in (label, label.split("#", 1)[0].strip())
+        }
+        ref_index = 1
+        for title, part, detail in candidate_parts:
+            while f"cite:{ref_index}" in reserved_refs:
+                ref_index += 1
+            citation_ref = f"cite:{ref_index}"
+            part = f"Citation token: [{citation_ref}]\n{part}"
             extra = len(part) + (len(_CONTEXT_SEPARATOR) if accepted_parts else 0)
             if used + extra > self.context_max_chars:
                 dropped += 1
                 continue
             accepted_parts.append(part)
             sources.append(title)
+            source_details.append({**detail, "citation_ref": citation_ref})
+            ref_index += 1
             used += extra
 
         if dropped:
@@ -581,13 +968,148 @@ class Oracle:
             # Retrieval found notes but the char cap dropped every one — a
             # distinct failure mode from "nothing retrieved". Hand back the
             # ranked list so eval can tell the two apart.
-            return None, [], retrieved
+            return None, [], retrieved, []
 
         return (
             _CONTEXT_SEPARATOR.join(accepted_parts),
             list(dict.fromkeys(sources)),
             retrieved,
+            source_details,
         )
+
+    def _build_context(self, question: str, top_k: int, extra_sources=None,
+                       retrieval_k: "int | None" = None,
+                       timings: "dict | None" = None,
+                       filter_note_ids: "set[int] | None" = None):
+        """Compatibility wrapper returning the historical three-tuple."""
+        context, sources, retrieved, _details = self._build_context_payload(
+            question, top_k, extra_sources=extra_sources,
+            retrieval_k=retrieval_k, timings=timings,
+            filter_note_ids=filter_note_ids,
+        )
+        return context, sources, retrieved
+
+    def _source_detail(self, item: dict, *, title: str, label: str,
+                       page, heading, record: "dict | None",
+                       recover_legacy: bool = True) -> dict:
+        """Build one inspectable reference tied to the indexed source version.
+
+        Read-only clients can disable legacy reconstruction: semantic chunking
+        may contact the embedding service, whereas reading stored text cannot.
+        """
+        if not record:
+            # Retrieval stand-ins and legacy connectors may not expose an
+            # embedding id. Preserve a useful, explicitly unverified excerpt.
+            return {
+                "id": f"note:{item.get('note_id')}:unresolved",
+                "label": label,
+                "document": {
+                    "note_id": item.get("note_id"), "title": title,
+                    "path": None, "format": None,
+                },
+                "locator": {
+                    "chunk_index": None, "page": page, "heading": heading,
+                },
+                "passage": {
+                    "text": item.get("text") or "", "completeness": "excerpt",
+                },
+                "source_state": "unverified",
+                "indexed_file_hash": None,
+                "current_file_hash": None,
+                "indexed_extraction": None,
+            }
+
+        state, current_hash, display_path = self._source_file_state(record)
+        passage = record.get("full_text")
+        complete = passage is not None
+        if not complete and state == "current" and recover_legacy:
+            recovered = self._recover_full_passage(record)
+            if recovered is not None:
+                passage = recovered
+                complete = True
+        if passage is None:
+            passage = record.get("excerpt") or item.get("text") or ""
+
+        return {
+            "id": (
+                f"note:{record['note_id']}:chunk:{record['chunk_index']}:"
+                f"embedding:{record['embedding_id']}"
+            ),
+            "label": label,
+            "document": {
+                "note_id": record["note_id"],
+                "title": record.get("title") or title,
+                "path": display_path,
+                "format": record.get("format") or "md",
+            },
+            "locator": {
+                "chunk_index": record["chunk_index"],
+                "page": record.get("page"),
+                "heading": record.get("heading"),
+            },
+            "passage": {
+                "text": passage,
+                "completeness": "full" if complete else "excerpt",
+            },
+            "source_state": state,
+            "indexed_file_hash": record.get("file_hash"),
+            "current_file_hash": current_hash,
+            "indexed_extraction": _indexed_extraction_summary(record),
+        }
+
+    def _source_file_state(self, record: dict) -> tuple[str, "str | None", "str | None"]:
+        """Compare the current file bytes with the version recorded at scan."""
+        raw_path = record.get("path")
+        if not raw_path:
+            return "unverified", None, None
+        path = Path(raw_path)
+        vault_cfg = getattr(self.config, "vault", None)
+        vault_path = getattr(vault_cfg, "path", None)
+        if not vault_path:
+            return "unverified", None, None
+        vault_root = Path(vault_path).resolve()
+        try:
+            resolved = SecurityGuard.resolve_within_vault(path, vault_root)
+            display_path = str(resolved.relative_to(vault_root))
+        except (OSError, ValueError):
+            return "unavailable", None, None
+        if not resolved.is_file():
+            return "missing", None, display_path
+        indexed_hash = record.get("file_hash")
+        if not indexed_hash:
+            return "unverified", None, display_path
+        try:
+            current_hash = sha256_file(resolved)
+        except OSError:
+            return "unavailable", None, display_path
+        state = "current" if current_hash == indexed_hash else "modified"
+        return state, current_hash, display_path
+
+    def _recover_full_passage(self, record: dict) -> "str | None":
+        """Recreate a legacy full chunk only from an unchanged source file."""
+        from grimore.cognition.chunker import build_candidate_chunks
+        from grimore.ingest.parser import MarkdownParser
+
+        try:
+            vault_root = Path(self.config.vault.path).resolve()
+            path = SecurityGuard.resolve_within_vault(record["path"], vault_root)
+            note = MarkdownParser().parse_file(
+                path, vault_root=vault_root, config=self.config,
+            )
+            clean = SecurityGuard.sanitize_prompt(note.content)
+            chunks = build_candidate_chunks(note, clean, self.embedder, self.config)
+            candidate = chunks[int(record["chunk_index"])]
+        except (IndexError, KeyError, OSError, TypeError, ValueError):
+            return None
+
+        excerpt = record.get("excerpt") or ""
+        if excerpt and not candidate.text.startswith(excerpt):
+            return None
+        stored_hash = record.get("chunk_hash")
+        model = getattr(self.embedder, "model", "")
+        if stored_hash and Embedder.chunk_hash(candidate.text, model) != stored_hash:
+            return None
+        return candidate.text
 
     def ask_stream(self, question: str, top_k: int = 5, extra_sources=None,
                    history=None,
@@ -607,33 +1129,40 @@ class Oracle:
         The streaming path strips the JSON-only rule from the system prompt
         so the model emits plain prose; ``ask()`` keeps its JSON contract
         for callers like ``--export`` that depend on a structured payload.
+        With the optional sufficiency check, both modes instead use validated
+        cited claims and emit a single final event, without provisional facts.
         """
         logger.info("oracle_query_stream", question=question)
         history = self._normalize_history(history)
         retrieval_query = self._rewrite_query(question, history)
-        full_context, sources, retrieved = self._build_context(
+        full_context, sources, retrieved, source_details = self._build_context_payload(
             retrieval_query, top_k, extra_sources=extra_sources,
             filter_note_ids=filter_note_ids,
         )
         if full_context is None:
-            yield {"type": "done", "sources": [], "retrieved": retrieved, "dropped_citations": 0}
+            yield {
+                "type": "done", "sources": [], "source_details": [],
+                "citation_selections": [],
+                "answer_status": "insufficient_evidence",
+                "retrieved": retrieved, "dropped_citations": 0,
+            }
             return
 
-        # Drop the JSON-output rule and example block from the template so
-        # the streamed answer is plain prose. The marker we anchor on is
-        # the literal "6. Return ONLY..." rule line; if the prompt is ever
-        # rewritten, this falls back to the full template (model still
-        # produces valid prose, just wrapped in JSON the user will see).
-        streaming_template = self.system_prompt_template
-        json_rule_idx = streaming_template.find('6. Return ONLY')
-        if json_rule_idx != -1:
-            context_idx = streaming_template.find('Context:', json_rule_idx)
-            if context_idx != -1:
-                streaming_template = (
-                    streaming_template[:json_rule_idx]
-                    + streaming_template[context_idx:]
-                )
-
+        timings = {}
+        full_context, sources, source_details, sufficiency, blocked = self._check_evidence(
+            retrieval_query, full_context, sources, retrieved, source_details, question, timings,
+        )
+        if blocked is not None:
+            yield {"type": "done", **blocked, "timings": timings}
+            return
+        if sufficiency is not None:
+            # No unchecked factual tokens escape. Buffer only the opt-in
+            # protocol; legacy streaming remains incremental and unchanged.
+            result = self._generate_checked(question, full_context, sources, retrieved,
+                                            source_details, history, sufficiency, timings)
+            yield {"type": "done", **result, "timings": timings}
+            return
+        streaming_template = _answer_template(self.system_prompt_template, streaming=True)
         system_prompt = streaming_template.replace("{context}", full_context)
         if history:
             system_prompt = self._format_history(history) + "\n\n" + system_prompt
@@ -641,7 +1170,7 @@ class Oracle:
         produced = False
         chunks: list[str] = []
         for chunk in self.router.complete_streaming(
-            prompt=f"Question: {question}",
+            prompt=_answer_request(question),
             system_prompt=system_prompt,
         ):
             produced = True
@@ -653,11 +1182,23 @@ class Oracle:
         # Tokens are already on screen, but the final event carries the verified
         # answer so clients can replace their provisional rendering and remove
         # citations that were not present in the retrieved context.
-        verified_answer, dropped = self.verify_citations("".join(chunks), sources)
+        raw_answer = "".join(chunks)
+        verified_answer, dropped, selections = self.resolve_citations(raw_answer, sources, source_details)
         yield {
             "type": "done",
             "answer": verified_answer,
             "sources": sources,
+            "source_details": source_details,
+            "citation_selections": selections,
+            "answer_status": answer_status(
+                verified_answer, sources,
+                "insufficient_evidence" if _citation_only(raw_answer) else None,
+            ),
             "retrieved": retrieved,
             "dropped_citations": dropped,
+            "sufficiency": sufficiency,
+            "timings": timings,
+            # Same marker as ``ask``: no tokens means the model failed, not
+            # that the context lacked evidence.
+            **({} if produced else {"generation_error": "no_model_response"}),
         }

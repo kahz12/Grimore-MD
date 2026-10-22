@@ -97,7 +97,14 @@ class TestBulkWrite:
     def test_text_is_truncated_at_the_configured_width(self, db):
         note_id = db.upsert_note("/vault/long.md", "L", "hash-l")
         reembed_note(db, _Embedder(), note_id, _chunks("x" * 900), text_truncation=100)
-        assert len(_rows(db, note_id)[0][2]) == 100
+        row = _rows(db, note_id)[0]
+        assert len(row[2]) == 100
+        with db._get_connection() as conn:
+            full_text = conn.execute(
+                "SELECT full_text_content FROM embeddings WHERE note_id = ?",
+                (note_id,),
+            ).fetchone()[0]
+        assert len(full_text) == 900
 
     def test_empty_chunk_list_writes_nothing(self, db):
         note_id = db.upsert_note("/vault/e.md", "E", "hash-e")

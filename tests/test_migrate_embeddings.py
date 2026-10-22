@@ -44,6 +44,7 @@ def _seed_db(tmp_path: Path, n_chunks: int = 3, dim: int = 4) -> Database:
         db.store_embedding(
             note_id, i, f"chunk-{i}",
             _vec_blob(v), chunk_hash=f"old-{i}",
+            full_text_content=f"complete passage {i}",
         )
     return db
 
@@ -129,7 +130,8 @@ class TestSwap:
         # New rows present, old vectors gone, shadow table dropped.
         with closing(sqlite3.connect(db.db_path)) as conn, conn:
             rows = conn.execute(
-                "SELECT chunk_hash, vector FROM embeddings ORDER BY chunk_index"
+                "SELECT chunk_hash, vector, full_text_content "
+                "FROM embeddings ORDER BY chunk_index"
             ).fetchall()
             tables = {
                 r[0]
@@ -138,10 +140,11 @@ class TestSwap:
                 )
             }
         assert len(rows) == 3
-        for chunk_hash, vector in rows:
+        for index, (chunk_hash, vector, full_text) in enumerate(rows):
             assert chunk_hash.startswith(Embedder.chunk_hash("", "new-model")[:0] or "")
             # The vector blob is the new one (0.9, 0.1, 0.0, 0.0).
             assert struct.unpack("4f", vector)[0] == pytest.approx(0.9, abs=1e-5)
+            assert full_text == f"complete passage {index}"
         assert "embeddings_migration" not in tables
 
     def test_swap_refuses_when_incomplete(self, tmp_path):

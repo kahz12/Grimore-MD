@@ -937,11 +937,37 @@ class GrimoreShell:
                                style="grimore.muted"))
             return
         sources = answer.get("sources") or []
-        if not sources:
+        details = answer.get("source_details") or []
+        if not sources and not details:
             console.print(Text("Last answer cited no sources.",
                                style="grimore.muted"))
             return
         ui.section("Sources cited by the last answer")
+        if details:
+            for detail in details:
+                label = detail.get("label") or detail.get("document", {}).get("title") or "source"
+                document = detail.get("document") or {}
+                locator = detail.get("locator") or {}
+                passage = detail.get("passage") or {}
+                anchors = []
+                if locator.get("page") is not None:
+                    anchors.append(f"page {locator['page']}")
+                if locator.get("heading"):
+                    anchors.append(str(locator["heading"]))
+                location = document.get("path") or "path unavailable"
+                if anchors:
+                    location += " · " + " · ".join(anchors)
+                state = detail.get("source_state") or "unverified"
+                completeness = passage.get("completeness") or "excerpt"
+                console.print(Text.assemble(
+                    ("  • ", "grimore.muted"),
+                    (f"[[{label}]]", "grimore.accent"),
+                    (f"  {state} · {completeness}", "grimore.muted"),
+                ))
+                console.print(Text(f"    {location}", style="grimore.muted"))
+                if passage.get("text"):
+                    console.print(Text(f"    {passage['text']}"))
+            return
         for s in sources:
             console.print(Text.assemble(
                 ("  • ", "grimore.muted"),

@@ -1,0 +1,36 @@
+version: 1
+corpus_root: ../output/pdf
+documents:
+  - id: humedal-difficult-layout
+    path: phase4_difficult_humedal.pdf
+    reading_order:
+      - page: 1
+        passages: [Estaciones de muestreo, Norte-01 funciona como punto de referencia, La calidad del agua se mide el primer martes, Restauración vegetal, cuatro plantas por metro cuadrado, No se aplican herbicidas]
+      - page: 2
+        passages: [Responsabilidades, Equipo Agua Clara, Cooperativa Verde Vivo, Comité Comunitario]
+      - page: 3
+        passages: [Informe de restauración del Humedal, Resumen ejecutivo, Datos de referencia, Corpus de evaluación Grimore]
+    table_rows:
+      - page: 2
+        cells: [Equipo Agua Clara, Muestreo de agua y custodia de resultados]
+      - page: 2
+        cells: [Cooperativa Verde Vivo, Retiro de jacinto y revegetación]
+      - page: 2
+        cells: [Comité Comunitario, Conteos participativos de aves y anfibios]
+      - page: 3
+        cells: [Fósforo total, "0,18 mg/L", "Menos de 0,10 mg/L"]
+      - page: 3
+        cells: [Cobertura de jacinto invasor, "8 ha", "Menos de 0,5 ha"]
+    page_anchors:
+      - page: 1
+        passage: Norte-01 funciona como punto de referencia
+      - page: 1
+        passage: cuatro plantas por metro cuadrado
+      - page: 2
+        passage: Equipo Agua Clara
+      - page: 2
+        passage: Comité Comunitario
+      - page: 3
+        passage: El área de intervención aprobada es de 37,5 hectáreas
+      - page: 3
+        passage: Fósforo total

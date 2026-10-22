@@ -1,0 +1,9 @@
+{
+  "id": "grimore-readonly",
+  "name": "Grimore: consultas locales",
+  "version": "0.1.1",
+  "minAppVersion": "1.4.0",
+  "description": "Busca pasajes indexados y consulta alertas de Grimore sin editar notas ni tomar decisiones.",
+  "author": "Grimore",
+  "isDesktopOnly": true
+}

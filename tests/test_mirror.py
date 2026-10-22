@@ -197,6 +197,58 @@ class TestHappyPath:
         assert report.contradictions_found == 0
         assert Mirror(session).list_open() == []
 
+    def test_scan_reports_omitted_markdown_section(self, mirror_config, vault):
+        mirror_config.cognition.claim_max_chars = 500
+        mirror_config.cognition.claim_max_sections = 2
+        body = (
+            "# First\nAlpha is one. " + "A" * 250 + "\n"
+            "# Middle\nBeta is two. " + "B" * 250 + "\n"
+            "# Last\nGamma is three. " + "C" * 250
+        )
+        path = _write_note(vault, "long.md", body)
+        session = Session(mirror_config)
+        _seed_note(session, path, "Long")
+        _wire(
+            session,
+            extractions=[
+                {"claims": ["Alpha is one."]},
+                {"claims": ["Gamma is three."]},
+            ],
+            verdicts=[],
+            vectors={
+                "Alpha is one.": [1.0, 0.0],
+                "Gamma is three.": [0.0, 1.0],
+            },
+        )
+
+        report = Mirror(session).scan()
+
+        assert report.claims_extracted == 2
+        assert [(gap.section, gap.heading, gap.reason) for gap in report.coverage_gaps] == [
+            (2, "Middle", "budget"),
+        ]
+
+    def test_failed_extraction_keeps_previous_claims(self, mirror_config, vault):
+        path = _write_note(vault, "stable.md", "Alpha is one.")
+        session = Session(mirror_config)
+        _seed_note(session, path, "Stable")
+        _wire(
+            session,
+            extractions=[{"claims": ["Alpha is one."]}], verdicts=[],
+            vectors={"Alpha is one.": [1.0, 0.0]},
+        )
+        Mirror(session).scan()
+        before = session.db.get_all_claims_with_vectors()
+
+        session._router = _RoutedRouter(extractions=[None], verdicts=[])
+        report = Mirror(session).scan(full=True)
+
+        assert report.claims_extracted == 0
+        assert [(gap.section, gap.reason) for gap in report.coverage_gaps] == [
+            (1, "llm_failed"),
+        ]
+        assert session.db.get_all_claims_with_vectors() == before
+
 
 # ── filtering ───────────────────────────────────────────────────────────
 

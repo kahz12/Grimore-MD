@@ -11,6 +11,7 @@ from grimore.utils.config import (
     load_config,
     set_active_profile,
     update_cognition_models,
+    update_setup_config,
 )
 
 
@@ -65,6 +66,21 @@ def test_existing_env_var_is_not_overridden(tmp_path, monkeypatch, isolated_env)
     _load_project_env()
     # override=False: shell wins.
     assert os.environ["GRIMORE_TEST_KEEP"] == "from_shell"
+
+
+def test_claim_extraction_limits_load_from_cognition_config(tmp_path):
+    path = tmp_path / "grimore.toml"
+    path.write_text(
+        "[cognition]\nclaim_max_chars = 12000\n"
+        "claim_max_sections = 6\nclaim_max_claims_per_section = 7\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(str(path))
+
+    assert config.cognition.claim_max_chars == 12000
+    assert config.cognition.claim_max_sections == 6
+    assert config.cognition.claim_max_claims_per_section == 7
 
 
 # ── _set_cognition_string + update_cognition_models ────────────────────────
@@ -154,6 +170,57 @@ class TestUpdateCognitionModels:
         text = path.read_text(encoding="utf-8")
         assert 'model_llm_local = "zc"' in text
         assert 'model_embeddings_local = "ze"' in text
+
+
+class TestUpdateSetupConfig:
+    def test_creates_scoped_config_and_escapes_values(self, tmp_path):
+        path = tmp_path / "grimore.toml"
+
+        changed = update_setup_config(
+            vault_path=str(tmp_path / 'vault "quoted"'),
+            chat_model='chat "safe"',
+            embedding_model="embed",
+            config_path=path,
+        )
+
+        assert changed is True
+        config = load_config(str(path))
+        assert config.vault.path == str(tmp_path / 'vault "quoted"')
+        assert config.cognition.model_llm_local == 'chat "safe"'
+        assert config.cognition.model_embeddings_local == "embed"
+        assert update_setup_config(
+            vault_path=str(tmp_path / 'vault "quoted"'),
+            chat_model='chat "safe"', embedding_model="embed", config_path=path,
+        ) is False
+
+    def test_preserves_unrelated_sections_and_comments(self, tmp_path):
+        path = tmp_path / "grimore.toml"
+        path.write_text(
+            '# retained\n[vault]\npath = "old"\n[memory]\ndb_path = "notes.db"\n',
+            encoding="utf-8",
+        )
+
+        update_setup_config(
+            vault_path="new", chat_model="chat", embedding_model="embed",
+            config_path=path,
+        )
+
+        text = path.read_text(encoding="utf-8")
+        assert "# retained" in text
+        assert 'db_path = "notes.db"' in text
+
+    def test_refuses_symlinked_config(self, tmp_path):
+        target = tmp_path / "target.toml"
+        target.write_text('[vault]\npath = "old"\n', encoding="utf-8")
+        link = tmp_path / "grimore.toml"
+        link.symlink_to(target)
+
+        with pytest.raises(ValueError, match="symlinked"):
+            update_setup_config(
+                vault_path="new", chat_model="chat", embedding_model="embed",
+                config_path=link,
+            )
+        assert 'path = "old"' in target.read_text(encoding="utf-8")
 
 
 # ── multi-vault profiles ───────────────────────────────────────────────────

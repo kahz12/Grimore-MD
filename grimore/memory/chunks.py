@@ -3,6 +3,7 @@ Chunk/embedding storage: the ``embeddings`` table, its sqlite-vec mirror,
 the embedding cache, and the change-detection signatures the connector
 uses to cache its scoring matrix.
 """
+import json
 import sqlite3
 from typing import Iterable, Optional
 
@@ -112,22 +113,27 @@ class ChunksMixin(DbBase):
         page: Optional[int] = None,
         heading: Optional[str] = None,
         chunk_hash: Optional[str] = None,
+        full_text_content: Optional[str] = None,
     ):
         """Stores a vector embedding for a specific note chunk.
 
         ``page`` / ``heading`` are the multi-format anchors used by the
         Oracle when rendering citations (``[[Title#p.42]]``). ``chunk_hash``
         is the content+model fingerprint used by the incremental re-embed
-        path; legacy callers that omit it write NULL and back-fill on the
-        next scan. All three are keyword-only so the v2.0 four-arg call
-        shape keeps working.
+        path. ``full_text_content`` preserves the complete indexed passage
+        while ``text_content`` remains the bounded search/rerank excerpt.
+        Legacy callers may omit both additions. All newer fields are
+        keyword-only so the v2.0 four-arg call shape keeps working.
         """
         with self._get_connection() as conn:
             cur = conn.execute("""
                 INSERT INTO embeddings (note_id, chunk_index, text_content, vector,
-                                        page, heading, chunk_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (note_id, chunk_index, text_content, vector_blob, page, heading, chunk_hash))
+                                        page, heading, chunk_hash, full_text_content)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                note_id, chunk_index, text_content, vector_blob, page, heading,
+                chunk_hash, full_text_content,
+            ))
             new_rowid = cur.lastrowid
             assert new_rowid is not None  # always set after INSERT
             self._mirror_vec_insert(conn, new_rowid, vector_blob)
@@ -154,17 +160,94 @@ class ChunksMixin(DbBase):
         if not rows:
             return 0
         with self._get_connection() as conn:
+            payload = [
+                {
+                    "note_id": note_id,
+                    "full_text_content": row.get("full_text_content"),
+                    **row,
+                }
+                for row in rows
+            ]
             conn.executemany(
                 """
                 INSERT INTO embeddings (note_id, chunk_index, text_content, vector,
-                                        page, heading, chunk_hash)
+                                        page, heading, chunk_hash, full_text_content)
                 VALUES (:note_id, :chunk_index, :text_content, :vector,
-                        :page, :heading, :chunk_hash)
+                        :page, :heading, :chunk_hash, :full_text_content)
                 """,
-                [{"note_id": note_id, **row} for row in rows],
+                payload,
             )
             self._mirror_vec_insert_many(conn, note_id, rows)
         return len(rows)
+
+    def refresh_chunk_sources(self, note_id: int, rows: list[dict]) -> int:
+        """Refresh full passages and anchors for already-embedded chunks.
+
+        An edit elsewhere in a document can leave a chunk's text hash intact.
+        Re-embedding that chunk would waste a model call, but its page or
+        heading may have moved and legacy rows may lack the full passage.  A
+        single transaction updates that citation metadata without touching
+        vectors or the bounded search excerpt.
+        """
+        if not rows:
+            return 0
+        with self._get_connection() as conn:
+            conn.executemany(
+                "UPDATE embeddings SET full_text_content = :full_text_content, "
+                "page = :page, heading = :heading "
+                "WHERE note_id = :note_id AND chunk_index = :chunk_index",
+                [{"note_id": note_id, **row} for row in rows],
+            )
+        return len(rows)
+
+    def get_evidence_records(self, embedding_ids: Iterable[int]) -> dict[int, dict]:
+        """Return source/version metadata for retrieved embedding rows.
+
+        The mapping is keyed by embedding id so duplicate passages inside one
+        document remain distinguishable.  ``full_text_content`` is nullable
+        for databases created before the evidence migration; the Oracle can
+        recover those passages from an unchanged source file on demand.
+        """
+        unique = {int(i) for i in embedding_ids}
+        if not unique:
+            return {}
+        records: dict[int, dict] = {}
+        ids = list(unique)
+        with self._get_connection() as conn:
+            for batch in _batched(ids, _MAX_SQL_VARS):
+                rows = conn.execute(
+                    "SELECT e.id, e.note_id, e.chunk_index, e.text_content, "
+                    "e.full_text_content, e.page, e.heading, e.chunk_hash, "
+                    "n.path, n.title, COALESCE(n.format, 'md'), n.file_hash, "
+                    "n.content_hash, n.extraction_json "
+                    "FROM embeddings e JOIN notes n ON n.id = e.note_id "
+                    f"WHERE e.id IN ({','.join('?' * len(batch))})",
+                    tuple(batch),
+                ).fetchall()
+                for row in rows:
+                    try:
+                        extraction = json.loads(row[13]) if row[13] else None
+                    except (TypeError, ValueError):
+                        extraction = None
+                    if not isinstance(extraction, dict):
+                        extraction = None
+                    records[int(row[0])] = {
+                        "embedding_id": int(row[0]),
+                        "note_id": int(row[1]),
+                        "chunk_index": int(row[2]),
+                        "excerpt": row[3] or "",
+                        "full_text": row[4],
+                        "page": row[5],
+                        "heading": row[6],
+                        "chunk_hash": row[7],
+                        "path": row[8],
+                        "title": row[9] or "",
+                        "format": row[10] or "md",
+                        "file_hash": row[11],
+                        "content_hash": row[12],
+                        "extraction": extraction,
+                    }
+        return records
 
     def _mirror_vec_insert_many(self, conn, note_id: int, rows: list[dict]) -> None:
         """Mirror a bulk insert into ``embeddings_vec`` on the same transaction.

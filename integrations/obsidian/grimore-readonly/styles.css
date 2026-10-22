@@ -1,0 +1,31 @@
+.grimore-readonly-panel .grimore-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-3);
+}
+.grimore-readonly-panel input[type="search"] {
+  flex: 1;
+  min-width: 140px;
+}
+.grimore-readonly-panel .grimore-card {
+  padding: var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  margin-bottom: var(--size-4-3);
+}
+.grimore-readonly-panel .grimore-note,
+.grimore-source-modal .grimore-note {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+.grimore-readonly-panel .grimore-error {
+  color: var(--text-error);
+}
+.grimore-readonly-panel .grimore-passage,
+.grimore-source-modal .grimore-passage {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-text);
+  user-select: text;
+}

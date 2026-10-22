@@ -27,6 +27,7 @@ _APP_NAME = "grimore"
 DAEMON_LOCK_FILENAME = "daemon.lock"
 DAEMON_LOG_FILENAME = "daemon.log"
 SHELL_HISTORY_PREFIX = "shell_history"
+INDEX_PROGRESS_PREFIX = "index_progress"
 
 
 def cache_dir() -> Path:
@@ -112,3 +113,17 @@ def shell_history_path(vault_root: Path | str) -> Path:
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT, 0o600)
         os.close(fd)
     return path
+
+
+def index_progress_path(vault_root: Path | str, source: str) -> Path:
+    """Per-vault snapshot for one indexing producer (``scan``/``daemon``).
+
+    The filename hashes the resolved vault path so the cache directory does
+    not disclose library locations.  Keeping producers in separate files
+    prevents a CLI scan and the watcher from overwriting each other's state.
+    """
+    if source not in {"scan", "daemon"}:
+        raise ValueError("index progress source must be 'scan' or 'daemon'")
+    vault_abs = str(Path(vault_root).expanduser().resolve())
+    digest = hashlib.sha256(vault_abs.encode("utf-8")).hexdigest()[:16]
+    return cache_dir() / f"{INDEX_PROGRESS_PREFIX}.{digest}.{source}.json"

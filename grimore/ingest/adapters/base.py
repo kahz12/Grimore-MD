@@ -29,6 +29,29 @@ class ExtractedSection:
 
 
 @dataclass(frozen=True)
+class ExtractionIssue:
+    """A source region whose text was absent or needed fallback extraction."""
+    code: str
+    page: Optional[int] = None
+    engine: Optional[str] = None
+    ocr_requested: bool = False
+    recovered: bool = False
+    reason: Optional[str] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        data = {
+            "code": self.code,
+            "page": self.page,
+            "engine": self.engine,
+            "ocr_requested": self.ocr_requested,
+            "recovered": self.recovered,
+        }
+        if self.reason is not None:
+            data["reason"] = self.reason
+        return data
+
+
+@dataclass(frozen=True)
 class ExtractedDocument:
     """The format-neutral payload an adapter hands to the rest of Grimore.
 
@@ -46,6 +69,7 @@ class ExtractedDocument:
     metadata: dict[str, Any] = field(default_factory=dict)
     sections: list[ExtractedSection] = field(default_factory=list)
     size_bytes: int = 0
+    issues: list[ExtractionIssue] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -55,13 +79,16 @@ class AdapterOptions:
     Kept tiny on purpose. ``vault_root`` lets the adapter sandbox path
     resolution; everything else is opt-in and consulted only by adapters
     that care. PDF-specific overrides (``pdf_engine``, ``ocr``,
-    ``ocr_timeout_s``) flow in from ``IngestConfig`` so the scan / daemon
-    paths can swap engines without re-instantiating the adapter.
+    ``ocr_timeout_s``, ``ocr_language``, ``ocr_max_pages``) flow in from
+    ``IngestConfig`` so scan / daemon paths can swap settings without
+    re-instantiating the adapter.
     """
     vault_root: Optional[Path] = None
     pdf_engine: Optional[str] = None
     ocr: Optional[bool] = None
     ocr_timeout_s: Optional[int] = None
+    ocr_language: Optional[str] = None
+    ocr_max_pages: Optional[int] = None
 
     @classmethod
     def from_config(cls, config, *, vault_root: Optional[Path] = None) -> "AdapterOptions":
@@ -78,6 +105,8 @@ class AdapterOptions:
             pdf_engine=getattr(ingest, "pdf_engine", None),
             ocr=getattr(ingest, "ocr", None),
             ocr_timeout_s=getattr(ingest, "ocr_timeout_s", None),
+            ocr_language=getattr(ingest, "ocr_language", None),
+            ocr_max_pages=getattr(ingest, "ocr_max_pages", None),
         )
 
 

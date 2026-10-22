@@ -61,7 +61,8 @@ class TestMigration:
         with closing(sqlite3.connect(db.db_path)) as conn, conn:
             notes_cols = _columns(conn, "notes")
             emb_cols = _columns(conn, "embeddings")
-        for col in ("format", "file_hash", "sidecar_path", "size_bytes", "mtime_ns"):
+        for col in ("format", "file_hash", "sidecar_path", "size_bytes", "mtime_ns",
+                    "extraction_profile", "extraction_json"):
             assert col in notes_cols, f"notes missing {col!r}"
         for col in ("page", "heading"):
             assert col in emb_cols, f"embeddings missing {col!r}"
@@ -75,12 +76,13 @@ class TestMigration:
 
         with closing(sqlite3.connect(db.db_path)) as conn, conn:
             row = conn.execute(
-                "SELECT title, format, file_hash, sidecar_path, size_bytes, mtime_ns "
+                "SELECT title, format, file_hash, sidecar_path, size_bytes, mtime_ns, "
+                "extraction_profile, extraction_json "
                 "FROM notes WHERE path = ?",
                 ("/vault/old.md",),
             ).fetchone()
         assert row is not None
-        title, fmt, file_hash, sidecar, size, mtime_ns = row
+        title, fmt, file_hash, sidecar, size, mtime_ns, extraction_profile, extraction_json = row
         assert title == "Old Note"
         # Backfilled rows inherit the column default 'md'.
         assert fmt == "md"
@@ -89,11 +91,13 @@ class TestMigration:
         assert sidecar is None
         assert size is None
         assert mtime_ns is None
+        assert extraction_profile is None
+        assert extraction_json is None
 
     def test_migration_is_idempotent(self, tmp_path):
         path = str(tmp_path / "twice.db")
         Database(path)
-        # Second invocation must not raise (duplicate ALTER would error).
+        # Repeating the migration leaves the schema unchanged.
         Database(path)
 
 
@@ -136,6 +140,20 @@ class TestUpsertNoteKwargs:
         db.upsert_note("/vault/c.md", "C", "h")
         db.update_file_state("/vault/c.md", "abc", 42, 123456)
         assert db.get_file_state("/vault/c.md") == ("abc", 42, 123456)
+
+    def test_pdf_extraction_profile_is_published_after_indexing(self, tmp_path):
+        db = Database(str(tmp_path / "u.db"))
+        note_id = db.upsert_note("/vault/book.pdf", "Book", "", format="pdf")
+        assert db.get_ingest_state("/vault/book.pdf") == (None, None, None, "pdf", None)
+
+        db.complete_note_indexing(
+            note_id, "content", "file", 42, 123456,
+            extraction_profile="pdf-layout-v1:engine=pypdf:ocr=0",
+        )
+
+        assert db.get_ingest_state("/vault/book.pdf") == (
+            "file", 42, 123456, "pdf", "pdf-layout-v1:engine=pypdf:ocr=0",
+        )
 
 
 class TestStoreEmbeddingKwargs:

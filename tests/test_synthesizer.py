@@ -304,9 +304,16 @@ class TestHappyPath:
         assert post.metadata["selector"] == "tag:py"
         # Source paths are recorded so a future Mirror run can map back.
         assert sorted(post.metadata["sources"]) == sorted([path_a, path_b])
+        assert post.metadata["synthesis_review"] == "pending"
+        assert post.metadata["coverage"]["status"] == "complete"
         # Title from LLM payload made it into the markdown body.
         assert "Logging in Python" in post.content
         assert "[[A]]" in post.content
+        assert report.review_status == "draft"
+        assert report.body == "## Summary\nLogs matter ([[A]], [[B]])."
+        assert report.coverage["notes"]["included_in_prompt"] == 2
+        assert report.coverage["citations"]["cited"] == ["A", "B"]
+        assert report.source_details[0]["passages"] == ["Logs are great."]
 
     def test_dry_run_does_not_write_file(self, synth_config, vault):
         session = Session(synth_config)
@@ -336,6 +343,119 @@ class TestHappyPath:
         prompt = router.calls[0]["prompt"]
         # Each passage is wrapped in <passage> tags by SecurityGuard.
         assert prompt.count("<passage>") == 2
+
+
+class TestReviewCoverage:
+    def test_reports_missing_passages_representative_selection_and_bad_citations(
+        self, synth_config, vault,
+    ):
+        session = Session(synth_config)
+        path_a = _write_note(vault, "a.md", "Long body.", tags=["topic"])
+        path_b = _write_note(vault, "b.md", "Not indexed.", tags=["topic"])
+        v = [1.0, 0.0, 0.0, 0.0]
+        _seed(session, path_a, "A", tags=["topic"], chunks=[
+            ("first", v), ("second", v), ("third", v),
+        ])
+        _seed(session, path_b, "B", tags=["topic"], chunks=None)
+        _wire(session, payloads=[{
+            "title": "Topic",
+            "body": "## Draft\n[[A]] supports this; [[Ghost]] does not.",
+        }])
+
+        report = Synthesizer(session).distill(
+            tag="topic", passages_per_note=1, dry_run=True,
+        )
+
+        assert report.coverage["status"] == "partial"
+        assert report.coverage["notes"] == {
+            "matched": 2,
+            "eligible": 2,
+            "with_passages": 1,
+            "included_in_prompt": 1,
+            "without_passages": 1,
+            "excluded_generated": 0,
+            "omitted_by_context": 0,
+        }
+        assert report.coverage["passages"] == {
+            "available": 3, "selected": 1, "per_note_limit": 1,
+        }
+        assert set(report.coverage["limitations"]) == {
+            "missing_indexed_passages",
+            "representative_passages_only",
+            "unknown_citations",
+        }
+        assert report.coverage["citations"] == {
+            "cited": ["A"], "uncited": [], "unknown": ["Ghost"],
+        }
+        assert report.source_details[0] == {
+            "note_id": report.source_details[0]["note_id"],
+            "path": path_a,
+            "title": "A",
+            "passages": ["first"],
+            "passages_selected": 1,
+            "passages_available": 3,
+            "included_in_prompt": True,
+            "omission_reason": None,
+        }
+        assert report.source_details[1] == {
+            "note_id": report.source_details[1]["note_id"],
+            "path": path_b,
+            "title": "B",
+            "passages": [],
+            "passages_selected": 0,
+            "passages_available": 0,
+            "included_in_prompt": False,
+            "omission_reason": "missing_indexed_passages",
+        }
+
+    def test_reports_uncited_included_source(self, synth_config, vault):
+        session = Session(synth_config)
+        v = [1.0, 0.0, 0.0, 0.0]
+        for name in ("A", "B"):
+            path = _write_note(vault, f"{name}.md", name, tags=["topic"])
+            _seed(session, path, name, tags=["topic"], chunks=[(name, v)])
+        _wire(session, payloads=[{
+            "title": "Topic", "body": "Only [[A]] is referenced.",
+        }])
+
+        report = Synthesizer(session).distill(tag="topic", dry_run=True)
+
+        assert report.coverage["citations"]["uncited"] == ["B"]
+        assert "sources_not_cited" in report.coverage["limitations"]
+
+    def test_context_limit_can_make_preview_unavailable(
+        self, synth_config, vault, monkeypatch,
+    ):
+        session = Session(synth_config)
+        path = _write_note(vault, "a.md", "Body.", tags=["topic"])
+        _seed(
+            session, path, "A", tags=["topic"],
+            chunks=[("a passage", [1.0, 0.0, 0.0, 0.0])],
+        )
+        router = _wire(session, payloads=[])
+        monkeypatch.setattr(
+            "grimore.cognition.synthesizer._SYNTHESIZER_MAX_CONTEXT_CHARS", 1,
+        )
+
+        report = Synthesizer(session).distill(tag="topic", dry_run=True)
+
+        assert report.notes_used == 0
+        assert report.review_status == "unavailable"
+        assert "context limit" in (report.skipped_reason or "").lower()
+        assert report.coverage["notes"]["omitted_by_context"] == 1
+        assert "context_limit" in report.coverage["limitations"]
+        assert report.source_details[0]["included_in_prompt"] is False
+        assert router.calls == []
+
+    def test_no_matches_has_explicit_unavailable_coverage(self, synth_config):
+        session = Session(synth_config)
+        _wire(session)
+
+        report = Synthesizer(session).distill(tag="absent", dry_run=True)
+
+        assert report.coverage["status"] == "unavailable"
+        assert report.coverage["notes"]["matched"] == 0
+        assert "no_matching_notes" in report.coverage["limitations"]
 
 
 # ── distill — failure / no-op paths ─────────────────────────────────────

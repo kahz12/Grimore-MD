@@ -12,7 +12,7 @@
 
 **An automated knowledge engine for your document vault**
 
-[![Version](https://img.shields.io/badge/version-3.3.1-6B4BCB?style=for-the-badge)](#) [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![Local-First](https://img.shields.io/badge/Privacy-Local--First-2EA043?style=for-the-badge&logo=ollama&logoColor=white)](https://ollama.com/) [![License](https://img.shields.io/badge/License-MIT-E2B100?style=for-the-badge)](LICENSE)
+[![Version](https://img.shields.io/badge/version-3.4.0-6B4BCB?style=for-the-badge)](#) [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/) [![Local-First](https://img.shields.io/badge/Privacy-Local--First-2EA043?style=for-the-badge&logo=ollama&logoColor=white)](https://ollama.com/) [![License](https://img.shields.io/badge/License-MIT-E2B100?style=for-the-badge)](LICENSE)
 
 <br>
 
@@ -118,12 +118,18 @@ narrowing is available on `POST /api/search` as `category` / `tags` / `formats`.
 
 | Surface | What it does |
 | :--- | :--- |
-| `grimore mcp` | Stdio MCP server for Claude Desktop / Cursor / Zed. See [docs/mcp-setup.md](docs/mcp-setup.md). |
-| `grimore serve` | Read-only HTTP API + minimal browser UI. Loopback by default; `--allow-lan` + `--api-token` for LAN. |
+| `grimore mcp` | Read-only stdio MCP: answers, search, indexed passages and review candidates. [Setup](docs/mcp-setup.md). |
+| Obsidian plugin | Local desktop panel for search, indexed sources and read-only review. [Local ZIP 0.1.1](output/obsidian-0.1.1/grimore-readonly-0.1.1.zip). Not installed automatically; manual acceptance pending. |
+| `grimore serve` | Read-first HTTP API + browser UI; scoped writes require an API token. Loopback by default; `--allow-lan` + `--api-token` for LAN. |
 | `grimore graph export` | Dump the vault's link graph to JSON, Graphviz DOT, or Obsidian Canvas. |
+| `grimore pilot init\|check\|observe` | Prepare, validate, and record a pseudonymous 5–10 person pilot journey without vault content. |
 | `--profile <name>` | Switch between named vault profiles defined as `[profiles.<name>]` in `grimore.toml`. |
 | `/thread save\|resume\|list` | Persist shell conversations as JSONL under `~/.grimore/threads` and resume them across sessions. |
 | OpenAI-compatible backend | Point Grimore at llama.cpp server, vLLM, LM Studio, OpenRouter or OpenAI by setting `[cognition].llm_backend = "openai"`. |
+
+Collaboration is **not enabled** on these surfaces. A preparatory
+library-scoped permission contract defines roles and a tested decision kernel; user authentication and end-to-end
+enforcement remain pending. The existing shared API token is not a user account.
 
 ## Architecture
 

@@ -3,8 +3,10 @@ Configuration Management.
 This module defines the project's configuration schema using dataclasses
 and handles loading settings from 'grimore.toml' and environment variables.
 """
+import json
 import os
 import re
+import tempfile
 from pathlib import Path
 import tomllib
 from dotenv import load_dotenv
@@ -114,11 +116,13 @@ class CognitionConfig:
     # stricter than connect_threshold: linking wants "related",
     # dedupe wants "practically the same note".
     dedupe_threshold: float = 0.90
-    # Per-call HTTP timeouts (seconds) for Ollama. Defaults suit qwen2.5:3b on
-    # modest hardware; bigger models (e.g. ministral-3:14b) routinely need
-    # request_timeout_s ≥ 180 on the first warm-up call.
-    request_timeout_s: int = 60   # /api/generate, JSON path
-    stream_timeout_s: int = 120   # /api/generate, streaming path
+    # Per-call HTTP timeouts (seconds) for Ollama. Prompt eval dominates on
+    # CPU: qwen2.5:3b on a 4-core laptop read an 817-token answer prompt in
+    # 57 s (72 s per answer), so the old 60 s default failed a new user's
+    # first question. Bigger models (ministral-3:8b: 319 s per tagging call
+    # on the same machine) need 600+.
+    request_timeout_s: int = 300  # /api/generate, JSON path
+    stream_timeout_s: int = 300   # /api/generate, streaming path
     embed_timeout_s: int = 30     # /api/embeddings
     # Vector search backend. "auto" (default) uses the sqlite-vec extension
     # when it loads cleanly and the embeddings_vec virtual table is present at
@@ -168,12 +172,28 @@ class CognitionConfig:
     # request_timeout_s (sized for answer generation) makes a slow rewrite look
     # like a hang. On expiry the original question is used unchanged.
     rewrite_timeout_s: int = 60
+    # Optional pre-generation evidence assessment; off until explicitly enabled.
+    # One additional model call. Failure blocks generation rather than guessing.
+    answer_sufficiency_check: bool = False
+    answer_sufficiency_timeout_s: int = 180
     # Circuit breaker around the LLM backend: after this many back-to-back
     # failures, calls short-circuit for the cooldown instead of hammering a
     # backend that is down. Lower the threshold to fail faster on flaky
     # hardware; raise the cooldown when the backend takes long to recover.
     circuit_failure_threshold: int = 5
     circuit_cooldown_s: int = 120
+    # Black Mirror claim extraction: each source part is limited to this many
+    # characters; at most claim_max_sections parts are sent to the model.
+    # Omitted parts are reported rather than silently truncated.
+    claim_max_chars: int = 8000
+    claim_max_sections: int = 8
+    claim_max_claims_per_section: int = 10
+
+    def __post_init__(self):
+        if type(self.answer_sufficiency_check) is not bool:
+            raise ValueError("answer_sufficiency_check must be a boolean")
+        if type(self.answer_sufficiency_timeout_s) is not int or self.answer_sufficiency_timeout_s < 1:
+            raise ValueError("answer_sufficiency_timeout_s must be a positive integer")
 
 @dataclass
 class IngestConfig:
@@ -196,13 +216,19 @@ class IngestConfig:
 
     ``ocr`` enables a fallback pass over pages whose text layer is
     empty (scanned PDFs). It needs the ``ocr`` extra installed *and*
-    the ``tesseract`` binary on PATH; preflight verifies both.
+    the ``tesseract`` binary, Poppler ``pdfinfo`` and a renderer on PATH; preflight
+    verifies all dependencies.
     """
     pdf_engine: str = "pypdf"
     ocr: bool = False
-    # Hard cap on how long a single OCR call may run per page. Saves the
-    # daemon from a wedged tesseract on a degenerate scan.
+    # Tesseract model identifiers; retain the historical English default.
+    ocr_language: str = "eng"
+    # Positive timeout applied separately to rasterisation and recognition
+    # for each page. Saves the daemon from wedged external PDF/OCR processes.
     ocr_timeout_s: int = 30
+    # Maximum OCR page attempts per PDF; 0 preserves unlimited processing.
+    # Digital pages do not consume this budget; failed attempts do.
+    ocr_max_pages: int = 0
     # Chunker engine. "markdown" is the v2.1 baseline:
     # paragraph-packed, deterministic, no embed cost during scan. The
     # "semantic" engine embeds each sentence and splits on topic shifts
@@ -482,25 +508,37 @@ def _set_cognition_string(text: str, key: str, value: str) -> str:
     multi-line strings fall through to "append" (logged as a warning by
     the caller if the resulting file is malformed).
     """
-    cog_match = re.search(r"^\[cognition\]\s*$", text, flags=re.MULTILINE)
-    if not cog_match:
-        sep = "" if text.endswith("\n") else "\n"
-        return f'{text}{sep}\n[cognition]\n{key} = "{value}"\n'
+    return _set_section_string(text, "cognition", key, value)
 
-    start = cog_match.end()
+
+def _set_section_string(text: str, section: str, key: str, value: str) -> str:
+    """Set one string key without reserialising unrelated TOML content."""
+    section_match = re.search(
+        rf"^\[{re.escape(section)}\]\s*(?:#.*)?$", text, flags=re.MULTILINE,
+    )
+    encoded = json.dumps(value, ensure_ascii=False)
+    if not section_match:
+        sep = "" if text.endswith("\n") else "\n"
+        return f"{text}{sep}\n[{section}]\n{key} = {encoded}\n"
+
+    start = section_match.end()
     next_section = re.search(r"^\[", text[start:], flags=re.MULTILINE)
     end = start + next_section.start() if next_section else len(text)
     section_body = text[start:end]
 
     pattern = re.compile(
-        rf'^(?P<lead>\s*{re.escape(key)}\s*=\s*)(?:"[^"]*"|\'[^\']*\')(?P<trail>.*)$',
+        rf'^(?P<lead>\s*{re.escape(key)}\s*=\s*)'
+        rf'(?:(?:"(?:\\.|[^"\\])*")|(?:\'[^\']*\'))(?P<trail>.*)$',
         flags=re.MULTILINE,
     )
     if pattern.search(section_body):
-        new_body = pattern.sub(rf'\g<lead>"{value}"\g<trail>', section_body)
+        new_body = pattern.sub(
+            lambda match: f"{match.group('lead')}{encoded}{match.group('trail')}",
+            section_body,
+        )
     else:
         trailing = "" if section_body.endswith("\n") else "\n"
-        new_body = f'{section_body}{trailing}{key} = "{value}"\n'
+        new_body = f"{section_body}{trailing}{key} = {encoded}\n"
 
     return text[:start] + new_body + text[end:]
 
@@ -525,4 +563,58 @@ def update_cognition_models(
     if embedding_model is not None:
         text = _set_cognition_string(text, "model_embeddings_local", embedding_model)
     path.write_text(text, encoding="utf-8")
+    return True
+
+
+def update_setup_config(
+    *,
+    vault_path: str,
+    chat_model: str,
+    embedding_model: str,
+    config_path: str | Path = "grimore.toml",
+) -> bool:
+    """Atomically persist the three setup-assistant fields.
+
+    This intentionally cannot mutate arbitrary sections or keys. Existing
+    comments and unrelated settings are retained, the resulting TOML is
+    parsed before replacement, and symlinked configuration files are refused.
+    Returns whether the resulting bytes differ from the existing file.
+    """
+    path = Path(config_path)
+    if path.is_symlink():
+        raise ValueError("refusing to replace a symlinked configuration file")
+    if path.exists() and not path.is_file():
+        raise ValueError("configuration path is not a regular file")
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
+    if len(original.encode("utf-8")) > 1_000_000:
+        raise ValueError("configuration file is too large to update safely")
+
+    updated = _set_section_string(original, "vault", "path", vault_path)
+    updated = _set_section_string(
+        updated, "cognition", "model_llm_local", chat_model,
+    )
+    updated = _set_section_string(
+        updated, "cognition", "model_embeddings_local", embedding_model,
+    )
+    # Validate the exact bytes before they can replace the live file.
+    tomllib.loads(updated)
+    if updated == original:
+        return False
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(updated)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            os.chmod(temporary, path.stat().st_mode & 0o777)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     return True

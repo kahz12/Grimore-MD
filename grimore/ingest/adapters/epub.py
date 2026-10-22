@@ -91,6 +91,7 @@ def _parse_opf(zf: zipfile.ZipFile, opf_path: str) -> tuple[dict[str, str], list
     grab("subject",     "subject")
     grab("description", "description")
     grab("language",    "language")
+    grab("date",        "published")
 
     # Manifest: id → href
     manifest: dict[str, str] = {}

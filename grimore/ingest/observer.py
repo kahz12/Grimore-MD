@@ -81,7 +81,7 @@ class VaultEventHandler(FileSystemEventHandler):
         elif action == "delete" and ext not in self.supported_extensions:
             # A deleted file can no longer be content-sniffed. Queue it anyway:
             # deleting a non-indexed path is a harmless no-op, while dropping
-            # it could leave a previously sniffed, extensionless document stale.
+            # it could leave an extensionless document with a stale detected format.
             pass
         if is_ignored_path(path, self.ignored_dirs):
             return

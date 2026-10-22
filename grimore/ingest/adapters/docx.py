@@ -105,6 +105,8 @@ def _parse_core_props(zf: zipfile.ZipFile) -> dict[str, str]:
     grab("subject",     "dc", "subject")
     grab("description", "dc", "description")
     grab("keywords",    "cp", "keywords")
+    grab("created",     "dcterms", "created")
+    grab("modified",    "dcterms", "modified")
     return out
 
 

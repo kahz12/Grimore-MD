@@ -27,6 +27,7 @@
    - [`prune`](#prune)
    - [`status`](#status)
    - [`preflight`](#preflight)
+   - [`pilot`](#pilot)
    - [`daemon`](#daemon)
    - [`maintenance run`](#maintenance-run)
    - [`migrate-embeddings`](#migrate-embeddings)
@@ -105,7 +106,7 @@ Recommended chat models (local):
 - `qwen3.5:0.8b` — even faster, but emits a "thinking" phase the Oracle has
   to wait through before tokens appear.
 - `ministral-3:14b` — slower but stronger reasoning. Bump
-  `cognition.request_timeout_s` to 180+ before using.
+  `cognition.request_timeout_s` to 600+ before using.
 
 Recommended embedding model:
 
@@ -201,9 +202,16 @@ hybrid_search         = true    # BM25 + cosine via RRF
 rrf_k                 = 60      # RRF rank-weight; lower = steeper
 connect_threshold     = 0.7     # cosine floor for a suggested wikilink
 dedupe_threshold      = 0.90    # cosine floor for a near-duplicate pair
-request_timeout_s     = 60      # /api/generate, JSON path
-stream_timeout_s      = 120     # /api/generate, streaming path
+request_timeout_s     = 300     # /api/generate, JSON path
+stream_timeout_s      = 300     # /api/generate, streaming path
 embed_timeout_s       = 30      # /api/embeddings
+# Experimental pre-generation sufficiency check: one extra model call.
+# It does not guarantee semantic support. Failed or insufficient checks
+# block factual generation; answerable questions may also be rejected.
+# Enabled mode requires explicit references per answer claim and buffers
+# streaming until validation.
+answer_sufficiency_check = false
+answer_sufficiency_timeout_s = 180  # positive integer, per check
 # Second-stage re-rank after RRF fusion. Off by default — it costs a
 # pass over `rerank_pool` candidates per query. The "llm" engine asks
 # the local chat model to rate each candidate (no extra install,
@@ -265,9 +273,16 @@ vec_matrix_cache  = true     # store the dense scoring matrix as a .npy beside
 # PyMuPDF is AGPL — verify licence compatibility before switching.
 pdf_engine    = "pypdf"
 # OCR fallback for scanned PDFs (image-only pages). Off by default;
-# requires the `ocr` extra and the `tesseract` binary on PATH.
+# requires the `ocr` extra, `tesseract` and a Poppler renderer
+# (`pdfinfo` and either `pdftoppm` or `pdftocairo`) on PATH.
 ocr           = false
+ocr_language  = "eng" # "spa" for Spanish; "spa+eng" to combine languages
+# Seconds per stage and page: rasterization, then recognition.
+# Must be a positive integer; one page can consume both limits.
 ocr_timeout_s = 30
+# Maximum OCR attempts per PDF; 0 keeps processing unlimited.
+# Failed attempts count; readable digital pages do not consume the limit.
+ocr_max_pages = 0
 # Magic-byte sniffer for misnamed / extension-less files. Off by
 # default; requires the `sniff` extra (python-magic) and libmagic.
 sniff_magic   = false
@@ -387,9 +402,10 @@ These knobs live under `[ingest]` and stay off until you set them.
 Preflight (`grimore preflight`) only probes the ones you've enabled,
 so a default install reports a clean ✓ row per format.
 
-- **Alternative PDF engines.** `pdfplumber` handles columns and tables
-  better than `pypdf`; `pymupdf` (AGPL — verify licence compatibility)
-  has the best extraction quality. Install the matching extra:
+- **Alternative PDF engines.** `pdfplumber` adds block-based reading order
+  and rows from ruled tables, and falls back explicitly to the previous text
+  on layouts it does not support. `pymupdf` is another optional engine
+  (AGPL — verify licence compatibility). Install the matching extra:
 
   ```bash
   pip install 'grimore[pdf-plumber]'
@@ -398,12 +414,39 @@ so a default install reports a clean ✓ row per format.
 
   Then set `pdf_engine` to `"pdfplumber"` or `"pymupdf"`. The change
   lands on the next scan without any restart.
+  The `pdfplumber` layout revision also refreshes previously indexed PDFs on
+  the next scan, without modifying the original file.
 
 - **OCR for scanned PDFs.** Pages with an empty text layer can be
-  rasterised and OCR'd via `tesseract`. Two dependencies are needed:
-  the Python wheels (`pip install 'grimore[ocr]'`) and the `tesseract`
-  binary itself. Then set `ocr = true`. OCR sections are tagged with
-  the synthetic heading `(ocr)` so reviewers can audit them.
+  rasterised and OCR'd via `tesseract`. This requires the Python extra
+  (`pip install 'grimore[ocr]'`), the `tesseract` binary, and Poppler
+  (`pdfinfo` plus `pdftoppm` or `pdftocairo`). Then set `ocr = true`.
+  OCR sections are tagged with
+  the synthetic heading `(ocr)` so reviewers can audit them. Select models
+  with `[ingest].ocr_language = "spa"` or `"spa+eng"`; `"eng"` remains the
+  default. All requested Tesseract language data must be installed (on Linux,
+  `sudo apt-get install tesseract-ocr-spa` adds Spanish). Preflight reports
+  missing data instead of silently choosing another language. Changing the
+  language while OCR is enabled re-extracts unchanged PDFs on the next scan,
+  retaining vectors for identical passages.
+
+If OCR is requested but no text is recovered, page diagnostics may identify
+missing tools, a rendering failure, a recognition failure, or no recognised
+text. The source viewer shows the cause without exposing engine error details.
+A PDF with no recoverable text retains its indexed record and sidecar with
+`partial` status, but creates no search chunks or model-generated tags and
+summary from an empty body.
+If OCR tools are missing or rendering or recognition fails, the next scan retries that PDF even
+when its bytes are unchanged. Unchanged recovered text does not require
+reclassification or recalculation of identical vectors.
+
+If a PDF's bytes change but its extracted text remains identical, the next
+scan refreshes the existing sidecar's extraction diagnosis and source hash
+without retagging. It also refreshes indexed page anchors, reusing vectors
+for identical chunks and embedding only chunks whose text changes when page
+boundaries move. User-written sidecar notes are preserved. A failed sidecar
+write or incomplete embedding leaves the old file fingerprint in place so
+the next scan can retry.
 
 - **Magic-byte sniffer.** When `sniff_magic = true`, files whose
   extension is missing or doesn't match `formats` are inspected for
@@ -437,7 +480,7 @@ path = "/home/me/work-notes"
 display_name = "Work"
 [profiles.work.cognition]
 model_llm_local = "qwen2.5:14b"
-request_timeout_s = 180
+request_timeout_s = 600
 ```
 
 ```bash
@@ -476,9 +519,15 @@ format, and refreshes the embedding index.
 
 **Idempotency.** Two-tier hashing: a cheap SHA-256 of the file bytes
 (`file_hash`) gates the expensive extraction step; only documents
-whose bytes have changed pay for re-extraction. Within that, an
-unchanged content-hash skips the LLM call entirely. Re-scanning a
-fully indexed vault is effectively free even for a 500 MB PDF library.
+whose bytes have changed normally pay for re-extraction. Within that, an
+unchanged content-hash skips the LLM call entirely. PDFs are the exception:
+the index records the active extraction engine, OCR setting, and OCR timeout.
+Changing these settings makes the next scan re-extract affected PDFs even
+when their bytes are unchanged, refreshing passages and page anchors. Vectors
+for chunks whose text is still identical are reused. Re-scanning a vault
+without file or extraction-setting changes remains effectively free even for
+a 500 MB PDF library. `--dry-run` previews the pending reprocessing without
+updating the stored extraction profile.
 
 **What gets written.** When run with `--no-dry-run`:
 
@@ -557,7 +606,7 @@ order.
 ```bash
 grimore eval [-g PATH] [-k N] [--retrieval-k N] [--retrieval-only]
              [--baseline] [--judge/--no-judge] [--export PATH]
-             [--history PATH] [--compare PATH] [--json]
+             [--history PATH] [--compare PATH] [--checkpoint PATH] [--json]
 ```
 
 Runs a golden Q&A set against the Oracle and reports retrieval and
@@ -568,7 +617,10 @@ answer-quality metrics. Defaults to `eval/grimore_golden.yaml`.
 | **hit@1 / hit@3** | Whether an expected source is the top-ranked hit / among the top 3. |
 | **recall@k** | Fraction of expected sources that appear in the top-k retrieved set. |
 | **MRR** | Mean reciprocal rank of the first expected source hit. |
-| **faithfulness** | 1 − dropped/total citations (1.0 = no hallucinated citations). |
+| **citation validity** | Share of emitted citations that point at a retrieved source. Empty (not 1.0) when the answer cites nothing; `faithfulness` is a deprecated alias. |
+| **cited answers** | Share of answerable questions whose answer cites at least one source. |
+| **evidence in context / cited / selected** | Whether the expected passage reached the model, was cited with its page or heading, and was the exact fragment the citation selected. |
+| **abstention** | Refusal cues on unanswerable questions, and on answerable ones (wrong refusals). Cues are heuristic; reports keep a human review queue. |
 | **keyword recall** | Fraction of expected keywords present in the answer body. |
 | **answer relevance** | LLM-as-judge: local model rates the answer 0–10 vs the question. |
 | **p50 / p95 latency** | Wall-clock per turn. |
@@ -593,6 +645,13 @@ answer-quality metrics. Defaults to `eval/grimore_golden.yaml`.
   grimore eval --retrieval-only --export run.json --compare last-good.json
   ```
 
+- `--checkpoint` — save each finished case to a JSONL file and resume from
+  it when the same command runs again. Use it for long runs with a real
+  model: an interruption costs at most the case in progress. Cases whose
+  model gave no answer are asked again, and a file from a different run
+  (questions, config, corpus, code or options) is refused. A report whose
+  `generation_failure_n` is above zero counted model failures as refusals;
+  rerun those cases before relying on it.
 - `--json` — JSON-formatted structured logs.
 
 The golden set format is one entry per Q&A item with optional
@@ -654,6 +713,26 @@ grimore preflight [--check-git|--no-check-git]
 Validates config, Ollama connectivity (with model-presence checks), and
 vault access. By default it requires a git repo iff `output.auto_commit`
 is true — override with the flag.
+
+### `pilot`
+
+```bash
+grimore pilot init pilot-data/study.yaml --participants 5 --study-id pilot-2026-a
+grimore pilot check pilot-data/study.yaml
+grimore pilot observe pilot-data/study.yaml P01 configuration \
+  --outcome completed --assistance none
+grimore pilot restore-backup pilot-data/study.yaml
+```
+
+`init` creates a non-overwriting local intake worksheet for the two-week pilot:
+pseudonymous identifiers, consent, and exactly three real tasks with agreed
+success criteria and the participant's usual method. `check` rejects incomplete
+intake, changed decision thresholds, or fields that violate the no-identifiers,
+no-document-content, no-questions/answers policy. `observe` records configuration,
+first answer, source checking, and document review in order while storing only
+the outcome, time, and assistance level. Every update leaves a private copy that
+`restore-backup` can swap back. It sends no telemetry and does not open the
+vault.
 
 ### `daemon`
 
@@ -753,6 +832,11 @@ window (defined per category prefix in `[chronicler.windows]`).
 - `verify <path>` resets the freshness clock — useful when you've re-read
   a note and confirmed it's still accurate.
 
+Indexing or tagging does not start that clock. Until the first human
+verification, the date is shown as unknown and `list` does not declare the note
+current or overdue. Publication, modification, indexing, and verification are
+stored separately with provenance.
+
 ### `mirror`
 
 ```bash
@@ -778,7 +862,9 @@ grimore distill --category <path> [-p N] [--dry-run]
 Synthesises every note carrying the given tag (or filed under the given
 category, recursively) into a single reference note under `_synthesis/`.
 The output gets `grimore_generated: true` in its frontmatter so later
-`distill` runs don't re-include themselves.
+`distill` runs don't re-include themselves. The file is also marked
+`synthesis_review: pending` and retains a `coverage` report describing included
+notes/passages, effective limits, and citation consistency.
 
 - `-p, --passages` — top-K passages per source note (default 3).
 - `--dry-run` — build the synthesis but skip the file write.
@@ -786,6 +872,10 @@ The output gets `grimore_generated: true` in its frontmatter so later
 > **Note:** Unlike `scan`/`connect`/`prune`, the CLI's `distill` writes by
 > default. The shell's `/distill` mirrors that, but adds an interactive
 > "y/N" approval before any write (see §7).
+
+The browser UI also offers a preview-only **Topic synthesis** workflow. It
+shows the draft, each exact source passage, and incomplete-coverage warnings
+without writing a file.
 
 ### `graph export`
 
@@ -839,17 +929,60 @@ grimore serve [-H HOST] [-P PORT] [--allow-lan] [--api-token TOKEN]
               [--strict-token] [--cors-origin ORIGIN]
 ```
 
-Boots a read-only HTTP API + minimal vanilla-JS browser UI on
+Boots a read-first HTTP API with token-protected, scoped writes and a
+minimal vanilla-JS browser UI on
 `http://127.0.0.1:8000`. Routes:
+
+Unlike `scan` and `ask`, `serve` stays up in recovery mode when preflight finds
+a missing folder, model, or model service. The setup panel remains available to
+explain and correct the problem; questions and indexing still fail closed until
+their own prerequisites pass.
 
 | Method · Path | Description |
 |---|---|
 | `GET /api/health` | Version + preflight summary. |
-| `POST /api/ask` | `{question, top_k?, stream?}`. SSE streaming when `stream: true`. |
-| `POST /api/search` | `{query, top_k?, category?, tags?, formats?}` → hybrid hits with snippets. The filter keys narrow which notes are searched; a malformed one is a 400 rather than a silently unfiltered search. |
-| `GET /api/notes/{id}` | Note metadata + on-disk body. |
+| `GET /api/setup` | Read-only first-run validation: active folder, available chat/embedding models, scan effects, and remediation checks. |
+| `POST /api/setup/apply` | Token-protected, explicitly confirmed update of only the vault path and selected chat/embedding models. |
+| `GET /api/indexing` | Read-only live CLI/watcher progress, per-file outcomes, counters, and recovery actions. |
+| `POST /api/indexing/start` | Token-protected start of one `preview` or confirmed `apply` scan against the already loaded vault. |
+| `GET /api/changes` | Bounded history of document files created or updated by applied operations, including restore availability. |
+| `POST /api/changes/{change_id}/restore` | Token-protected, confirmed restore of pre-change copies; refuses later edits and requires reindexing afterwards. |
+| `POST /api/syntheses/preview` | Read-only synthesis draft by tag or category. Returns the body, inspectable sources, coverage, and warnings; it never writes the proposed file. |
+| `GET /api/review-inbox` | Read-only review candidates combining open contradictions, exact/near duplicates, and documents whose review window has elapsed, including inspectable passages and explicit analysis coverage. |
+| `POST /api/review-inbox/{candidate_id}/decision` | Token-protected `confirm`, `dismiss`, or bounded `postpone` decision. It updates review state and its audit log, never the source document. |
+| `POST /api/notes/{note_id}/classification` | Token-protected category and tag correction. It updates the index, preserves the human choice across later scans, and does not immediately rewrite the source document. |
+| `GET /api/filter-options` | Indexed category/tag choices and configured document formats for the web scope controls. |
+| `POST /api/ask` | `{question, top_k?, stream?, history?, category?, tags?, formats?}`. Returns `answer_status`, `model_execution`, `sources`, and `source_details` with passage, locator, version state, and indexed PDF extraction coverage; SSE streaming when `stream: true`. |
+| `POST /api/search` | `{query, top_k?, history?, category?, tags?, formats?}` → history-aware hybrid hits with snippets. The filter keys narrow which notes are searched; a malformed one is a 400 rather than a silently unfiltered search. |
+| `GET /api/notes/{id}` | Note metadata + on-disk body, page/section offsets, and a provenance-bearing publication/modification/indexing/verification timeline. |
 | `GET /api/categories` | Vault-wide counts. |
 | `GET /` | The web UI. |
+
+`category`, `tags`, and `formats` have identical narrowing semantics for
+`/api/ask` and `/api/search`, including streamed answers. Multiple tags are an
+AND; multiple formats are an OR; category includes descendants. A requested
+scope with no matching notes stays empty and is never widened to the vault.
+Responses expose this as `retrieval_scope.status = "no_matches"` and skip
+embedding, retrieval, and model generation entirely.
+
+The web UI keeps the latest three completed turns in tab memory and sends them
+to both routes so follow-up answers and related passages resolve the same
+references. **New conversation** clears this in-memory context and current
+results without changing the active filters or anything on disk.
+
+Clicking a citation opens the exact indexed passage, its page/section locator,
+and its current/modified/missing verification state. Current documents show the
+passage highlighted in context and expose page/section navigation; other states
+retain the indexed evidence with an explicit warning.
+
+The language selector in the header switches the complete interface between
+English and Spanish and remembers the choice in that browser. Interactive
+catalogue entries, related passages, marginal notes, citations, and cited-source
+links are keyboard reachable and activate with **Enter** or **Space**.
+**Ctrl/Cmd + Enter** submits a question. Source drawers keep keyboard focus inside while
+open, close with **Escape**, and return focus to the control that opened them.
+Validation, network, search, and answer failures appear next to the question as
+an announced, focusable error instead of failing silently.
 
 Security gates baked into the CLI (not just docs):
 
@@ -861,13 +994,14 @@ Security gates baked into the CLI (not just docs):
   client, GET included. The comparison is constant-time, and repeated
   failures from one address are throttled (HTTP 429) to bound online
   brute force.
-- Loopback clients skip the token so the local browser UI works without
-  threading credentials into every fetch. On Android/Termux that
-  exemption is weaker than it looks — *any app on the device* can reach
+- Loopback clients skip the token for read operations so the local browser UI
+  works without threading credentials into every fetch. Scoped write routes
+  always require it, including from loopback; the UI keeps an entered token in
+  tab memory only. On Android/Termux the read exemption is weaker than it
+  looks — *any app on the device* can reach
   localhost ports — so pass `--strict-token` there to require the token
-  from loopback clients too. The bundled web UI sends no token, so in
-  strict mode drive the API with explicit `Authorization: Bearer`
-  headers instead.
+  from loopback clients too. In strict mode, enter the token in the UI or
+  drive the API with explicit `Authorization: Bearer` headers.
 - CORS is off by default. `--cors-origin <origin>` adds exactly one
   origin (no wildcards).
 
@@ -1168,8 +1302,9 @@ grimore_generated: true    # written by `distill` outputs; protects them from re
 ---
 ```
 
-- `last_tagged` is a UTC ISO timestamp; the **Chronicler** uses it to
-  compute staleness.
+- `last_tagged` is a UTC ISO timestamp for automatic processing; it is not a
+  publication, modification, or verification date. **Chronicler** starts its
+  clock only after `chronicler verify`.
 - `privacy: never_process` is the only field that's checked *before* any
   LLM call, so it really does keep the note off the wire.
 - For **non-Markdown documents** (PDF, EPUB, DOCX, …) the same fields
@@ -1243,6 +1378,13 @@ The MCP server is **read-only**: `grimore_ask`, `grimore_search`,
 `grimore_get_note`, `grimore_connect`, `grimore_list_categories`.
 Scans and migrations stay on the CLI.
 
+Tool results cross into the MCP client: `grimore_ask` includes the complete
+indexed passages used as context, while `grimore_get_note` returns a selected
+note's complete current body. Search returns only 200-character previews;
+connect and category listing use stored data without a model call. The
+per-tool data-boundary table in [`docs/mcp-setup.md`](mcp-setup.md) also lists
+what Grimore sends to its chat and embedding services.
+
 Copy-pasteable client configs and the working-directory caveat (the
 server reads `grimore.toml` from `cwd`, which an MCP client launches
 from elsewhere) are in [`docs/mcp-setup.md`](mcp-setup.md).
@@ -1267,9 +1409,24 @@ Streaming answers use Server-Sent Events on `POST /api/ask` when the
 body has `stream: true`. CORS is off by default; pass
 `--cors-origin <origin>` to enable exactly one origin.
 
+The bundled UI has no remote font or script dependency. Its health indicator
+shows model execution as `local`, `mixed`, or `remote`; `grimore status`,
+`GET /api/health`, and answer payloads expose the same split between chat and
+embeddings. Reading this mode does not resolve DNS or open a connection.
+
+The **Setup** button opens a first-run assistant. It validates the
+folder already loaded by the server, lists models reported by the chat and
+embedding services, explains preview-versus-applied scan effects, and produces
+TOML values to copy. When `serve` has an API token, the same panel can atomically
+persist only those three setup fields after bearer authentication. The indexing
+ledger can start a preview or a separately confirmed applied scan, always for
+the vault fixed when the server started and never concurrently. Saving changed
+configuration requires a restart before indexing.
+
 When a token is set it gates **every** `/api/*` route — GET included, not
-just the LLM POSTs — for any non-loopback caller; loopback clients stay open
-so the local browser UI works without a token. The peer is read from the
+just the LLM POSTs — for any non-loopback caller; loopback read operations stay
+open so the local browser UI works without a token. Scoped write routes always
+require the bearer. The peer is read from the
 connection itself, so a forged `X-Forwarded-For` can't bypass the check, the
 token is compared in constant time, and repeated failures from one address
 are throttled (HTTP 429) to bound online brute force. A `top_k` in the
@@ -1279,8 +1436,8 @@ rejected with `400`) rather than amplifying retrieval work.
 On Android/Termux, treat the loopback exemption with suspicion: Android
 does not firewall localhost between apps, so *any app on the device* can
 reach a listening `127.0.0.1` port. Pass `--strict-token` there to require
-the bearer token from loopback clients too (the bundled web UI sends no
-token, so use explicit `Authorization: Bearer` headers in that mode).
+the bearer token from loopback clients too; enter it in the UI or use explicit
+`Authorization: Bearer` headers.
 
 The `serve` extra is required: `pip install 'grimore[serve]'`. On
 Linux/Windows that pulls FastAPI as the upgrade path; the shipped
@@ -1335,8 +1492,8 @@ before the first token arrives. Bump the relevant timeouts in
 ```toml
 [cognition]
 model_llm_local   = "ministral-3:14b"
-request_timeout_s = 180
-stream_timeout_s  = 240
+request_timeout_s = 600
+stream_timeout_s  = 900
 ```
 
 **Sizing these instead of guessing.** Prompt eval, not generation, dominates
@@ -1354,8 +1511,8 @@ print({k: d[k] for k in ("total_duration","prompt_eval_count", \
 Divide `prompt_eval_count / prompt_eval_duration` for read tokens/s.
 `stream_timeout_s` has to cover the **whole** prompt eval: with `stream: true`
 Ollama emits no first token until it finishes, so a budget below that aborts
-having received nothing — and the symptom is an Oracle answering "The Oracle
-returned no tokens", not a timeout error. Since the Oracle sends up to
+having received nothing — and the symptom is a "No answer" panel, not a
+timeout error. Since the Oracle sends up to
 `context_max_chars` of context, `stream_timeout_s` almost always has to be the
 larger of the two.
 

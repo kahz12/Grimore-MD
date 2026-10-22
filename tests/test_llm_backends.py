@@ -276,8 +276,8 @@ class TestOpenAICompatibleBackend:
 
     def test_streaming_tolerates_spaceless_data_prefix(self):
         # The SSE spec permits ``data:`` with no space after the colon; the
-        # backend must strip either form (regression guard — the spaceless
-        # variant used to fail the prefix check and get dropped as junk).
+        # The backend must strip either form so valid spaceless frames are
+        # not discarded.
         b = _openai(llm_base_url="http://localhost:8080")
         resp = MagicMock()
         resp.__enter__.return_value = resp
@@ -371,6 +371,18 @@ class TestBuildBackend:
 
 
 class TestRouterDispatch:
+    @pytest.mark.parametrize("raw,json_format", [(None, True), ("bad json", True), ('{"ok": true}', True), ("raw", False)])
+    def test_optional_calls_neither_trip_nor_reset_existing_breaker(self, raw, json_format):
+        stub = MagicMock()
+        stub.complete.return_value = raw
+        router = LLMRouter(_cfg(), backend=stub)
+        router._consecutive_failures = 2
+        router._open_until = float("inf")
+        router.complete("p", json_format=json_format, optional=True)
+        assert router._consecutive_failures == 2
+        assert router._open_until == float("inf")
+        stub.complete.assert_called_once()
+
     def test_router_complete_runs_json_extraction_on_backend_text(self):
         # The OpenAI backend returns raw text; the router extracts JSON
         # so the rest of the codebase can call `router.complete(..., json_format=True)`
@@ -416,7 +428,7 @@ class TestRouterDispatch:
         cfg = _cfg()
         router = LLMRouter(cfg)
         router._open_until = float("inf")
-        # Backend mock would error if reached — it shouldn't be.
+        # An open circuit returns before the backend is called.
         router.backend.session = MagicMock(side_effect=AssertionError("backend reached"))
         assert router.complete("p") is None
 

@@ -1,0 +1,48 @@
+version: 1
+corpus_root: ../test_vault/test_vault
+documents:
+  - id: humedal-pdf
+    path: informe_humedal_la_esperanza.pdf
+    reading_order:
+      - page: 1
+        passages:
+          - Informe de restauración del Humedal
+          - Resumen ejecutivo
+          - Datos de referencia
+          - Corpus de evaluación Grimore
+      - page: 2
+        passages:
+          - Diseño de seguimiento
+          - Estaciones de muestreo
+          - Restauración vegetal
+          - Responsabilidades
+          - Corpus de evaluación Grimore
+      - page: 3
+        passages:
+          - Decisiones y alertas de revisión
+          - Umbrales de actuación
+          - Estado a junio de 2025
+          - Criterio de cierre
+          - Corpus de evaluación Grimore
+    table_rows:
+      - page: 1
+        cells: [Fósforo total, "0,18 mg/L", "Menos de 0,10 mg/L"]
+      - page: 1
+        cells: [Cobertura de jacinto invasor, "8 ha", "Menos de 0,5 ha"]
+      - page: 2
+        cells: [Equipo Agua Clara, Muestreo de agua y custodia de resultados]
+      - page: 2
+        cells: [Comité Comunitario, Conteos participativos de aves y anfibios]
+    page_anchors:
+      - page: 1
+        passage: El área de intervención aprobada es de 37,5 hectáreas
+      - page: 1
+        passage: Fósforo total
+      - page: 2
+        passage: Norte-01 funciona como punto de referencia
+      - page: 2
+        passage: No se aplican herbicidas dentro del espejo de agua
+      - page: 3
+        passage: La estación Sur-02 quedó sin datos en mayo de 2025
+      - page: 3
+        passage: cobertura de jacinto inferior a 0,5 hectáreas

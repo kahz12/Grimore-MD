@@ -51,6 +51,7 @@ class LinkInjector:
         file_path: Path,
         connections: list[dict],
         dry_run: bool = True,
+        change_journal=None,
     ):
         """Append/replace ``## 🔗 Suggested Connections`` on ``file_path``.
 
@@ -83,11 +84,15 @@ class LinkInjector:
             else:
                 new_content = content.rstrip() + new_section
 
+            if change_journal is not None:
+                change_journal.capture_before(file_path)
             atomic_write(
                 file_path,
                 lambda fh: fh.write(new_content.encode("utf-8")),
                 mode="wb",
             )
+            if change_journal is not None:
+                change_journal.capture_after(file_path)
             logger.info("links_injected", path=str(file_path))
         except Exception as e:
             logger.error(
@@ -104,6 +109,7 @@ class LinkInjector:
         vault_root: Optional[Union[str, Path]] = None,
         sidecar_dir: str = ".grimore/sidecars",
         dry_run: bool = True,
+        change_journal=None,
     ) -> Optional[Path]:
         """Format-aware injection. Returns the path written, or None.
 
@@ -118,7 +124,10 @@ class LinkInjector:
             return None
 
         if format == "md":
-            self.inject_links(source_path, connections, dry_run=dry_run)
+            self.inject_links(
+                source_path, connections, dry_run=dry_run,
+                change_journal=change_journal,
+            )
             return None if dry_run else source_path
 
         target = sidecar_path
@@ -141,7 +150,10 @@ class LinkInjector:
             )
             return None
 
-        self.inject_links(target, connections, dry_run=dry_run)
+        self.inject_links(
+            target, connections, dry_run=dry_run,
+            change_journal=change_journal,
+        )
         return None if dry_run else target
 
     @staticmethod

@@ -93,10 +93,17 @@ def reembed_note(
     kept = 0
     embedded = 0
     reanchored = 0
+    kept_source_rows: list[dict] = []
     stale_items: list[tuple[int, Chunk, str]] = []
     for idx, c, h, stale in plan:
         if not stale:
             kept += 1
+            kept_source_rows.append({
+                "chunk_index": idx,
+                "full_text_content": c.text,
+                "page": c.page,
+                "heading": c.heading,
+            })
             # Text (and so the embedding) is unchanged, but an edit earlier in
             # the document may have shifted this chunk's page/heading. Refresh
             # the stored anchors cheaply — no re-embed — so citations stay
@@ -126,6 +133,7 @@ def reembed_note(
             pending.append({
                 "chunk_index": idx,
                 "text_content": c.text[:text_truncation],
+                "full_text_content": c.text,
                 "vector": embedder.serialize_vector(vector),
                 "page": c.page,
                 "heading": c.heading,
@@ -148,8 +156,13 @@ def reembed_note(
                     page=row["page"],
                     heading=row["heading"],
                     chunk_hash=row["chunk_hash"],
+                    full_text_content=row["full_text_content"],
                 )
                 embedded += 1
+
+    _refresh_sources = getattr(db, "refresh_chunk_sources", None)
+    if kept_source_rows and callable(_refresh_sources):
+        _refresh_sources(note_id, kept_source_rows)
 
     stored = kept + embedded
     if removed or embedded or reanchored:

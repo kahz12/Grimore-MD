@@ -114,5 +114,7 @@ def tail_events(path: Path | str, n: int = 5) -> list[dict[str, Any]]:
         text = p.read_text(encoding="utf-8")
     except OSError:
         return []
-    lines = [ln for ln in text.splitlines() if ln.strip()]
-    return [parse_event_line(ln) for ln in lines[-n:]]
+    # A background daemon's console output lands in the same file, so skip
+    # lines that are not events instead of rendering them as "?" rows.
+    events = [ev for ev in map(parse_event_line, text.splitlines()) if ev]
+    return events[-n:]

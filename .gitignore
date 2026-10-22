@@ -26,16 +26,42 @@ grimore.db
 grimore.db-wal
 grimore.db-shm
 grimore.db-journal
+
+# Other local SQLite databases and journal files.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3-journal
+
 # Dense scoring matrix cache: a rebuildable artifact the size of every
 # vector in the vault, written beside the database.
 *.vecmat.npy
 *.vecmat.sig
+
 # Orphaned temps if a write is killed mid-flight.
 *.vecmat.*.tmp
 grimore.pid
 grimore.log
+*.pid
+*.log
 backups/
-test_vault/
+
+# Runtime state under the developer's test vault is local. The reference corpus
+# itself is versioned so Phase-0 evidence checks are reproducible on a clone.
+test_vault/*
+!test_vault/test_vault/
+!test_vault/test_vault/*
+# Third-party papers kept for manual testing only; not redistributable.
+test_vault/test_vault/*.pdf
+!test_vault/test_vault/informe_humedal_*.pdf
 
 # Your local config: vault path, model names and timeouts are all
 # machine-specific. Copy grimore.toml.example and edit that instead.
@@ -50,9 +76,14 @@ grimore.toml
 bench/vault/
 bench/work/
 bench/results*.json
+eval/results/
 
 # Internal planning notes.
 GRI/
+docs/New_developments
+
+# Pseudonymous pilot records are local research data, not repository fixtures.
+pilot-data/
 
 # Tooling caches
 .pytest_cache/
@@ -69,11 +100,22 @@ htmlcov/
 
 # Environment and Secrets
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
 .venv
 venv/
 ENV/
+secrets/
+.secrets/
+.credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 
 # OS
 .DS_Store

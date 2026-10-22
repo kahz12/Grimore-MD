@@ -29,12 +29,15 @@ def test_threshold_out_of_range_is_rejected(runner, bad):
 
 
 @pytest.mark.parametrize("good", ["0.0", "0.5", "1.0"])
-def test_threshold_in_range_passes_validation(runner, good):
+def test_threshold_in_range_passes_validation(runner, good, tmp_path, monkeypatch):
     """In-range values must not trigger the BadParameter from _validate_threshold.
 
     The command body may still fail later (e.g. missing DB in a clean tmpdir),
-    so we only assert the validator-level error is absent.
+    so we only assert the validator-level error is absent. The tmpdir is
+    essential: config is read from the cwd, and run from the repository root
+    this would connect the developer's real vault and rewrite its notes.
     """
+    monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["connect", "--threshold", good])
     assert "must be in [0.0, 1.0]" not in (result.output + (result.stderr or ""))
 

@@ -9,12 +9,16 @@ Given a chunk of note content, the ``Tagger`` asks the local LLM for:
   ``CategoryTree`` — unknown categories are dropped).
 """
 import re
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from grimore.cognition.chunker import chunk_markdown
 from grimore.cognition.llm_router import LLMRouter
 from grimore.memory.taxonomy import CategoryTree, Taxonomy, VaultTaxonomy
 from grimore.utils.logger import get_logger
+from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
@@ -22,6 +26,61 @@ _TAG_MAX_LEN = 64
 _SUMMARY_MAX = 300
 _TAG_LIMIT = 16
 _TAGGER_INPUT_MAX = 4000
+_LONG_NOTE_MAX_PARTS = 12
+_MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class _AnalysisPart:
+    text: str
+    section: int
+    part: int
+    page: int | None = None
+    heading: str | None = None
+
+
+def _analysis_parts(note, content: str) -> list[_AnalysisPart]:
+    """Split natural sections first, then cap each model input without overlap."""
+    sections = getattr(note, "sections", None) or []
+    if sections:
+        sources = [
+            (section.text, index, section.page, section.heading)
+            for index, section in enumerate(sections, 1)
+        ]
+    else:
+        matches = list(_MARKDOWN_HEADING.finditer(content))
+        sources = []
+        if matches:
+            preamble = content[:matches[0].start()].strip()
+            if preamble:
+                sources.append((preamble, 1, None, None))
+            for index, match in enumerate(matches):
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+                sources.append((content[match.end():end], len(sources) + 1, None,
+                                match.group(1).strip()))
+        else:
+            sources = [(content, 1, None, None)]
+
+    parts: list[_AnalysisPart] = []
+    for raw_text, section_number, page, heading in sources:
+        safe_text = SecurityGuard.sanitize_prompt(raw_text)
+        for part_number, piece in enumerate(
+            chunk_markdown(safe_text, max_chars=_TAGGER_INPUT_MAX - 200, overlap=0), 1,
+        ):
+            parts.append(_AnalysisPart(piece, section_number, part_number, page, heading))
+    return parts
+
+
+def tag_document(tagger, note, clean_content: str) -> dict:
+    """Keep the legacy single-call path for short notes and test doubles."""
+    # A scanned PDF without OCR (or another textless source) still needs
+    # an indexed record and extraction diagnosis, but there is no evidence
+    # for an LLM to classify or summarise.
+    if not clean_content.strip():
+        return {"tags": [], "summary": "", "category": ""}
+    if len(clean_content) <= _TAGGER_INPUT_MAX or not isinstance(tagger, Tagger):
+        return tagger.tag_note(clean_content)
+    return tagger.tag_long_note(note, clean_content)
 
 
 def _sanitize_tag(raw, taxonomy: Taxonomy) -> str | None:
@@ -123,4 +182,96 @@ class Tagger:
             "tags": reconciled_tags,
             "summary": _sanitize_summary(result.get("summary", "")),
             "category": category,
+        }
+
+    def tag_long_note(self, note, content: str) -> dict:
+        """Analyze spread-out source parts and retain their provenance.
+
+        The budget is intentionally bounded. When a document exceeds it, the
+        coverage record explicitly reports the parts that were not analyzed.
+        """
+        parts = _analysis_parts(note, content)
+        if not parts:
+            return {"tags": [], "summary": "", "category": ""}
+
+        count = min(len(parts), _LONG_NOTE_MAX_PARTS)
+        indices = (
+            list(range(count)) if count == len(parts) else
+            [i * (len(parts) - 1) // (count - 1) for i in range(count)]
+        )
+        if len(parts) > count:
+            logger.warning(
+                "tagger_partial_coverage",
+                total_parts=len(parts), analyzed_parts=count,
+            )
+        evidence: list[dict] = []
+        tags: list[str] = []
+        categories: list[str] = []
+        for index in indices:
+            part = parts[index]
+            source_id = f"s{index + 1}"
+            heading = SecurityGuard.sanitize_prompt(part.heading or "")[:160]
+            context = f"Heading: {heading}\n" if heading else ""
+            result = self.tag_note(context + part.text)
+            successful = bool(result["tags"] or result["summary"] or result["category"])
+            evidence.append({
+                "id": source_id,
+                "section": part.section,
+                "part": part.part,
+                "page": part.page,
+                "heading": part.heading,
+                "status": "analyzed" if successful else "failed",
+                "summary": result["summary"],
+                "tags": result["tags"],
+            })
+            if successful:
+                tags.extend(result["tags"])
+                if result["category"]:
+                    categories.append(result["category"])
+
+        usable = [item for item in evidence if item["status"] == "analyzed"]
+        summary = ""
+        summary_sources: list[str] = []
+        summaries = [item for item in usable if item["summary"]]
+        if len(summaries) == 1:
+            summary = summaries[0]["summary"]
+            summary_sources = [summaries[0]["id"]]
+        elif summaries:
+            lines = "\n".join(
+                f'{item["id"]}: {SecurityGuard.sanitize_prompt(item["summary"])}'
+                for item in summaries
+            )
+            response = self.router.complete(
+                "Combine the section summaries below into one concise summary "
+                "(under 150 characters). Use only facts present in them. "
+                "Return JSON with keys summary (string) and sources (list of "
+                "section IDs used). Do not add unsupported facts.\n\n" + lines,
+                system_prompt="You summarize source-labeled document sections. Return only JSON.",
+            )
+            valid_ids = {item["id"] for item in summaries}
+            proposed_sources = response.get("sources") if isinstance(response, dict) else None
+            if isinstance(proposed_sources, list) and proposed_sources and all(
+                isinstance(source, str) and source in valid_ids for source in proposed_sources
+            ):
+                summary = _sanitize_summary(response.get("summary"))
+                if summary:
+                    summary_sources = list(dict.fromkeys(proposed_sources))
+            if not summary:
+                summary = _sanitize_summary("; ".join(item["summary"] for item in summaries))
+                summary_sources = [item["id"] for item in summaries]
+
+        category = Counter(categories).most_common(1)[0][0] if categories else ""
+        return {
+            "tags": self.vault_tax.tags.reconcile(tags)[:_TAG_LIMIT],
+            "summary": summary,
+            "category": category,
+            "section_analysis": {
+                "total_parts": len(parts),
+                "analyzed_parts": len(indices),
+                "unanalyzed_parts": len(parts) - len(indices),
+                "successful_parts": len(usable),
+                "failed_parts": len(indices) - len(usable),
+                "summary_sources": summary_sources,
+                "sources": evidence,
+            },
         }

@@ -12,6 +12,12 @@ path = "./vault"
 ignored_dirs = [".obsidian", ".trash", ".git", "Templates"]
 
 [cognition]
+# Optional, fallible evidence assessment before answering (adds a model call).
+# Off by default. A failed check blocks factual generation; no automatic fallback.
+# When enabled, answers require model-selected refs per claim; streaming waits
+# for complete validation.
+answer_sufficiency_check = false
+answer_sufficiency_timeout_s = 180
 # Ollama model names as `ollama list` prints them. Pick the largest pair your
 # hardware answers with in reasonable time -- see the timeout notes below.
 model_llm_local = "qwen2.5:3b"
@@ -49,11 +55,12 @@ dedupe_threshold = 0.90
 #
 # stream_timeout_s must cover the WHOLE prompt eval: with stream=true Ollama
 # emits no first token until it finishes, so a budget under that aborts having
-# received nothing. The symptom is the Oracle answering "returned no tokens",
-# not a timeout error. Since the Oracle sends up to context_max_chars of
-# context, this is almost always the larger of the two.
-request_timeout_s = 60   # /api/generate, JSON path
-stream_timeout_s  = 120  # /api/generate, streaming path
+# received nothing. The symptom is a "No answer" panel rather than a
+# timeout error. Since the Oracle sends up to context_max_chars of context,
+# this is never smaller than request_timeout_s. The defaults cover qwen2.5:3b
+# on a 4-core CPU (72 s for a first answer in one measurement).
+request_timeout_s = 300  # /api/generate, JSON path
+stream_timeout_s  = 300  # /api/generate, streaming path
 embed_timeout_s   = 30   # /api/embeddings
 
 # Tunables you rarely need to touch. Shown with their defaults.
@@ -64,9 +71,24 @@ embed_timeout_s   = 30   # /api/embeddings
 # circuit_cooldown_s        = 120     # how long it stays open
 # conditional_rewrite       = true    # only rewrite follow-ups that need it
 # rewrite_timeout_s         = 60      # budget for that rewrite alone
+# claim_max_chars           = 8000    # characters per Mirror extraction call
+# claim_max_sections        = 8       # source parts analyzed per document
+# claim_max_claims_per_section = 10   # claims retained per analyzed part
 
 [memory]
 db_path = "grimore.db"
+
+[ingest]
+# OCR is opt-in and requires Tesseract, Poppler and the grimore[ocr] extra.
+pdf_engine = "pypdf"
+ocr = false
+# Use "spa" for Spanish or "spa+eng" for mixed documents. Install all
+# requested Tesseract language data first; there is no silent fallback.
+ocr_language = "eng"
+ocr_timeout_s = 30
+# Maximum OCR attempts per PDF, not total pages. Failed attempts count;
+# readable digital pages do not. 0 preserves unlimited processing.
+ocr_max_pages = 0
 
 [shell]
 # max_turns = 3   # conversation turns kept as Oracle context; 0 disables memory

@@ -88,6 +88,26 @@ def _extract_title(soup: BeautifulSoup, root: Tag, fallback: str) -> str:
     return fallback
 
 
+def _extract_metadata(soup: BeautifulSoup) -> dict[str, str]:
+    """Read common article dates while retaining their semantic role."""
+    metadata: dict[str, str] = {}
+    mappings = {
+        "article:published_time": "published",
+        "datepublished": "published",
+        "date": "published",
+        "article:modified_time": "modified",
+        "datemodified": "modified",
+        "last-modified": "modified",
+    }
+    for node in soup.find_all("meta"):
+        name = str(node.get("property") or node.get("name") or "").strip().lower()
+        target = mappings.get(name)
+        content = str(node.get("content") or "").strip()
+        if target and content and target not in metadata:
+            metadata[target] = content
+    return metadata
+
+
 def _sectionise(root: Tag) -> list[ExtractedSection]:
     """Walk top-level descendants, breaking on heading boundaries.
 
@@ -175,6 +195,7 @@ class HtmlAdapter:
         # bs4 is lenient about encoding — pass raw bytes and let it sniff
         # the meta charset declaration.
         soup = BeautifulSoup(raw, _PARSER)
+        metadata = _extract_metadata(soup)
 
         for noise in _NOISE_TAGS:
             for node in soup.find_all(noise):
@@ -194,7 +215,7 @@ class HtmlAdapter:
             text=text,
             content_hash=calculate_content_hash(text),
             file_hash=sha256_file(file_path),
-            metadata={},
+            metadata=metadata,
             sections=sections,
             size_bytes=size,
         )

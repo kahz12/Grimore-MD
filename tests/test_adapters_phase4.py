@@ -12,8 +12,10 @@ installed (the common case).
 from __future__ import annotations
 
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +25,7 @@ from grimore.ingest.adapters.doc import DocAdapter, antiword_available
 from grimore.ingest.adapters.odt import OdtAdapter
 from grimore.ingest.adapters.pdf import PdfAdapter, _SUPPORTED_ENGINES
 from grimore.ingest.adapters.rtf import RtfAdapter
+from grimore.ingest.parser import ParsedNote, extraction_diagnostics
 
 
 # ── RTF ────────────────────────────────────────────────────────────────────
@@ -355,6 +358,125 @@ class TestPdfEngineSelection:
 
 
 class TestPdfOcrFallback:
+    @pytest.mark.parametrize("language", ["eng", "spa+eng"])
+    def test_ocr_bounds_rasterisation_and_recognition(self, monkeypatch, tmp_path, language):
+        from grimore.ingest.adapters import pdf as pdf_mod
+
+        calls = []
+
+        def convert(path, **kwargs):
+            calls.append(("raster", path, kwargs))
+            return [object()]
+
+        def recognise(image, **kwargs):
+            calls.append(("recognise", image, kwargs))
+            return "  texto recuperado  "
+
+        monkeypatch.setattr(pdf_mod.shutil, "which", lambda _name: "/usr/bin/tesseract")
+        monkeypatch.setitem(sys.modules, "pdf2image", SimpleNamespace(convert_from_path=convert))
+        monkeypatch.setitem(sys.modules, "pytesseract", SimpleNamespace(image_to_string=recognise))
+
+        source = tmp_path / "scan.pdf"
+        assert pdf_mod._ocr_page(source, 7, 12, language) == pdf_mod._OcrResult("texto recuperado")
+        assert calls[0] == ("raster", str(source), {
+            "first_page": 7, "last_page": 7, "thread_count": 1, "timeout": 12,
+            "use_pdftocairo": False,
+        })
+        assert calls[1][0] == "recognise"
+        assert calls[1][2] == {"timeout": 12, "lang": language}
+
+    def test_ocr_can_use_pdftocairo_when_pdftoppm_is_missing(self, monkeypatch, tmp_path):
+        from grimore.ingest.adapters import pdf as pdf_mod
+
+        observed = {}
+
+        def convert(_path, **kwargs):
+            observed.update(kwargs)
+            return [object()]
+
+        monkeypatch.setattr(
+            pdf_mod.shutil, "which",
+            lambda name: None if name == "pdftoppm" else "/usr/bin/tool",
+        )
+        monkeypatch.setitem(sys.modules, "pdf2image", SimpleNamespace(convert_from_path=convert))
+        monkeypatch.setitem(
+            sys.modules, "pytesseract",
+            SimpleNamespace(image_to_string=lambda _image, **_kwargs: "texto"),
+        )
+
+        assert pdf_mod._ocr_page(tmp_path / "scan.pdf", 1, 5) == pdf_mod._OcrResult("texto")
+        assert observed["use_pdftocairo"] is True
+
+    def test_ocr_reports_unavailable_tools(self, monkeypatch, tmp_path):
+        from grimore.ingest.adapters import pdf as pdf_mod
+
+        monkeypatch.setattr(pdf_mod.shutil, "which", lambda _name: None)
+        assert pdf_mod._ocr_page(tmp_path / "scan.pdf", 1, 5) == pdf_mod._OcrResult(
+            "", "ocr_unavailable",
+        )
+
+    def test_ocr_rasterisation_timeout_leaves_page_unrecovered(self, monkeypatch, tmp_path):
+        from grimore.ingest.adapters import pdf as pdf_mod
+
+        def timeout(_path, **_kwargs):
+            raise TimeoutError("poppler exceeded limit")
+
+        monkeypatch.setattr(pdf_mod.shutil, "which", lambda _name: "/usr/bin/tesseract")
+        monkeypatch.setitem(sys.modules, "pdf2image", SimpleNamespace(convert_from_path=timeout))
+        monkeypatch.setitem(sys.modules, "pytesseract", SimpleNamespace())
+        monkeypatch.setitem(pdf_mod._ENGINE_DISPATCH, "pypdf", lambda _path: ({}, [(1, "")]))
+
+        source = tmp_path / "scan.pdf"
+        source.write_bytes(b"%PDF-1.4\nplaceholder")
+        document = PdfAdapter(ocr=True, ocr_timeout_s=5).extract(
+            source, options=AdapterOptions(vault_root=tmp_path),
+        )
+        assert document.sections == []
+        assert [(issue.code, issue.ocr_requested, issue.recovered)
+                for issue in document.issues] == [
+            ("page_text_unavailable", True, False),
+        ]
+        assert document.issues[0].as_dict()["reason"] == "ocr_render_failed"
+
+    @pytest.mark.parametrize(
+        ("recognised", "expected_reason"),
+        [(None, "ocr_recognition_failed"), ("   ", "ocr_no_text")],
+    )
+    def test_ocr_reports_recognition_failure_or_empty_text(
+        self, monkeypatch, tmp_path, recognised, expected_reason,
+    ):
+        from grimore.ingest.adapters import pdf as pdf_mod
+
+        def recognise(_image, **_kwargs):
+            if recognised is None:
+                raise RuntimeError("tesseract failed")
+            return recognised
+
+        monkeypatch.setattr(pdf_mod.shutil, "which", lambda _name: "/usr/bin/tool")
+        monkeypatch.setitem(
+            sys.modules, "pdf2image",
+            SimpleNamespace(convert_from_path=lambda *_args, **_kwargs: [object()]),
+        )
+        monkeypatch.setitem(
+            sys.modules, "pytesseract", SimpleNamespace(image_to_string=recognise),
+        )
+
+        assert pdf_mod._ocr_page(tmp_path / "scan.pdf", 1, 5) == pdf_mod._OcrResult(
+            "", expected_reason,
+        )
+
+    @pytest.mark.parametrize("value", [0, -1, True, 2.5])
+    def test_ocr_timeout_must_be_positive_integer(self, value, tmp_path):
+        with pytest.raises(ValueError, match="ocr_timeout_s"):
+            PdfAdapter(ocr_timeout_s=value)
+
+        source = tmp_path / "scan.pdf"
+        source.write_bytes(b"%PDF-1.4\nplaceholder")
+        with pytest.raises(ValueError, match="ocr_timeout_s"):
+            PdfAdapter().extract(
+                source, options=AdapterOptions(vault_root=tmp_path, ocr_timeout_s=value),
+            )
+
     def test_ocr_fills_empty_page_when_enabled(self, tmp_path, monkeypatch):
         """A page that the engine returns as empty must be promoted via
         OCR when the toggle is on and the OCR helper produces text.
@@ -367,7 +489,7 @@ class TestPdfOcrFallback:
         def fake_engine(path):
             return ({}, [(1, ""), (2, "normal text")])
 
-        def fake_ocr(path, page_no, timeout_s):
+        def fake_ocr(path, page_no, timeout_s, language="eng"):
             return f"ocr text from page {page_no}" if page_no == 1 else None
 
         monkeypatch.setitem(pdf_mod._ENGINE_DISPATCH, "pypdf", fake_engine)
@@ -388,6 +510,13 @@ class TestPdfOcrFallback:
         normal = next(s for s in doc.sections if s.page == 2)
         assert normal.heading is None
         assert normal.text == "normal text"
+        assert extraction_diagnostics(ParsedNote.from_extracted(doc)) == {
+            "status": "recovered",
+            "issues": [{
+                "code": "ocr_used", "page": 1, "engine": "pypdf",
+                "ocr_requested": True, "recovered": True,
+            }],
+        }
 
     def test_ocr_disabled_drops_empty_pages(self, tmp_path, monkeypatch):
         from grimore.ingest.adapters import pdf as pdf_mod
@@ -395,7 +524,7 @@ class TestPdfOcrFallback:
         def fake_engine(path):
             return ({}, [(1, ""), (2, "real")])
 
-        def fake_ocr(path, page_no, timeout_s):  # pragma: no cover
+        def fake_ocr(path, page_no, timeout_s, language="eng"):  # pragma: no cover
             raise AssertionError("OCR must not be called when toggle is off")
 
         monkeypatch.setitem(pdf_mod._ENGINE_DISPATCH, "pypdf", fake_engine)
@@ -409,3 +538,27 @@ class TestPdfOcrFallback:
         )
         # Only the non-empty page survives.
         assert [s.page for s in doc.sections] == [2]
+        assert extraction_diagnostics(ParsedNote.from_extracted(doc)) == {
+            "status": "partial",
+            "issues": [{
+                "code": "page_text_unavailable", "page": 1, "engine": "pypdf",
+                "ocr_requested": False, "recovered": False,
+            }],
+        }
+
+    def test_engine_page_failure_is_distinct_from_blank_page(self, tmp_path, monkeypatch):
+        from grimore.ingest.adapters import pdf as pdf_mod
+
+        monkeypatch.setitem(
+            pdf_mod._ENGINE_DISPATCH, "pypdf",
+            lambda _path: ({}, [(1, ""), (2, "")], [2]),
+        )
+        source = tmp_path / "failed.pdf"
+        source.write_bytes(b"%PDF-1.4\nplaceholder")
+
+        doc = PdfAdapter().extract(source, options=AdapterOptions(vault_root=tmp_path))
+
+        assert [issue.code for issue in doc.issues] == [
+            "page_text_unavailable", "page_extraction_failed",
+        ]
+        assert [issue.page for issue in doc.issues] == [1, 2]

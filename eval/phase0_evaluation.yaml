@@ -1,0 +1,753 @@
+version: 2
+set: evaluation
+corpus_version: phase0-test-vault-2026-09-22
+questions:
+- id: ai-transformer-origin
+  question: Which 2017 paper introduced the Transformer?
+  expected_sources:
+  - Artificial Intelligence
+  expected_keywords:
+  - Attention Is All You Need
+  expected_answer: Vaswani et al.'s Attention Is All You Need.
+  expected_evidence:
+  - source: Artificial Intelligence
+    passage: In June 2017, Vaswani et al. published the paper "Attention Is All You Need", introducing
+      the Transformer
+    locator: The Generative Era
+  review_criteria: 'Debe comunicar correctamente: Vaswani et al.''s Attention Is All You Need.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: ai-gpt3-scale-followup
+    question: How large was GPT-3 according to the same account?
+    expected_sources:
+    - Artificial Intelligence
+    expected_keywords:
+    - 175 billion
+    expected_answer: GPT-3 had 175 billion parameters.
+    expected_evidence:
+    - source: Artificial Intelligence
+      passage: 'GPT-3 (2020): Showed emergent behaviors, demonstrating that simply scaling model size
+        (175 billion parameters)'
+      locator: Large Language Models
+    review_criteria: 'Debe comunicar correctamente: GPT-3 had 175 billion parameters.'
+- id: apple-browning-components
+  question: What three components are required for enzymatic browning?
+  expected_sources:
+  - Apples Malus
+  expected_keywords:
+  - oxygen
+  - phenolic
+  - PPO
+  expected_answer: Oxygen, phenolic substrates, and polyphenol oxidase (PPO).
+  expected_evidence:
+  - source: Apples Malus
+    passage: 'The reaction requires three components: oxygen ($O_2$), phenolic substrates (specifically
+      o-diphenols), and the enzyme Polyphenol Oxidase (PPO)'
+    locator: Enzymatic Browning
+  review_criteria: 'Debe comunicar correctamente: Oxygen, phenolic substrates, and polyphenol oxidase
+    (PPO).'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: apple-1mcp-followup
+    question: How does 1-MCP delay ripening?
+    expected_sources:
+    - Apples Malus
+    expected_keywords:
+    - ethylene receptors
+    - blocking
+    expected_answer: It binds irreversibly to ethylene receptors and blocks ethylene signaling.
+    expected_evidence:
+    - source: Apples Malus
+      passage: 1-MCP binds irreversibly to ethylene receptors (ETR1 and others) on the cell membrane,
+        blocking ethylene from binding
+      locator: 1-Methylcyclopropene
+    review_criteria: 'Debe comunicar correctamente: It binds irreversibly to ethylene receptors and blocks
+      ethylene signaling.'
+- id: arch-kappa-meaning
+  question: En la nota de arquitectura, ¿qué simplifica Kappa?
+  expected_sources:
+  - Arquitectura de Software
+  expected_keywords:
+  - stream
+  - tiempo real
+  expected_answer: 'Unifica el procesamiento: todo se trata como un flujo de eventos en tiempo real.'
+  expected_evidence:
+  - source: Arquitectura de Software
+    passage: 'Kappa: Simplifica la complejidad de Lambda unificándolo todo: todo es un stream de eventos
+      en tiempo real'
+    locator: Arquitectura Lambda y Kappa
+  review_criteria: 'Debe comunicar correctamente: Unifica el procesamiento: todo se trata como un flujo
+    de eventos en tiempo real.'
+  case_type: similar-documents
+  category: similar-documents
+  language: es
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: arch-lambda-followup
+    question: ¿Qué dos capas conserva Lambda?
+    expected_sources:
+    - Arquitectura de Software
+    expected_keywords:
+    - Batch Layer
+    - Speed Layer
+    expected_answer: Una Batch Layer histórica y una Speed Layer de tiempo real.
+    expected_evidence:
+    - source: Arquitectura de Software
+      passage: 'Lambda: Divide el procesamiento en dos capas. Una "Batch Layer" (lenta pero precisa, procesa
+        TB de datos históricos) y una "Speed Layer"'
+      locator: Arquitectura Lambda y Kappa
+    review_criteria: 'Debe comunicar correctamente: Una Batch Layer histórica y una Speed Layer de tiempo
+      real.'
+- id: astro-cmb-temperature
+  question: ¿Qué temperatura equivalente tiene hoy el CMB?
+  expected_sources:
+  - Astronomía General
+  expected_keywords:
+  - '2.725'
+  expected_answer: Aproximadamente 2,725 K.
+  expected_evidence:
+  - source: Astronomía General
+    passage: temperatura equivalente de 2.725 K
+    locator: Big Bang y CMB
+  review_criteria: 'Debe comunicar correctamente: Aproximadamente 2,725 K.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: astro-dark-energy-followup
+    question: ¿Qué fracción del universo atribuye el documento a la energía oscura?
+    expected_sources:
+    - Astronomía General
+    expected_keywords:
+    - '68.3'
+    expected_answer: Aproximadamente 68,3%.
+    expected_evidence:
+    - source: Astronomía General
+      passage: 'Energía Oscura ($\Lambda$): Representa aproximadamente el 68.3% del universo'
+      locator: Modelo Lambda-CDM
+    review_criteria: 'Debe comunicar correctamente: Aproximadamente 68,3%.'
+- id: history-socrates-rome-dates
+  question: Compara las fechas de la muerte de Sócrates y del fin tradicional del Imperio romano de Occidente.
+  expected_sources:
+  - Sócrates
+  - Roman Empire
+  expected_keywords:
+  - '399'
+  - '476'
+  expected_answer: Sócrates murió en 399 a.C.; la deposición de Rómulo Augústulo ocurrió en 476 d.C.
+  expected_evidence:
+  - source: Sócrates
+    passage: '399 a.C. : Juicio, condena e ingesta de cicuta'
+    locator: Cronología
+  - source: Roman Empire
+    passage: In 476 AD, the Germanic chieftain Odoacer deposed the last Western emperor, Romulus Augustulus
+    locator: Permanent Division and Fall
+  review_criteria: 'Debe comunicar correctamente: Sócrates murió en 399 a.C.; la deposición de Rómulo
+    Augústulo ocurrió en 476 d.C.'
+  case_type: comparison
+  category: comparison
+  language: es
+  document_formats:
+  - md
+  user_task: compare-documents
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: history-agents-followup
+    question: ¿Qué agente o medio produjo cada desenlace?
+    expected_sources:
+    - Sócrates
+    - Roman Empire
+    expected_keywords:
+    - cicuta
+    - Odoacer
+    expected_answer: Sócrates fue ejecutado al beber cicuta; Odoacro depuso a Rómulo Augústulo.
+    expected_evidence:
+    - source: Sócrates
+      passage: Sócrates bebió con serenidad el veneno preparado de la cicuta
+      locator: Los Últimos Días
+    - source: Roman Empire
+      passage: Odoacer deposed the last Western emperor, Romulus Augustulus
+      locator: Permanent Division and Fall
+    review_criteria: 'Debe comunicar correctamente: Sócrates fue ejecutado al beber cicuta; Odoacro depuso
+      a Rómulo Augústulo.'
+    case_type: comparison
+- id: frogs-metamorphosis-hormones
+  question: ¿Qué hormonas regulan la metamorfosis de los anuros?
+  expected_sources:
+  - Ranas
+  expected_keywords:
+  - tiroxina
+  - triyodotironina
+  expected_answer: Las hormonas tiroideas tiroxina y triyodotironina.
+  expected_evidence:
+  - source: Ranas
+    passage: metamorfosis, regulada por las hormonas tiroideas (tiroxina y triyodotironina)
+    locator: Proceso de Metamorfosis
+  review_criteria: 'Debe comunicar correctamente: Las hormonas tiroideas tiroxina y triyodotironina.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: frogs-imago-followup
+    question: ¿Qué ocurre con la cola durante la fase de imago?
+    expected_sources:
+    - Ranas
+    expected_keywords:
+    - apoptosis
+    - energía
+    expected_answer: Se reabsorbe por apoptosis y aporta energía durante el ayuno.
+    expected_evidence:
+    - source: Ranas
+      passage: Reabsorción de la cola por apoptosis
+      locator: Proceso de Metamorfosis
+    review_criteria: 'Debe comunicar correctamente: Se reabsorbe por apoptosis y aporta energía durante
+      el ayuno.'
+- id: gothic-rayonnant
+  question: What defined the Rayonnant Gothic phase?
+  expected_sources:
+  - gothic_architecture
+  expected_keywords:
+  - '1240'
+  - light
+  - tracery
+  expected_answer: From about 1240-1350 it emphasized light and decorative tracery.
+  expected_evidence:
+  - source: gothic_architecture
+    passage: 'Rayonnant Gothic (c. 1240–1350): A shift toward even greater focus on light and decorative
+      tracery'
+    locator: Phases
+  review_criteria: 'Debe comunicar correctamente: From about 1240-1350 it emphasized light and decorative
+    tracery.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - txt
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: gothic-flamboyant-followup
+    question: What visual motif marked the following Flamboyant phase?
+    expected_sources:
+    - gothic_architecture
+    expected_keywords:
+    - flame-like
+    - tracery
+    expected_answer: Flame-like curves in tracery and highly ornate decoration.
+    expected_evidence:
+    - source: gothic_architecture
+      passage: Marked by flame-like curves in tracery and highly ornate decoration
+      locator: Phases
+    review_criteria: 'Debe comunicar correctamente: Flame-like curves in tracery and highly ornate decoration.'
+- id: kotlin-data-class
+  question: What does Kotlin generate for a data class?
+  expected_sources:
+  - Kotlin Fundamentals
+  expected_keywords:
+  - equals
+  - hashCode
+  - copy
+  - componentN
+  expected_answer: equals, hashCode, toString, copy, and componentN functions.
+  expected_evidence:
+  - source: Kotlin Fundamentals
+    passage: Kotlin automatically generates equals(), hashCode(), toString(), copy(), and componentN()
+      functions
+    locator: Data Classes
+  review_criteria: 'Debe comunicar correctamente: equals, hashCode, toString, copy, and componentN functions.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: kotlin-coroutine-followup
+    question: How can a suspend function pause without blocking?
+    expected_sources:
+    - Kotlin Fundamentals
+    expected_keywords:
+    - coroutine
+    - without blocking
+    expected_answer: It pauses the coroutine without blocking its underlying thread.
+    expected_evidence:
+    - source: Kotlin Fundamentals
+      passage: A function marked with suspend can pause the execution of a coroutine without blocking
+        the thread it is running on
+      locator: Coroutine Core Concepts
+    review_criteria: 'Debe comunicar correctamente: It pauses the coroutine without blocking its underlying
+      thread.'
+- id: rome-concrete
+  question: Why could Roman concrete set underwater?
+  expected_sources:
+  - Roman Empire
+  expected_keywords:
+  - pozzolana
+  - lime
+  expected_answer: It mixed volcanic ash (pozzolana) with lime and water.
+  expected_evidence:
+  - source: Roman Empire
+    passage: Made by mixing volcanic ash (pozzolana) with lime and water. It could set under water
+    locator: Key Technological Innovations
+  review_criteria: 'Debe comunicar correctamente: It mixed volcanic ash (pozzolana) with lime and water.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: rome-aqueducts-followup
+    question: How many aqueducts supplied peak Rome and how much water daily?
+    expected_sources:
+    - Roman Empire
+    expected_keywords:
+    - '11'
+    - one million
+    expected_answer: Eleven aqueducts supplied over one million cubic metres daily.
+    expected_evidence:
+    - source: Roman Empire
+      passage: the city of Rome had 11 aqueducts supplying over one million cubic meters of fresh water
+        daily
+      locator: Key Technological Innovations
+    review_criteria: 'Debe comunicar correctamente: Eleven aqueducts supplied over one million cubic metres
+      daily.'
+- id: social-spear-phishing
+  question: How does spear phishing differ from mass phishing?
+  expected_sources:
+  - Social Engineering
+  expected_keywords:
+  - targeted
+  - OSINT
+  expected_answer: It is highly targeted and customized with OSINT about a specific victim.
+  expected_evidence:
+  - source: Social Engineering
+    passage: Spear Phishing is a highly targeted version, customized using OSINT about the specific victim
+    locator: Phishing and Spear Phishing
+  review_criteria: 'Debe comunicar correctamente: It is highly targeted and customized with OSINT about
+    a specific victim.'
+  category: direct
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: evaluation
+  follow_ups:
+  - id: social-fido-followup
+    question: Why can FIDO2 resist a look-alike phishing domain?
+    expected_sources:
+    - Social Engineering
+    expected_keywords:
+    - RP ID
+    - refuses
+    expected_answer: The authenticator binds its private key to the legitimate RP ID and refuses the spoofed
+      origin.
+    expected_evidence:
+    - source: Social Engineering
+      passage: The authenticator permanently binds the private key to the RP ID (the domain)
+      locator: FIDO2 Origin Binding
+    review_criteria: 'Debe comunicar correctamente: The authenticator binds its private key to the legitimate
+      RP ID and refuses the spoofed origin.'
+- id: wetland-june-status
+  question: ¿Cuál era el estado del proyecto en junio de 2025?
+  expected_sources:
+  - Humedal La Esperanza
+  expected_keywords:
+  - 5,5
+  - 0,12
+  - '16'
+  - '5'
+  expected_answer: 5,5 hectáreas despejadas, fósforo mediano de 0,12 mg/L, 16 aves y 5 anfibios.
+  expected_evidence:
+  - source: Humedal La Esperanza
+    passage: A junio de 2025 se habían despejado 5,5 de las 8 hectáreas previstas
+    locator: p.3
+  review_criteria: 'Debe comunicar correctamente: 5,5 hectáreas despejadas, fósforo mediano de 0,12 mg/L,
+    16 aves y 5 anfibios.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - pdf
+  user_task: find-fact
+  difficulty: extraction-hard
+  split: evaluation
+  follow_ups:
+  - id: wetland-missing-data-followup
+    question: ¿Qué dato faltó y cómo debe tratarse?
+    expected_sources:
+    - Humedal La Esperanza
+    expected_keywords:
+    - Sur-02
+    - mayo
+    - no imputa
+    expected_answer: Sur-02 no tuvo dato de turbidez en mayo; no debe imputarse ni interpretarse como
+      mejora.
+    expected_evidence:
+    - source: Humedal La Esperanza
+      passage: La estación Sur-02 quedó sin datos en mayo de 2025 por una avería del sensor de turbidez.
+        El informe no imputa valores ni declara una mejora
+      locator: p.3
+    review_criteria: 'Debe comunicar correctamente: Sur-02 no tuvo dato de turbidez en mayo; no debe imputarse
+      ni interpretarse como mejora.'
+- id: wetland-review-threshold
+  question: ¿Cuándo se activa una revisión técnica por fósforo?
+  expected_sources:
+  - Humedal La Esperanza
+  expected_keywords:
+  - 0,20
+  - dos
+  expected_answer: Cuando supera 0,20 mg/L en dos mediciones mensuales consecutivas.
+  expected_evidence:
+  - source: Humedal La Esperanza
+    passage: Se activa una revisión técnica si el fósforo total supera 0,20 mg/L en dos mediciones mensuales
+      consecutivas
+    locator: p.3
+  review_criteria: 'Debe comunicar correctamente: Cuando supera 0,20 mg/L en dos mediciones mensuales
+    consecutivas.'
+  category: direct
+  language: es
+  case_type: direct
+  document_formats:
+  - pdf
+  user_task: review-note
+  difficulty: extraction-hard
+  split: evaluation
+  follow_ups:
+  - id: wetland-replant-followup
+    question: ¿Qué ocurre si la supervivencia vegetal baja del 70% dos veces?
+    expected_sources:
+    - Humedal La Esperanza
+    expected_keywords:
+    - replantar
+    - 30 días
+    expected_answer: Verde Vivo debe replantar el sector dentro de 30 días.
+    expected_evidence:
+    - source: Humedal La Esperanza
+      passage: la Cooperativa Verde Vivo debe replantar el sector afectado dentro de los siguientes 30
+        días
+      locator: p.3
+    review_criteria: 'Debe comunicar correctamente: Verde Vivo debe replantar el sector dentro de 30 días.'
+- id: wetland-deadline-conflict
+  question: ¿Qué fecha límite dan las dos versiones para retirar el jacinto?
+  expected_sources:
+  - Humedal La Esperanza
+  - Acta de revisión Humedal La Esperanza
+  expected_keywords:
+  - 31 de diciembre
+  - 30 de noviembre
+  expected_answer: El informe v1.2 dice 31 de diciembre de 2025; el acta posterior la corrige al 30 de
+    noviembre de 2025.
+  expected_evidence:
+  - source: Humedal La Esperanza
+    passage: antes del 31 de diciembre de 2025
+    locator: p.1
+  - source: Acta de revisión Humedal La Esperanza
+    passage: se adelanta del 31 de diciembre de 2025 al 30 de noviembre de 2025
+    locator: Cambios aprobados
+  review_criteria: Debe presentar ambos valores, sus fechas o versiones y explicar que el acta posterior
+    es la corrección aprobada.
+  case_type: contradictory
+  category: contradictory
+  language: es
+  document_formats:
+  - pdf
+  - md
+  user_task: compare-documents
+  difficulty: extraction-hard
+  split: evaluation
+  follow_ups:
+  - id: wetland-phosphorus-conflict
+    question: ¿Y qué meta de fósforo queda vigente?
+    expected_sources:
+    - Humedal La Esperanza
+    - Acta de revisión Humedal La Esperanza
+    expected_keywords:
+    - 0,10
+    - 0,08
+    expected_answer: El informe decía menos de 0,10 mg/L; el acta posterior la endurece a menos de 0,08
+      mg/L.
+    expected_evidence:
+    - source: Humedal La Esperanza
+      passage: Menos de 0,10 mg/L
+      locator: p.1
+    - source: Acta de revisión Humedal La Esperanza
+      passage: pasa de menos de 0,10 mg/L a menos de 0,08 mg/L en tres mediciones consecutivas
+      locator: Cambios aprobados
+    review_criteria: Debe conservar la discrepancia y adoptar 0,08 mg/L como corrección posterior, sin
+      ocultar el valor previo.
+    case_type: contradictory
+- id: neg-es-loteria
+  question: ¿Qué número ganará la próxima lotería?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-en-sourdough
+  question: Give me the vault's sourdough starter recipe.
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-es-vuelo
+  question: ¿Cuál es el vuelo más barato de Bogotá a Madrid mañana?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-en-football
+  question: Who won yesterday's Premier League match?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-es-humedal-contrato
+  question: ¿Cuál es el número del contrato de Verde Vivo?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-en-ai-secret
+  question: What proprietary dataset was used to train the local model?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: evaluation
+- id: neg-es-socrates-adn
+  question: ¿Cuál era la secuencia de ADN de Sócrates?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: evaluation
+- id: neg-en-apple-genome
+  question: Which exact orchard supplied the apples analyzed in the note?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: evaluation
+- id: neg-es-ranas-gps
+  question: ¿Cuáles son las coordenadas GPS de cada rana censada?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: evaluation
+- id: neg-en-rome-population
+  question: What was Rome's exact population on 1 January 100 AD?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: evaluation
+- id: neg-es-catedral-arquitecto
+  question: ¿Cuál fue el domicilio del maestro de obras de Chartres?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-en-security-incident
+  question: Which employee clicked the latest phishing simulation?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation
+- id: neg-es-kotlin-salario
+  question: ¿Cuál es el salario medio actual de un programador Kotlin en Cali?
+  category: negative
+  negative: true
+  language: es
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-near-corpus
+  split: evaluation
+- id: neg-en-telescope-password
+  question: What is the administrator password for the James Webb telescope?
+  category: negative
+  negative: true
+  language: en
+  case_type: unanswerable
+  document_formats:
+  - md
+  - pdf
+  - txt
+  expected_answer: abstain
+  expected_keywords: []
+  expected_evidence: []
+  review_criteria: Debe indicar que el corpus no contiene evidencia suficiente y no inventar el dato.
+  user_task: find-fact
+  difficulty: negative-out-of-domain
+  split: evaluation

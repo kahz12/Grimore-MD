@@ -72,6 +72,27 @@ class Embedder:
         h.update(text.encode("utf-8"))
         return h.hexdigest()
 
+    def list_installed_models(self) -> list[dict]:
+        """List models reported by the Ollama service used for embeddings.
+
+        Chat may use a different OpenAI-compatible backend, so the setup UI
+        cannot assume that ``LLMRouter.list_installed_models`` describes the
+        embedding endpoint.  Failures remain soft, matching the router's
+        model-list contract.
+        """
+        try:
+            response = self.session.get(f"{self.ollama_host}/api/tags", timeout=10)
+            response.raise_for_status()
+            models = response.json().get("models", []) or []
+            return [
+                {"name": model.get("name", ""), "size": int(model.get("size", 0) or 0)}
+                for model in models
+                if model.get("name")
+            ]
+        except Exception as exc:
+            logger.error("embedding_model_list_failed", error=str(exc))
+            return []
+
     @staticmethod
     def chunk_hash(text: str, model: str) -> str:
         """Stable fingerprint over (model, chunk text) for incremental re-embed.

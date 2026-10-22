@@ -49,7 +49,7 @@ class LLMBackend(Protocol):
             * the raw answer string when ``json_format`` is False,
             * a parsed ``dict`` when ``json_format`` is True and parsing
               succeeds,
-            * ``None`` on any failure (network, parse, model error).
+            * ``None`` on network, parsing, or model failure.
         """
         ...
 

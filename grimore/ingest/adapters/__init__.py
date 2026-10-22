@@ -13,6 +13,7 @@ from grimore.ingest.adapters.base import (
     AdapterOptions,
     DocumentExtractor,
     ExtractedDocument,
+    ExtractionIssue,
     ExtractedSection,
 )
 from grimore.ingest.adapters.registry import (
@@ -36,6 +37,7 @@ __all__ = [
     "AdapterOptions",
     "DocumentExtractor",
     "ExtractedDocument",
+    "ExtractionIssue",
     "ExtractedSection",
     "for_path",
     "register",

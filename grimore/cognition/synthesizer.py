@@ -15,7 +15,7 @@ notes normally — the flag only excludes them from the next distill.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -73,6 +73,7 @@ class SourcePassage:
     note_path: str
     title: str
     passages: list[str]
+    available_passages: int = 0
 
 
 @dataclass
@@ -86,6 +87,14 @@ class SynthesisReport:
     notes_used: int
     title: Optional[str] = None
     skipped_reason: Optional[str] = None
+    body: Optional[str] = None
+    source_details: list[dict] = field(default_factory=list)
+    coverage: dict = field(default_factory=dict)
+    review_status: str = "draft"
+
+    def as_dict(self) -> dict:
+        """JSON-safe representation used by the web preview."""
+        return asdict(self)
 
 
 def _now_iso() -> str:
@@ -123,6 +132,7 @@ class Synthesizer:
         category: Optional[str] = None,
         passages_per_note: int = _DEFAULT_PASSAGES_PER_NOTE,
         dry_run: bool = False,
+        change_journal=None,
     ) -> SynthesisReport:
         """Resolve the selector, build the source set, call the LLM, and
         write the output note (unless ``dry_run`` is True).
@@ -134,6 +144,13 @@ class Synthesizer:
 
         candidate_notes = self._resolve_selector(selector_kind, selector_value)
         if not candidate_notes:
+            coverage = self._coverage(
+                matched=0, eligible=0, sources=[], included=[], dropped=[],
+                excluded_generated=0, passages_per_note=passages_per_note,
+                prompt_chars=0,
+            )
+            coverage["status"] = "unavailable"
+            coverage["limitations"].append("no_matching_notes")
             return SynthesisReport(
                 selector=selector,
                 output_path=None,
@@ -142,6 +159,8 @@ class Synthesizer:
                 notes_excluded_generated=0,
                 notes_used=0,
                 skipped_reason="No notes match the selector.",
+                coverage=coverage,
+                review_status="unavailable",
             )
 
         # Filter out generated notes (feedback-loop prevention, per Q4).
@@ -154,6 +173,12 @@ class Synthesizer:
             usable.append((nid, npath, ntitle))
 
         if not usable:
+            coverage = self._coverage(
+                matched=len(candidate_notes), eligible=0, sources=[], included=[],
+                dropped=[], excluded_generated=excluded,
+                passages_per_note=passages_per_note, prompt_chars=0,
+            )
+            coverage["status"] = "unavailable"
             return SynthesisReport(
                 selector=selector,
                 output_path=None,
@@ -165,10 +190,18 @@ class Synthesizer:
                     "Every matching note is grimore_generated; "
                     "nothing to distill."
                 ),
+                coverage=coverage,
+                review_status="unavailable",
             )
 
         sources = self._gather_sources(usable, passages_per_note=passages_per_note)
         if not sources:
+            coverage = self._coverage(
+                matched=len(candidate_notes), eligible=len(usable), sources=[],
+                included=[], dropped=[], excluded_generated=excluded,
+                passages_per_note=passages_per_note, prompt_chars=0,
+            )
+            coverage["status"] = "unavailable"
             return SynthesisReport(
                 selector=selector,
                 output_path=None,
@@ -176,13 +209,41 @@ class Synthesizer:
                 notes_considered=len(candidate_notes),
                 notes_excluded_generated=excluded,
                 notes_used=0,
+                source_details=self._source_details([], [], eligible=usable),
+                coverage=coverage,
                 skipped_reason=(
                     "No embedded passages found for the matching notes. "
                     "Run `grimore scan --no-dry-run` first."
                 ),
+                review_status="unavailable",
             )
 
-        prompt = self._build_prompt(selector_kind, selector_value, sources)
+        prompt, included_sources, dropped_sources = self._build_prompt_plan(
+            selector_kind, selector_value, sources,
+        )
+        coverage = self._coverage(
+            matched=len(candidate_notes), eligible=len(usable), sources=sources,
+            included=included_sources, dropped=dropped_sources,
+            excluded_generated=excluded, passages_per_note=passages_per_note,
+            prompt_chars=len(prompt),
+        )
+        source_details = self._source_details(
+            sources, included_sources, eligible=usable,
+        )
+        if not included_sources:
+            coverage["status"] = "unavailable"
+            return SynthesisReport(
+                selector=selector,
+                output_path=None,
+                sources=[],
+                notes_considered=len(candidate_notes),
+                notes_excluded_generated=excluded,
+                notes_used=0,
+                skipped_reason="The context limit excluded every source passage.",
+                source_details=source_details,
+                coverage=coverage,
+                review_status="unavailable",
+            )
         result = self.session.router.complete(
             prompt, system_prompt=_SYSTEM_PROMPT, json_format=True
         )
@@ -190,11 +251,14 @@ class Synthesizer:
             return SynthesisReport(
                 selector=selector,
                 output_path=None,
-                sources=[s.title for s in sources],
+                sources=[s.title for s in included_sources],
                 notes_considered=len(candidate_notes),
                 notes_excluded_generated=excluded,
-                notes_used=len(sources),
+                notes_used=len(included_sources),
                 skipped_reason="LLM returned no structured response.",
+                source_details=source_details,
+                coverage=coverage,
+                review_status="unavailable",
             )
 
         title = self._extract_title(result, selector_kind, selector_value)
@@ -203,31 +267,41 @@ class Synthesizer:
             return SynthesisReport(
                 selector=selector,
                 output_path=None,
-                sources=[s.title for s in sources],
+                sources=[s.title for s in included_sources],
                 notes_considered=len(candidate_notes),
                 notes_excluded_generated=excluded,
-                notes_used=len(sources),
+                notes_used=len(included_sources),
                 title=title,
                 skipped_reason="LLM payload had no usable body.",
+                source_details=source_details,
+                coverage=coverage,
+                review_status="unavailable",
             )
+
+        self._review_citations(body, included_sources, coverage)
 
         out_path = self._write_synthesis_note(
             selector_kind=selector_kind,
             selector_value=selector_value,
             title=title,
             body=body,
-            sources=sources,
+            sources=included_sources,
+            coverage=coverage,
             dry_run=dry_run,
+            change_journal=change_journal,
         )
 
         return SynthesisReport(
             selector=selector,
             output_path=str(out_path) if out_path else None,
-            sources=[s.title for s in sources],
+            sources=[s.title for s in included_sources],
             notes_considered=len(candidate_notes),
             notes_excluded_generated=excluded,
-            notes_used=len(sources),
+            notes_used=len(included_sources),
             title=title,
+            body=body.strip(),
+            source_details=source_details,
+            coverage=coverage,
         )
 
     # ── selector resolution ────────────────────────────────────────────
@@ -327,6 +401,7 @@ class Synthesizer:
                 note_path=path_by_id[nid],
                 title=title_by_id.get(nid) or Path(path_by_id[nid]).stem,
                 passages=top_passages,
+                available_passages=len(chunks),
             ))
         # Stable ordering by title so prompt + frontmatter sources line up
         # and outputs are deterministic for tests.
@@ -366,12 +441,21 @@ class Synthesizer:
         char cap; truncated entries are skipped wholesale (don't tear
         a wrap_untrusted block, same defence Oracle uses).
         """
+        prompt, _included, _dropped = self._build_prompt_plan(kind, value, sources)
+        return prompt
+
+    def _build_prompt_plan(
+        self, kind: str, value: str, sources: list[SourcePassage],
+    ) -> tuple[str, list[SourcePassage], list[SourcePassage]]:
+        """Return prompt plus the sources included or omitted by its cap."""
         header = (
             f"Selector: {kind}={value}\n"
             f"Use the excerpts below as your only source material. "
             f"Cite each note by its [[title]].\n\n"
         )
         parts: list[str] = []
+        included: list[SourcePassage] = []
+        dropped: list[SourcePassage] = []
         used = len(header)
         for src in sources:
             block_lines = [f"--- Source: [[{src.title}]] ---"]
@@ -390,10 +474,111 @@ class Synthesizer:
                     used_chars=used,
                     cap=_SYNTHESIZER_MAX_CONTEXT_CHARS,
                 )
+                dropped.append(src)
                 continue
             parts.append(block)
+            included.append(src)
             used += extra
-        return header + "\n\n".join(parts)
+        return header + "\n\n".join(parts), included, dropped
+
+    @staticmethod
+    def _source_details(
+        sources: list[SourcePassage],
+        included: list[SourcePassage],
+        *,
+        eligible: Optional[list[tuple[int, str, str]]] = None,
+    ) -> list[dict]:
+        included_ids = {source.note_id for source in included}
+        source_by_id = {source.note_id: source for source in sources}
+        candidates = eligible or [
+            (source.note_id, source.note_path, source.title) for source in sources
+        ]
+        details = []
+        for note_id, note_path, title in candidates:
+            source = source_by_id.get(note_id)
+            details.append({
+                "note_id": note_id,
+                "path": note_path,
+                "title": title or Path(note_path).stem,
+                "passages": list(source.passages) if source else [],
+                "passages_selected": len(source.passages) if source else 0,
+                "passages_available": source.available_passages if source else 0,
+                "included_in_prompt": note_id in included_ids,
+                "omission_reason": (
+                    None if note_id in included_ids
+                    else "context_limit" if source
+                    else "missing_indexed_passages"
+                ),
+            })
+        return sorted(details, key=lambda item: (item["title"], item["path"]))
+
+    @staticmethod
+    def _coverage(
+        *,
+        matched: int,
+        eligible: int,
+        sources: list[SourcePassage],
+        included: list[SourcePassage],
+        dropped: list[SourcePassage],
+        excluded_generated: int,
+        passages_per_note: int,
+        prompt_chars: int,
+    ) -> dict:
+        missing = max(0, eligible - len(sources))
+        representative = any(
+            len(source.passages) < source.available_passages for source in sources
+        )
+        limitations = []
+        if excluded_generated:
+            limitations.append("generated_notes_excluded")
+        if missing:
+            limitations.append("missing_indexed_passages")
+        if dropped:
+            limitations.append("context_limit")
+        if representative:
+            limitations.append("representative_passages_only")
+        return {
+            "status": "partial" if limitations else "complete",
+            "notes": {
+                "matched": matched,
+                "eligible": eligible,
+                "with_passages": len(sources),
+                "included_in_prompt": len(included),
+                "without_passages": missing,
+                "excluded_generated": excluded_generated,
+                "omitted_by_context": len(dropped),
+            },
+            "passages": {
+                "available": sum(source.available_passages for source in sources),
+                "selected": sum(len(source.passages) for source in sources),
+                "per_note_limit": passages_per_note,
+            },
+            "context": {
+                "characters": prompt_chars,
+                "max_characters": _SYNTHESIZER_MAX_CONTEXT_CHARS,
+            },
+            "limitations": limitations,
+            "citations": {"cited": [], "uncited": [], "unknown": []},
+        }
+
+    @staticmethod
+    def _review_citations(
+        body: str, sources: list[SourcePassage], coverage: dict,
+    ) -> None:
+        labels = [match.strip() for match in re.findall(r"\[\[([^\[\]]+)\]\]", body)]
+        cited_names = {label.split("#", 1)[0].strip() for label in labels}
+        known = {source.title for source in sources}
+        citations = {
+            "cited": sorted(cited_names & known),
+            "uncited": sorted(known - cited_names),
+            "unknown": sorted(cited_names - known),
+        }
+        coverage["citations"] = citations
+        if citations["unknown"]:
+            coverage["limitations"].append("unknown_citations")
+        if citations["uncited"]:
+            coverage["limitations"].append("sources_not_cited")
+        coverage["status"] = "partial" if coverage["limitations"] else "complete"
 
     @staticmethod
     def _extract_title(
@@ -414,7 +599,9 @@ class Synthesizer:
         title: str,
         body: str,
         sources: list[SourcePassage],
+        coverage: dict,
         dry_run: bool,
+        change_journal=None,
     ) -> Optional[Path]:
         """Atomic-write the markdown file. Path is validated to live
         inside ``<vault>/_synthesis/`` to defend against a maliciously
@@ -433,6 +620,8 @@ class Synthesizer:
             "selector": f"{selector_kind}:{selector_value}",
             "sources": [s.note_path for s in sources],
             "generated_at": _now_iso(),
+            "synthesis_review": "pending",
+            "coverage": coverage,
         }
         # ``yaml.safe_dump`` keeps the keys ordered as inserted (we set
         # default_flow_style=False so list values render as block-style).
@@ -450,5 +639,9 @@ class Synthesizer:
                 bytes=len(document.encode("utf-8")),
             )
             return target
+        if change_journal is not None:
+            change_journal.capture_before(target)
         atomic_write(target, lambda fh: fh.write(document.encode("utf-8")), mode="wb")
+        if change_journal is not None:
+            change_journal.capture_after(target)
         return target

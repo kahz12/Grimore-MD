@@ -32,7 +32,8 @@ class TestRegistry:
     def test_register_is_idempotent_for_same_adapter(self):
         adapter = MarkdownAdapter()
         # Re-registering the same class for the same extension is a no-op
-        # rather than an error — protects against double-import in tests.
+        # Re-registering the same class for the same extension is a no-op,
+        # so the registry remains usable after repeated imports.
         register(adapter)
         register(adapter)
         assert isinstance(for_path("z.md"), MarkdownAdapter)
@@ -83,8 +84,8 @@ class TestMarkdownAdapterRoundTrip:
         # require it doesn't import-crash or AttributeError.
         f = tmp_path / "thing.unknownext"
         f.write_text("plain text\n")
-        # MarkdownAdapter will read it as a markdown body — no error path
-        # to exercise. Just assert it parses as MD format-tagged content.
+        # MarkdownAdapter reads it as a markdown body; verify the fallback's
+        # format tag and parsed content.
         note = MarkdownParser().parse_file(f, vault_root=tmp_path)
         assert note.format == "md"  # fallback adapter's declared format
         assert "plain text" in note.content

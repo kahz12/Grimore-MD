@@ -1,0 +1,208 @@
+{
+  "schema_version": 1,
+  "integration": "obsidian-readonly",
+  "observation_days": 14,
+  "target_participants": 5,
+  "participants": [
+    {
+      "participant_id": "P01",
+      "consent_at": null,
+      "tasks_agreed_at": null,
+      "start_date": null,
+      "daily_use": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "maintenance_review": "pending",
+      "tasks": [
+        {
+          "task_id": "search",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "source",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "review",
+          "usual": null,
+          "obsidian": null
+        }
+      ]
+    },
+    {
+      "participant_id": "P02",
+      "consent_at": null,
+      "tasks_agreed_at": null,
+      "start_date": null,
+      "daily_use": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "maintenance_review": "pending",
+      "tasks": [
+        {
+          "task_id": "search",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "source",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "review",
+          "usual": null,
+          "obsidian": null
+        }
+      ]
+    },
+    {
+      "participant_id": "P03",
+      "consent_at": null,
+      "tasks_agreed_at": null,
+      "start_date": null,
+      "daily_use": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "maintenance_review": "pending",
+      "tasks": [
+        {
+          "task_id": "search",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "source",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "review",
+          "usual": null,
+          "obsidian": null
+        }
+      ]
+    },
+    {
+      "participant_id": "P04",
+      "consent_at": null,
+      "tasks_agreed_at": null,
+      "start_date": null,
+      "daily_use": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "maintenance_review": "pending",
+      "tasks": [
+        {
+          "task_id": "search",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "source",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "review",
+          "usual": null,
+          "obsidian": null
+        }
+      ]
+    },
+    {
+      "participant_id": "P05",
+      "consent_at": null,
+      "tasks_agreed_at": null,
+      "start_date": null,
+      "daily_use": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "maintenance_review": "pending",
+      "tasks": [
+        {
+          "task_id": "search",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "source",
+          "usual": null,
+          "obsidian": null
+        },
+        {
+          "task_id": "review",
+          "usual": null,
+          "obsidian": null
+        }
+      ]
+    }
+  ]
+}

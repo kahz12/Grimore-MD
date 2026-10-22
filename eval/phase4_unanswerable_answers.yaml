@@ -1,0 +1,42 @@
+version: 2
+set: tuning
+corpus_version: phase4-controlled-layout-2026-10-06
+# Absence is asserted only in the single PDF copied by benchmark_answers.py,
+# not in every document of test_vault. Freeze before the first model run.
+questions:
+  - id: phase4-missing-sampling-hour
+    question: ¿A qué hora exacta se mide la calidad del agua el primer martes de cada mes?
+    negative: true
+    expected_answer: abstain
+    review_criteria: Debe señalar que falta la hora exacta. Puede recordar el día si lo distingue de la hora; no inventar un horario ni tratar el día como respuesta completa. La página 1 da el día, pero ningún pasaje de este PDF indica la hora.
+    category: negative
+    language: es
+    case_type: unanswerable
+    document_formats: [pdf]
+    user_task: find-fact
+    difficulty: missing-detail
+    split: tuning
+  - id: phase4-missing-cooperative-deadline
+    question: ¿En qué fecha exacta debe terminar la Cooperativa Verde Vivo su revegetación?
+    negative: true
+    expected_answer: abstain
+    review_criteria: Debe señalar que no consta una fecha de fin para la revegetación de esa cooperativa. No transferirle el 31 de diciembre de 2025, que es la meta general de retiro de jacinto, ni la fecha de inicio del proyecto. La tabla de la página 2 solo asigna funciones.
+    category: negative
+    language: es
+    case_type: unanswerable
+    document_formats: [pdf]
+    user_task: find-fact
+    difficulty: unsupported-relationship
+    split: tuning
+  - id: phase4-missing-actual-restored-area
+    question: ¿Cuántas hectáreas se restauraron realmente al cierre del proyecto?
+    negative: true
+    expected_answer: abstain
+    review_criteria: Debe señalar que faltan resultados reales de cierre. No presentar las 37,5 hectáreas aprobadas, las 8 hectáreas de jacinto o la meta de menos de 0,5 ha como superficie efectivamente restaurada. La página 3 da línea base y metas, no un resultado de cierre.
+    category: negative
+    language: es
+    case_type: unanswerable
+    document_formats: [pdf]
+    user_task: find-fact
+    difficulty: target-versus-result
+    split: tuning

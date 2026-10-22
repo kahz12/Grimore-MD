@@ -56,6 +56,20 @@ class EmbeddingMigrationMixin(DbBase):
                     f"another embedding migration is in flight for "
                     f"{existing['target_model']!r}; abort it first"
                 )
+            # An in-flight migration may have started before the structured
+            # evidence upgrade. Extend its shadow table in place so resuming
+            # cannot discard full passages at swap time.
+            with self._get_connection() as conn:
+                cols = {
+                    row[1] for row in conn.execute(
+                        "PRAGMA table_info(embeddings_migration)"
+                    )
+                }
+                if "full_text_content" not in cols:
+                    conn.execute(
+                        "ALTER TABLE embeddings_migration "
+                        "ADD COLUMN full_text_content TEXT"
+                    )
             return existing
 
         with self._get_connection() as conn:
@@ -70,7 +84,8 @@ class EmbeddingMigrationMixin(DbBase):
                     vector        BLOB,
                     page          INTEGER,
                     heading       TEXT,
-                    chunk_hash    TEXT
+                    chunk_hash    TEXT,
+                    full_text_content TEXT
                 )
                 """
             )
@@ -138,11 +153,13 @@ class EmbeddingMigrationMixin(DbBase):
             conn.execute(
                 """
                 INSERT INTO embeddings_migration
-                    (id, note_id, chunk_index, text_content, vector, page, heading, chunk_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, note_id, chunk_index, text_content, vector, page,
+                     heading, chunk_hash, full_text_content)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                        (SELECT full_text_content FROM embeddings WHERE id = ?))
                 """,
                 (source_id, note_id, chunk_index, text_content,
-                 vector_blob, page, heading, chunk_hash),
+                 vector_blob, page, heading, chunk_hash, source_id),
             )
             conn.execute(
                 "UPDATE migrations SET done = done + 1 "
@@ -176,9 +193,9 @@ class EmbeddingMigrationMixin(DbBase):
                     """
                     INSERT INTO embeddings
                         (id, note_id, chunk_index, text_content, vector,
-                         page, heading, chunk_hash)
+                         page, heading, chunk_hash, full_text_content)
                     SELECT id, note_id, chunk_index, text_content, vector,
-                           page, heading, chunk_hash
+                           page, heading, chunk_hash, full_text_content
                     FROM embeddings_migration
                     """
                 )

@@ -29,6 +29,7 @@
    - [`prune`](#prune)
    - [`status`](#status)
    - [`preflight`](#preflight)
+   - [`pilot`](#pilot)
    - [`daemon`](#daemon)
    - [`maintenance run`](#maintenance-run)
    - [`migrate-embeddings`](#migrate-embeddings)
@@ -107,7 +108,7 @@ Modelos de chat recomendados (locales):
 - `qwen3.5:0.8b` — aún más rápido, pero emite una fase de "thinking" que el
   Oráculo debe esperar antes de que aparezcan tokens.
 - `ministral-3:14b` — más lento pero con mejor razonamiento. Sube
-  `cognition.request_timeout_s` a 180+ antes de usarlo.
+  `cognition.request_timeout_s` a 600+ antes de usarlo.
 
 Modelo embebedor recomendado:
 
@@ -206,9 +207,16 @@ hybrid_search          = true   # BM25 + coseno vía RRF
 rrf_k                  = 60     # curva de peso por rango; menor = más pronunciada
 connect_threshold      = 0.7    # umbral coseno para sugerir un wikilink
 dedupe_threshold       = 0.90   # umbral coseno para un par casi-duplicado
-request_timeout_s      = 60     # /api/generate, vía JSON
-stream_timeout_s       = 120    # /api/generate, vía streaming
+request_timeout_s      = 300    # /api/generate, vía JSON
+stream_timeout_s       = 300    # /api/generate, vía streaming
 embed_timeout_s        = 30     # /api/embeddings
+# Comprobación experimental de suficiencia antes de redactar: una llamada
+# extra al modelo. No garantiza respaldo semántico. Ante fallo o evidencia
+# insuficiente no genera hechos; puede rechazar preguntas respondibles.
+# Con la opción activa, cada bloque de respuesta requiere referencias explícitas;
+# la transmisión espera la validación completa.
+answer_sufficiency_check = false
+answer_sufficiency_timeout_s = 180  # entero positivo, por comprobación
 # Segunda pasada de re-ranking tras la fusión RRF. Desactivada por
 # defecto — añade trabajo por consulta. "llm" pide al modelo de chat
 # que puntúe cada candidato (sin instalación extra, ~15–30 s/consulta);
@@ -273,10 +281,16 @@ vec_matrix_cache  = true     # guarda la matriz de puntuación densa como .npy
 # usarlo.
 pdf_engine    = "pypdf"
 # OCR como respaldo para PDFs escaneados (páginas sin capa de texto).
-# Desactivado por defecto; requiere el extra `ocr` y el binario
-# `tesseract` en el PATH.
+# Desactivado por defecto; requiere el extra `ocr`, `tesseract` y el
+# Poppler (`pdfinfo` y `pdftoppm` o `pdftocairo`) en el PATH.
 ocr           = false
+ocr_language  = "eng" # "spa" para español; "spa+eng" para combinar idiomas
+# Segundos por etapa y página: rasterización y luego reconocimiento.
+# Debe ser un entero positivo; una página puede consumir ambos límites.
 ocr_timeout_s = 30
+# Intentos máximos de OCR por PDF; 0 mantiene el procesamiento sin tope.
+# Los fallos cuentan; las páginas digitales legibles no consumen el límite.
+ocr_max_pages = 0
 # Sniffer de magic-bytes para archivos sin extensión o mal nombrados.
 # Desactivado por defecto; requiere el extra `sniff` (python-magic) y
 # libmagic del sistema.
@@ -403,9 +417,10 @@ las actives. Preflight (`grimore preflight`) solo sondea las que has
 habilitado, así que una instalación por defecto reporta una fila ✓
 limpia por formato.
 
-- **Motores de PDF alternativos.** `pdfplumber` maneja columnas y
-  tablas mejor que `pypdf`; `pymupdf` (AGPL — verifica compatibilidad
-  de licencia) tiene la mejor calidad de extracción. Instala el extra
+- **Motores de PDF alternativos.** `pdfplumber` añade lectura por bloques
+  y filas de tablas delimitadas, y recupera explícitamente el texto anterior
+  ante diseños que no soporta. `pymupdf` es otro motor opcional (AGPL —
+  verifica compatibilidad de licencia). Instala el extra
   correspondiente:
 
   ```bash
@@ -415,14 +430,50 @@ limpia por formato.
 
   Luego configura `pdf_engine` como `"pdfplumber"` o `"pymupdf"`. El
   cambio se aplica en el siguiente scan sin reiniciar.
+  La revisión de lectura de `pdfplumber` también fuerza una nueva extracción
+  al volver a escanear los PDF previamente indexados, sin modificar el original.
 
 - **OCR para PDFs escaneados.** Las páginas con una capa de texto vacía
   pueden rasterizarse y procesarse con OCR vía `tesseract`. Se
-  necesitan dos dependencias: las wheels de Python
-  (`pip install 'grimore[ocr]'`) y el binario `tesseract` instalado en
-  el sistema. Luego activa `ocr = true`. Las secciones generadas por
+  necesitan el extra de Python (`pip install 'grimore[ocr]'`), el binario
+  `tesseract` y Poppler (`pdfinfo` y `pdftoppm` o `pdftocairo`). Luego activa
+  `ocr = true`. Las secciones generadas por
   OCR llevan el encabezado sintético `(ocr)` para que los revisores
-  puedan auditarlas.
+  puedan auditarlas. Selecciona el idioma con `[ingest].ocr_language = "spa"`
+  o `"spa+eng"` para documentos mixtos; se conserva `"eng"` por defecto.
+  Todos los datos de idioma solicitados deben estar instalados (en Linux,
+  `sudo apt-get install tesseract-ocr-spa` añade español). La comprobación
+  previa avisa si faltan; no se sustituye el idioma silenciosamente. Cambiar
+  el idioma con OCR activo vuelve a extraer PDFs sin modificar sus bytes en
+  el siguiente escaneo, conservando los vectores de pasajes idénticos.
+
+**Cobertura de extracción de PDF.** Grimore registra por página si falló el
+motor, si no había texto extraíble o si se usó OCR. El diagnóstico
+`extraction` del sidecar y de `grimore_get_note` indica `complete` (sin
+incidencias), `recovered` (texto recuperado, por ejemplo mediante OCR) o
+`partial` (queda al menos una página sin texto). La vista de fuente web
+advierte sobre páginas afectadas; un documento que ya no puede leerse se
+muestra como `failed`. Una página deliberadamente vacía también aparece
+como `partial`: conviene revisarla antes de asumir que falta contenido.
+Si se solicitó OCR y no se recuperó texto, el diagnóstico puede añadir una
+causa: herramientas no disponibles, renderizado fallido, reconocimiento fallido
+o ausencia de texto reconocido. La vista web muestra esa causa sin exponer
+mensajes internos del motor.
+Un PDF sin texto recuperable conserva su registro y su sidecar con estado
+`partial`, pero no genera fragmentos de búsqueda ni pide al modelo que invente
+etiquetas o resumen a partir de un cuerpo vacío.
+Si faltan herramientas OCR o falla el renderizado o reconocimiento, el siguiente escaneo reintenta
+ese PDF sin exigir que cambie el archivo. Cuando el texto sigue igual, no
+repite la clasificación ni los vectores idénticos.
+La vista de fuente y MCP describen la lectura actual del archivo; el
+sidecar conserva el diagnóstico del último procesamiento efectivo. Si cambian
+los bytes de un PDF pero el texto extraído sigue idéntico, el siguiente
+escaneo refresca el diagnóstico y la huella del sidecar existente sin repetir
+el etiquetado; también actualiza las anclas de página del índice. Reutiliza
+los vectores de fragmentos idénticos y solo calcula los que cambian al variar
+los límites de página. Preserva las notas manuales del sidecar. Ninguno de estos
+diagnósticos garantiza por sí solo que el índice tenga todos los pasajes:
+consulta el estado de la fuente antes de usarlos como evidencia.
 
 - **Sniffer de magic-bytes.** Cuando `sniff_magic = true`, los archivos
   cuya extensión falta o no coincide con `formats` se inspeccionan por
@@ -431,6 +482,11 @@ limpia por formato.
   el extra `sniff` y `libmagic` del sistema (Linux:
   `apt install libmagic1`; Termux: `pkg install file`; Windows:
   `pip install python-magic-bin`).
+
+Para comparar motores antes de activarlos en una bóveda, ejecuta
+`venv/bin/python eval/benchmark_extraction.py --repeat 3 --include-legacy`
+desde el repositorio. Repite la medición en cada equipo: el tiempo y la
+memoria dependen del hardware.
 
 ### Perfiles multi-bóveda
 
@@ -457,7 +513,7 @@ path = "/home/yo/notas-trabajo"
 display_name = "Trabajo"
 [profiles.trabajo.cognition]
 model_llm_local = "qwen2.5:14b"
-request_timeout_s = 180
+request_timeout_s = 600
 ```
 
 ```bash
@@ -497,15 +553,26 @@ formato configurado y refresca el índice de embeddings.
 
 **Idempotencia.** Hashing en dos niveles: un SHA-256 barato sobre los
 bytes del archivo (`file_hash`) actúa como puerta del paso costoso de
-extracción; solo los documentos cuyos bytes han cambiado pagan la
-re-extracción. Dentro de eso, un `content_hash` sin cambios omite la
-llamada al LLM por completo. Reescanear una bóveda totalmente indexada
-es prácticamente gratis incluso para una biblioteca de PDFs de 500 MB.
+extracción; normalmente solo los documentos cuyos bytes han cambiado pagan
+la re-extracción. Dentro de eso, un `content_hash` sin cambios omite la
+llamada al LLM por completo. La excepción son los PDF: el índice conserva
+una huella del motor, OCR y su tiempo límite activo. Al cambiar cualquiera
+de esos ajustes, el siguiente `scan` vuelve a extraer los PDF afectados
+aunque sus bytes no cambien, y actualiza sus pasajes y anclas de página.
+Los vectores de fragmentos cuyo texto sigue idéntico se reutilizan.
+Reescanear una bóveda sin cambios de archivos ni de extracción sigue
+siendo prácticamente gratis incluso para una biblioteca de PDFs de 500 MB.
+`--dry-run` muestra el reprocesamiento pendiente sin actualizar la huella.
 
 **Qué se escribe.** Con `--no-dry-run`:
 
 - `tags`, `summary`, `category`, `last_tagged` se escriben en el
   frontmatter YAML de cada nota,
+- en documentos de más de 4.000 caracteres, `section_analysis` conserva las
+  páginas o encabezados de los tramos consultados, sus etiquetas y resúmenes,
+  las fuentes utilizadas para el resumen global y los recuentos de cobertura;
+  se consultan hasta 12 tramos repartidos por el documento y el resto se
+  declara como `unanalyzed_parts` (no se presenta como análisis completo),
 - la fila SQLite se actualiza (upsert),
 - los embeddings por fragmento se almacenan con clave
   `sha256(modelo ‖ fragmento)` (cambiar el modelo embebedor invalida la
@@ -581,7 +648,7 @@ sello, así que un filtro "modificado después de" ordenaría por orden de escan
 ```bash
 grimore eval [-g RUTA] [-k N] [--retrieval-k N] [--retrieval-only]
              [--baseline] [--judge/--no-judge] [--export RUTA]
-             [--history RUTA] [--compare RUTA] [--json]
+             [--history RUTA] [--compare RUTA] [--checkpoint RUTA] [--json]
 ```
 
 Corre un conjunto Q&A dorado contra el Oráculo y reporta métricas de
@@ -593,7 +660,10 @@ recuperación y calidad de respuesta. Por defecto usa
 | **hit@1 / hit@3** | Si una fuente esperada es el primer resultado / está entre los 3 primeros. |
 | **recall@k** | Fracción de fuentes esperadas que aparecen en el top-k recuperado. |
 | **MRR** | Rango recíproco medio de la primera fuente esperada acertada. |
-| **faithfulness** | 1 − dropped/total citas (1.0 = sin citas alucinadas). |
+| **validez de citas** | Fracción de citas emitidas que apuntan a una fuente recuperada. Vacía (no 1,0) si la respuesta no cita nada; `faithfulness` es un alias obsoleto. |
+| **respuestas citadas** | Fracción de preguntas con respuesta cuya respuesta cita al menos una fuente. |
+| **evidencia en contexto / citada / seleccionada** | Si el pasaje esperado llegó al modelo, se citó con su página o encabezado y fue el fragmento exacto que eligió la cita. |
+| **abstención** | Indicios de rechazo en preguntas sin respuesta y en las que sí la tienen (rechazos indebidos). Son heurísticos; el informe conserva una cola de revisión humana. |
 | **keyword recall** | Fracción de palabras clave esperadas presentes en la respuesta. |
 | **answer relevance** | LLM como juez: el modelo local puntúa 0–10 la respuesta vs la pregunta. |
 | **latencia p50 / p95** | Tiempo de reloj por turno. |
@@ -619,6 +689,13 @@ recuperación y calidad de respuesta. Por defecto usa
   grimore eval --retrieval-only --export run.json --compare last-good.json
   ```
 
+- `--checkpoint` — guarda cada caso terminado en un archivo JSONL y retoma
+  desde él al repetir el mismo comando. Úsalo en ejecuciones largas con un
+  modelo real: una interrupción cuesta como mucho el caso en curso. Los
+  casos en que el modelo no respondió se repiten, y un archivo de otra
+  ejecución (preguntas, configuración, corpus, código u opciones) se
+  rechaza. Un informe con `generation_failure_n` mayor que cero contó
+  fallos del modelo como rechazos; repite esos casos antes de usarlo.
 - `--json` — logs estructurados en JSON.
 
 El formato del conjunto dorado es una entrada por Q&A con
@@ -686,6 +763,25 @@ Valida la configuración, la conectividad con Ollama (incluyendo
 verificación de presencia de modelos) y el acceso a la bóveda. Por
 defecto requiere repo git solo si `output.auto_commit` es true —
 sobrescríbelo con el flag.
+
+### `pilot`
+
+```bash
+grimore pilot init pilot-data/study.yaml --participants 5 --study-id pilot-2026-a
+grimore pilot check pilot-data/study.yaml
+grimore pilot observe pilot-data/study.yaml P01 configuration \
+  --outcome completed --assistance none
+grimore pilot restore-backup pilot-data/study.yaml
+```
+
+`init` crea sin sobrescribir una hoja local de admisión para el piloto de dos
+semanas: identificadores seudónimos, consentimiento y exactamente tres tareas
+reales con criterios de éxito y método habitual. `check` bloquea una admisión
+incompleta, cambios en los umbrales o campos que violen la política de no guardar
+identificadores, documentos, preguntas o respuestas. `observe` registra en orden
+configuración, primera respuesta, comprobación de fuente y revisión documental,
+guardando solo resultado, hora y nivel de ayuda. Cada cambio deja una copia
+privada reversible con `restore-backup`. No envía telemetría ni abre la bóveda.
 
 ### `daemon`
 
@@ -793,6 +889,11 @@ ventana de frescura (definida por prefijo de categoría en
 - `verify <ruta>` reinicia el reloj de frescura — útil cuando has
   releído una nota y confirmado que sigue siendo precisa.
 
+Indexar o etiquetar una nota no inicia ese reloj. Hasta la primera verificación
+humana, la fecha se muestra como desconocida y `list` no declara la nota vigente
+ni vencida. Publicación, modificación, indexación y verificación se conservan por
+separado con su procedencia.
+
 ### `mirror`
 
 ```bash
@@ -809,6 +910,18 @@ El predeterminado `--top-k 5` mira los cinco vecinos más cercanos de
 cada afirmación; `--full` re-extrae todas las notas desde cero (lento —
 reconstrucción en frío).
 
+La extracción divide documentos largos por páginas o encabezados y después
+por tramos de texto. Los límites de `[cognition]` son `claim_max_chars = 8000`
+por consulta, `claim_max_sections = 8` tramos por documento y
+`claim_max_claims_per_section = 10`. Se pueden elevar según el modelo y el
+equipo; los tramos se eligen a lo largo de todo el documento, no solo al
+principio. `mirror scan` enumera las páginas o secciones no analizadas por
+presupuesto y las que fallaron. Si falla una consulta, se conservan las
+afirmaciones anteriores y esa nota podrá reintentarse; un análisis parcial
+por presupuesto sí se guarda, pero se declara como parcial. La bandeja de
+revisión muestra estos topes como límites máximos, no como prueba de que
+todas las secciones de una nota se hayan cubierto.
+
 ### `distill`
 
 ```bash
@@ -820,7 +933,9 @@ Sintetiza todas las notas que llevan la etiqueta dada (o archivadas bajo
 la categoría dada, recursivamente) en una sola nota de referencia bajo
 `_synthesis/`. La salida recibe `grimore_generated: true` en su
 frontmatter para que ejecuciones posteriores de `distill` no se incluyan
-a sí mismas.
+a sí mismas. El archivo también queda marcado con `synthesis_review: pending`
+y conserva un informe `coverage` con notas/pasajes incluidos, límites y
+coherencia de citas.
 
 - `-p, --passages` — top-K pasajes por nota fuente (por defecto 3).
 - `--dry-run` — construye la síntesis pero omite la escritura del archivo.
@@ -829,6 +944,10 @@ a sí mismas.
 > escribe por defecto. El `/distill` de la shell refleja ese
 > comportamiento, pero añade una confirmación interactiva "y/N" antes de
 > cualquier escritura (ver §7).
+
+La UI web ofrece una variante de solo vista previa en **Síntesis por tema**:
+muestra el borrador, los pasajes exactos de cada fuente y advertencias de
+cobertura sin escribir un archivo.
 
 ### `graph export`
 
@@ -887,17 +1006,61 @@ grimore serve [-H HOST] [-P PORT] [--allow-lan] [--api-token TOKEN]
               [--strict-token] [--cors-origin ORIGEN]
 ```
 
-Arranca un servidor ASGI Starlette de solo lectura en
+Arranca un servidor ASGI Starlette orientado a lectura, con escrituras
+acotadas y protegidas por token, en
 `http://127.0.0.1:8000` con una UI mínima en JS vanilla. Rutas:
+
+A diferencia de `scan` y `ask`, `serve` permanece activo en modo de recuperación
+si el preflight detecta una carpeta, modelo o servicio ausente. El panel de
+configuración sigue disponible para explicar y corregir el problema; preguntas
+e indexación continúan fallando de forma segura hasta cumplir sus requisitos.
 
 | Método · Ruta | Descripción |
 |---|---|
 | `GET /api/health` | Versión + resumen del preflight. |
-| `POST /api/ask` | `{question, top_k?, stream?}`. Streaming SSE cuando `stream: true`. |
-| `POST /api/search` | `{query, top_k?, category?, tags?, formats?}` → hits híbridos con fragmentos. |
-| `GET /api/notes/{id}` | Metadatos + cuerpo en disco de la nota. |
+| `GET /api/setup` | Validación inicial de solo lectura: carpeta activa, modelos de chat/embeddings disponibles, efectos del escaneo y acciones de recuperación. |
+| `POST /api/setup/apply` | Actualización protegida por token y confirmación explícita únicamente de carpeta y modelos de chat/embeddings. |
+| `GET /api/indexing` | Progreso en vivo y de solo lectura del CLI/observador, resultados por archivo, contadores y acciones de recuperación. |
+| `POST /api/indexing/start` | Inicio protegido por token de una única vista previa o indexación aplicada confirmada sobre la bóveda ya cargada. |
+| `GET /api/changes` | Historial acotado de archivos creados o actualizados por operaciones aplicadas y disponibilidad de restauración. |
+| `POST /api/changes/{change_id}/restore` | Restauración protegida y confirmada de las copias anteriores, rechazada si un archivo cambió después; requiere reindexar. |
+| `POST /api/syntheses/preview` | Borrador de síntesis de solo lectura por etiqueta o categoría. Devuelve cuerpo, fuentes inspeccionables, cobertura y advertencias; nunca escribe el archivo propuesto. |
+| `GET /api/review-inbox` | Candidatos de revisión de solo lectura que reúnen contradicciones abiertas, duplicados exactos/similares y documentos cuyo plazo de revisión venció, con pasajes inspeccionables y cobertura explícita. |
+| `POST /api/review-inbox/{candidate_id}/decision` | Decisión protegida por token para confirmar, descartar o posponer de forma acotada. Actualiza el estado de revisión y su auditoría, nunca el documento fuente. |
+| `POST /api/notes/{note_id}/classification` | Corrección protegida de categoría y etiquetas. Actualiza el índice, conserva la decisión humana para escaneos posteriores y no reescribe inmediatamente el documento fuente. |
+| `GET /api/filter-options` | Categorías/etiquetas indexadas y formatos configurados para los controles de alcance web. |
+| `POST /api/ask` | `{question, top_k?, stream?, history?, category?, tags?, formats?}`. Devuelve `answer_status`, `model_execution`, `sources` y `source_details` con pasaje, localizador, estado de versión y cobertura de extracción al indexar los PDF; streaming SSE cuando `stream: true`. |
+| `POST /api/search` | `{query, top_k?, history?, category?, tags?, formats?}` → hits híbridos con fragmentos y contexto conversacional. |
+| `GET /api/notes/{id}` | Metadatos + cuerpo en disco, posiciones de página/sección y cronología de publicación, modificación, indexación y verificación con procedencia. |
 | `GET /api/categories` | Conteos por categoría en toda la bóveda. |
 | `GET /` | La UI web. |
+
+`category`, `tags` y `formats` estrechan `/api/ask` y `/api/search` con la
+misma semántica, también en respuestas SSE. Varias etiquetas se combinan con
+AND, varios formatos con OR y una categoría incluye sus descendientes. Un
+alcance solicitado sin notas conserva el resultado vacío y nunca se amplía a
+toda la bóveda.
+La respuesta lo expone como `retrieval_scope.status = "no_matches"` y omite
+por completo el embedding, la recuperación y la generación del modelo.
+
+La UI web conserva en memoria los tres turnos completados más recientes y los
+envía a ambas rutas para que respuestas y pasajes relacionados resuelvan las
+mismas referencias. **Nueva conversación** limpia este contexto y los resultados
+visibles sin cambiar filtros ni escribir nada en disco.
+
+Al pulsar una cita se abre el pasaje indexado exacto, su página o sección y el
+estado de verificación actual/modificado/ausente. Los documentos vigentes
+resaltan el pasaje dentro de su contexto y permiten navegar por página o
+sección; los demás estados conservan la evidencia indexada con una advertencia.
+
+El selector del encabezado cambia toda la interfaz entre español e inglés y
+recuerda la elección en ese navegador. Las categorías, los pasajes relacionados,
+las glosas marginales, las citas y los enlaces de fuentes son accesibles con
+teclado y se activan con **Enter** o **Espacio**. **Ctrl/Cmd + Enter** envía la
+pregunta. Los visores de fuentes mantienen el foco dentro mientras están
+abiertos, se cierran con **Escape** y devuelven el foco al control que los abrió.
+Los errores de validación, red, búsqueda y respuesta aparecen junto a la
+pregunta, se anuncian a tecnologías de asistencia y no fallan en silencio.
 
 Compuertas de seguridad codificadas en el CLI (no solo en la doc):
 
@@ -910,14 +1073,15 @@ Compuertas de seguridad codificadas en el CLI (no solo en la doc):
   petición `/api/*` de un cliente no-loopback, GET incluido. La
   comparación es de tiempo constante, y los fallos repetidos desde una
   misma dirección se limitan (HTTP 429) para acotar la fuerza bruta.
-- Los clientes loopback saltan el token para que la UI del navegador
-  local funcione sin pasar credenciales en cada fetch. En
-  Android/Termux esa exención es más débil de lo que parece —
+- Los clientes loopback saltan el token en operaciones de lectura para que la
+  UI local funcione sin credenciales en cada petición. Las dos rutas de
+  escritura siempre lo exigen, también desde loopback; la UI conserva el token
+  introducido únicamente en memoria de la pestaña. En Android/Termux la
+  exención de lectura es más débil de lo que parece —
   *cualquier app del dispositivo* puede alcanzar los puertos de
   localhost — así que allí pasa `--strict-token` para exigir el token
-  también a los clientes loopback. La UI web incluida no envía token,
-  de modo que en modo estricto consume la API con cabeceras
-  `Authorization: Bearer` explícitas.
+  también a los clientes loopback. En modo estricto, introduce el token en la
+  UI o usa cabeceras `Authorization: Bearer` explícitas.
 - CORS está desactivado por defecto. `--cors-origin <origen>` añade
   exactamente un origen (sin comodines).
 
@@ -1233,8 +1397,9 @@ grimore_generated: true    # escrito por las salidas de `distill`; las protege d
 ---
 ```
 
-- `last_tagged` es una marca temporal UTC ISO; el **Chronicler** la usa
-  para calcular obsolescencia.
+- `last_tagged` es una marca temporal UTC ISO del procesamiento automático; no
+  equivale a publicación, modificación ni verificación. **Chronicler** solo
+  inicia el reloj tras `chronicler verify`.
 - `privacy: never_process` es el único campo verificado *antes* de
   cualquier llamada al LLM, así que realmente mantiene la nota fuera del
   cable.
@@ -1315,6 +1480,17 @@ El servidor MCP es **solo lectura**: `grimore_ask`, `grimore_search`,
 `grimore_get_note`, `grimore_connect`, `grimore_list_categories`. Los
 escaneos y migraciones permanecen en el CLI.
 
+Los resultados cruzan hacia el cliente MCP: `grimore_ask` incluye los
+pasajes indexados completos usados como contexto, mientras
+`grimore_get_note` devuelve el cuerpo actual completo de una nota elegida.
+Para un PDF citado, `source_details[].indexed_extraction` indica si faltaba
+texto al indexarlo; el estado `supported` de una respuesta no elimina ese
+aviso de cobertura.
+La búsqueda solo devuelve vistas previas de 200 caracteres; conexión y
+categorías usan datos almacenados sin invocar un modelo. La tabla de frontera
+por herramienta en [`docs/mcp-setup.md`](mcp-setup.md) también enumera qué
+envía Grimore a sus servicios de chat y embeddings.
+
 Configuraciones de cliente listas para copiar y la advertencia sobre
 el directorio de trabajo (el servidor lee `grimore.toml` desde el
 `cwd`, y los clientes MCP lanzan desde otro lugar) están en
@@ -1343,10 +1519,29 @@ Las respuestas en streaming usan Server-Sent Events en
 desactivado por defecto; pasa `--cors-origin <origen>` para habilitar
 exactamente un origen.
 
+La UI incluida no depende de fuentes ni scripts remotos. Su indicador de
+salud muestra la ejecución de modelos como `local`, `mixed` o `remote`;
+`grimore status`, `GET /api/health` y las respuestas exponen además la misma
+separación entre chat y embeddings. Consultar este modo no resuelve DNS ni
+abre conexiones.
+
+El botón **Setup** abre un asistente inicial. Valida la carpeta
+ya cargada por el servidor, enumera los modelos reportados por los servicios de
+chat y embeddings, explica los efectos del escaneo en vista previa y aplicado,
+y genera valores TOML para copiar. Si `serve` tiene token de API, el mismo panel
+puede guardar atómicamente solo esos tres campos tras autenticar el bearer. El
+registro de indexación puede iniciar una vista previa o un escaneo aplicado con
+confirmación separada, siempre sobre la bóveda fijada al arrancar el servidor y
+sin ejecuciones concurrentes. Guardar cambios de configuración exige reiniciar
+antes de indexar. La vista previa expone valores anteriores y propuestos sin
+escribir; las operaciones aplicadas conservan copias privadas recuperables y el
+panel permite restaurarlas si ningún archivo cambió después.
+
 Cuando se define un token, este protege **todas** las rutas `/api/*` —
 incluidos los GET, no solo los POST al LLM — para cualquier cliente
-no-loopback; los clientes loopback siguen abiertos para que la UI web local
-funcione sin token. El par (peer) se lee de la propia conexión, así que un
+no-loopback; las lecturas loopback siguen abiertas para que la UI web local
+funcione sin token. Las rutas de escritura acotadas siempre exigen el bearer. El par
+(peer) se lee de la propia conexión, así que un
 `X-Forwarded-For` falsificado no puede saltarse la comprobación, el token
 se compara en tiempo constante, y los fallos repetidos desde una misma
 dirección se limitan (HTTP 429) para acotar la fuerza bruta. Un `top_k` en
@@ -1357,9 +1552,8 @@ recuperación.
 En Android/Termux, desconfía de la exención loopback: Android no aísla
 localhost entre apps, así que *cualquier app del dispositivo* puede
 alcanzar un puerto `127.0.0.1` a la escucha. Pasa allí `--strict-token`
-para exigir el bearer token también a los clientes loopback (la UI web
-incluida no envía token, así que en ese modo usa cabeceras
-`Authorization: Bearer` explícitas).
+para exigir el bearer token también a los clientes loopback; introdúcelo en la
+UI o usa cabeceras `Authorization: Bearer` explícitas.
 
 El extra `serve` es obligatorio: `pip install 'grimore[serve]'`. En
 Linux/Windows arrastra FastAPI como ruta de upgrade; la
@@ -1417,8 +1611,8 @@ timeouts relevantes en `grimore.toml`:
 ```toml
 [cognition]
 model_llm_local   = "ministral-3:14b"
-request_timeout_s = 180
-stream_timeout_s  = 240
+request_timeout_s = 600
+stream_timeout_s  = 900
 ```
 
 **Cómo dimensionarlos en vez de adivinar.** El coste lo domina el *prompt
@@ -1437,8 +1631,7 @@ Divide `prompt_eval_count / prompt_eval_duration` para obtener tokens/s de
 lectura. `stream_timeout_s` debe cubrir el prompt eval **completo**: con
 `stream: true` Ollama no emite el primer token hasta terminarlo, así que un
 límite por debajo aborta sin haber recibido nada — y el síntoma es un
-Oracle que responde "The Oracle returned no tokens", no un error de
-timeout. Como el Oracle envía hasta `context_max_chars` de contexto,
+panel "No answer", no un error de timeout. Como el Oracle envía hasta `context_max_chars` de contexto,
 `stream_timeout_s` casi siempre tiene que ser el mayor de los dos.
 
 Si el resultado te sale absurdo (varios minutos por nota), el timeout no es

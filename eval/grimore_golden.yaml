@@ -35,9 +35,9 @@
 #   `expected_sources` (the loader rejects a negative that lists any). Scored by
 #   whether the Oracle abstains, not by ranking.
 #
-# Phase 2 (cross-encoder reranker, semantic chunker) MUST use a separate
-# held-out file (`eval/grimore_golden_v2.yaml`) — this one tunes the defaults,
-# so testing on it would be train-on-test.
+# Keep evaluation cases in a separate held-out file
+# (`eval/grimore_golden_v2.yaml`); this set tunes defaults and should not also
+# be used to measure them.
 version: 1
 questions:
   # ── single-hop: one note directly answers the question ──────────────────

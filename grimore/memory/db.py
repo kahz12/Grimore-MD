@@ -16,19 +16,25 @@ data access is split by domain into sibling modules, mixed in here:
 * :mod:`grimore.memory.upkeep`              — VACUUM / WAL checkpoint
 * :mod:`grimore.memory.freshness`           — Chronicler freshness rows
 * :mod:`grimore.memory.mirror_store`        — Black Mirror claims/contradictions
+* :mod:`grimore.memory.review_store`        — review decisions and audit log
+* :mod:`grimore.memory.classification_overrides` — persistent human metadata
+* :mod:`grimore.memory.temporal`            — provenance-bearing note dates
 """
 import sqlite3
 import threading
 from typing import Optional
 
 from grimore.memory.chunks import ChunksMixin
+from grimore.memory.classification_overrides import ClassificationOverridesMixin
 from grimore.memory.embedding_migration import EmbeddingMigrationMixin
 from grimore.memory.freshness import FreshnessMixin
 from grimore.memory.mirror_store import MirrorStoreMixin
 from grimore.memory.notes import NotesMixin
+from grimore.memory.review_store import ReviewStoreMixin
 from grimore.memory.schema import SchemaMixin
 from grimore.memory.search import SearchMixin
 from grimore.memory.tags import TagsMixin
+from grimore.memory.temporal import TemporalMixin
 from grimore.memory.upkeep import UpkeepMixin
 
 
@@ -42,6 +48,9 @@ class Database(
     UpkeepMixin,
     FreshnessMixin,
     MirrorStoreMixin,
+    ReviewStoreMixin,
+    ClassificationOverridesMixin,
+    TemporalMixin,
 ):
     """
     Manages all database operations for Project Grimore.

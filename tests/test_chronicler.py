@@ -49,24 +49,15 @@ def chronicler_config(tmp_path):
 
 
 def _seed_note(db: Database, path: str, title: str, category: str | None,
-               last_tagged_iso: str | None = None) -> int:
-    """Insert a note and (optionally) backdate ``last_tagged``.
-
-    The seed step uses ``COALESCE(last_tagged, last_seen)`` as the
-    initial verification anchor. Backdating ``last_tagged`` is how we
-    construct an overdue note without sleeping or freezing time inside
-    the engine.
-    """
+               last_verified_iso: str | None = None) -> int:
+    """Insert a note and optionally seed an explicit human verification."""
     nid = db.upsert_note(path, title, content_hash="h-" + path)
     if category is not None:
         db.set_note_category(nid, category)
-    if last_tagged_iso is not None:
-        with db._get_connection() as conn:
-            conn.execute(
-                "UPDATE notes SET last_tagged = ? WHERE id = ?",
-                (last_tagged_iso, nid),
-            )
-            conn.commit()
+    if last_verified_iso is not None:
+        db.upsert_freshness(
+            path, last_verified_iso, 90, verification_source="human:test",
+        )
     return nid
 
 
@@ -169,11 +160,23 @@ class TestSeed:
 
 
 class TestListStale:
+    def test_snapshot_does_not_treat_scan_date_as_verification(self, chronicler_config):
+        session = Session(chronicler_config)
+        old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+        note_id = _seed_note(session.db, "/v/old.md", "Old", "tech/linux")
+        with session.db._get_connection() as conn:
+            conn.execute("UPDATE notes SET last_tagged = ? WHERE id = ?", (old, note_id))
+
+        stale = Chronicler(session).list_stale_snapshot()
+
+        assert stale == []
+        assert session.db.list_freshness() == []
+
     def test_returns_empty_when_nothing_overdue(self, chronicler_config):
         session = Session(chronicler_config)
         # Note tagged TODAY; tech/ window is 90d → not stale.
         _seed_note(session.db, "/v/a.md", "A", "tech/linux",
-                   last_tagged_iso=datetime.now(timezone.utc).isoformat())
+                   last_verified_iso=datetime.now(timezone.utc).isoformat())
 
         stale = Chronicler(session).list_stale()
         assert stale == []
@@ -181,11 +184,11 @@ class TestListStale:
     def test_returns_overdue_notes(self, chronicler_config):
         session = Session(chronicler_config)
         old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        _seed_note(session.db, "/v/old.md", "Old", "tech/linux", last_tagged_iso=old)
+        _seed_note(session.db, "/v/old.md", "Old", "tech/linux", last_verified_iso=old)
         # Recent note — should NOT appear.
         recent = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
         _seed_note(session.db, "/v/recent.md", "Recent", "tech/linux",
-                   last_tagged_iso=recent)
+                   last_verified_iso=recent)
 
         stale = Chronicler(session).list_stale()
         assert len(stale) == 1
@@ -196,8 +199,8 @@ class TestListStale:
         session = Session(chronicler_config)
         old_a = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
         old_b = (datetime.now(timezone.utc) - timedelta(days=300)).isoformat()
-        _seed_note(session.db, "/v/a.md", "A", "tech/linux", last_tagged_iso=old_a)
-        _seed_note(session.db, "/v/b.md", "B", "tech/linux", last_tagged_iso=old_b)
+        _seed_note(session.db, "/v/a.md", "A", "tech/linux", last_verified_iso=old_a)
+        _seed_note(session.db, "/v/b.md", "B", "tech/linux", last_verified_iso=old_b)
 
         stale = Chronicler(session).list_stale()
         assert [n.path for n in stale] == ["/v/b.md", "/v/a.md"]
@@ -208,10 +211,17 @@ class TestListStale:
 
 
 class TestVerify:
+    def test_verify_can_be_the_first_chronicler_action(self, chronicler_config):
+        session = Session(chronicler_config)
+        note_id = _seed_note(session.db, "/v/a.md", "A", "tech/linux")
+
+        assert Chronicler(session).verify("/v/a.md") is True
+        assert session.db.get_note_timeline(note_id)["verified"]["source"] == "human:chronicler"
+
     def test_verify_advances_last_verified(self, chronicler_config):
         session = Session(chronicler_config)
         old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        _seed_note(session.db, "/v/a.md", "A", "tech/linux", last_tagged_iso=old)
+        _seed_note(session.db, "/v/a.md", "A", "tech/linux", last_verified_iso=old)
 
         chronicler = Chronicler(session)
         # First list_stale auto-seeds.
@@ -255,7 +265,7 @@ class TestCheckDecay:
             "Use `sudo apt-get install python3` to install on Ubuntu 14.04.",
         )
         old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        _seed_note(session.db, path, "Linux", "tech/linux", last_tagged_iso=old)
+        _seed_note(session.db, path, "Linux", "tech/linux", last_verified_iso=old)
         chronicler = Chronicler(session)
         chronicler.seed()
 
@@ -283,7 +293,7 @@ class TestCheckDecay:
             Path(chronicler_config.vault.path), "x.md", "# X"
         )
         old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
-        _seed_note(session.db, path, "X", "tech/linux", last_tagged_iso=old)
+        _seed_note(session.db, path, "X", "tech/linux", last_verified_iso=old)
         Chronicler(session).seed()
 
         fake_router = MagicMock()

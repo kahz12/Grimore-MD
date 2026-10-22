@@ -91,8 +91,8 @@ class TestRequestTimeoutWiring:
 
     def test_defaults_match_pre_config_behavior(self):
         cfg = CognitionConfig()
-        assert cfg.request_timeout_s == 60
-        assert cfg.stream_timeout_s == 120
+        assert cfg.request_timeout_s == 300
+        assert cfg.stream_timeout_s == 300
         assert cfg.embed_timeout_s == 30
 
 

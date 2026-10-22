@@ -66,3 +66,77 @@ class TestAdapterPreflight:
         checker._check_adapters(report)
         row = next(c for c in report.checks if c.name == "adapter:md")
         assert row.ok
+
+
+class TestOcrPreflight:
+    def test_missing_poppler_and_invalid_timeout_are_actionable(self, monkeypatch):
+        from grimore.utils import preflight
+
+        checker = _checker_with_formats("pdf")
+        checker.config.ingest.ocr = True
+        checker.config.ingest.ocr_timeout_s = 0
+        monkeypatch.setattr(checker, "_probe_module", lambda _module: None)
+        monkeypatch.setattr(
+            preflight, "_which",
+            lambda name: "/usr/bin/tesseract" if name == "tesseract" else None,
+        )
+
+        report = PreflightReport()
+        checker._check_ingest_engines(report)
+
+        timeout = next(row for row in report.checks if row.name == "ocr_timeout_s")
+        ocr = next(row for row in report.checks if row.name == "ocr")
+        assert not timeout.ok and "positive integer" in timeout.message
+        assert not ocr.ok and "Poppler pdfinfo" in ocr.message
+        assert "Poppler renderer" in ocr.message
+        assert "poppler-utils" in ocr.fix
+
+    def test_ocr_ready_when_all_dependencies_and_timeout_are_valid(self, monkeypatch):
+        from grimore.utils import preflight
+
+        checker = _checker_with_formats("pdf")
+        checker.config.ingest.ocr = True
+        checker.config.ingest.ocr_timeout_s = 15
+        monkeypatch.setattr(checker, "_probe_module", lambda _module: None)
+        monkeypatch.setattr(preflight, "_which", lambda _name: "/usr/bin/tool")
+        monkeypatch.setattr(preflight, "check_ocr_languages", lambda *_args: None)
+
+        report = PreflightReport()
+        checker._check_ingest_engines(report)
+
+        assert [(row.name, row.ok) for row in report.checks] == [("ocr", True)]
+
+    def test_requested_language_data_must_be_installed(self, monkeypatch):
+        from grimore.utils import preflight
+
+        checker = _checker_with_formats("pdf")
+        checker.config.ingest.ocr = True
+        checker.config.ingest.ocr_language = "spa+eng"
+        monkeypatch.setattr(checker, "_probe_module", lambda _module: None)
+        monkeypatch.setattr(preflight, "_which", lambda _name: "/usr/bin/tool")
+
+        def check(executable, language):
+            assert language == "spa+eng"
+            return "Tesseract language data not installed: spa"
+
+        monkeypatch.setattr(preflight, "check_ocr_languages", check)
+        report = PreflightReport()
+        checker._check_ingest_engines(report)
+        row = next(row for row in report.checks if row.name == "ocr")
+        assert not row.ok
+        assert "spa" in row.message
+        assert "tesseract-ocr-spa" in row.fix
+
+    def test_invalid_language_is_rejected_before_probing(self, monkeypatch):
+        from grimore.utils import preflight
+
+        checker = _checker_with_formats("pdf")
+        checker.config.ingest.ocr = True
+        checker.config.ingest.ocr_language = "spa --psm 6"
+        monkeypatch.setattr(checker, "_probe_module", lambda _module: None)
+        monkeypatch.setattr(preflight, "_which", lambda _name: "/usr/bin/tool")
+        monkeypatch.setattr(preflight, "check_ocr_languages", lambda *_args: 1 / 0)
+        report = PreflightReport()
+        checker._check_ingest_engines(report)
+        assert not report.ok
+        assert any(row.name == "ocr_language" and not row.ok for row in report.checks)

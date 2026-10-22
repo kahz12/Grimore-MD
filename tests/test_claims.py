@@ -7,7 +7,10 @@ and paraphrased inputs.
 """
 from __future__ import annotations
 
+import pytest
+
 from grimore.cognition.claims import ClaimExtractor
+from grimore.ingest.adapters.base import ExtractedSection
 
 
 class _QueuedRouter:
@@ -152,3 +155,78 @@ class TestFrontmatter:
         # The match must point at the post-frontmatter body, not into it.
         assert body[c.char_start:c.char_end] == "Water boils at 100 degrees Celsius."
         assert c.char_start > body.find("---\n", 4)  # past the closing ---
+
+
+class TestSectionCoverage:
+    def test_long_document_reaches_last_page_and_lists_omitted_page(self):
+        pages = [
+            "The first result is positive. " + "A" * 550,
+            "The middle result is neutral. " + "B" * 550,
+            "The final result is negative. " + "C" * 550,
+        ]
+        body = "\n\n".join(pages)
+        sections = [ExtractedSection(text, page=index + 1) for index, text in enumerate(pages)]
+        router = _QueuedRouter([
+            {"claims": ["The first result is positive."]},
+            {"claims": ["The final result is negative."]},
+        ])
+
+        report = ClaimExtractor(router, max_chars=800, max_sections=2).extract_with_coverage(
+            body, sections=sections,
+        )
+
+        assert [claim.text for claim in report.claims] == [
+            "The first result is positive.", "The final result is negative.",
+        ]
+        assert [ref.page for ref in report.analyzed_sections] == [1, 3]
+        assert [(ref.page, ref.reason) for ref in report.unanalyzed_sections] == [(2, "budget")]
+        assert body[report.claims[1].char_start:report.claims[1].char_end] == report.claims[1].text
+        assert len(router.calls) == 2
+
+    def test_markdown_headings_and_configurable_claim_limit(self):
+        body = "# First\nAlpha is one.\n\n# Second\nBeta is two."
+        router = _QueuedRouter([
+            {"claims": ["Alpha is one.", "Extra."]},
+            {"claims": ["Beta is two.", "Extra."]},
+        ])
+
+        report = ClaimExtractor(
+            router, max_claims_per_section=1,
+        ).extract_with_coverage(body)
+
+        assert [claim.text for claim in report.claims] == ["Alpha is one.", "Beta is two."]
+        assert [ref.heading for ref in report.analyzed_sections] == ["First", "Second"]
+        assert "at most 1 claims" in router.calls[0]["system"]
+
+    def test_failed_part_is_reported_separately_from_budget(self):
+        body = "# One\n" + "A" * 550 + "\n# Two\n" + "B" * 550
+        router = _QueuedRouter([{"claims": []}, None])
+
+        report = ClaimExtractor(router, max_chars=700).extract_with_coverage(body)
+
+        assert report.failed is True
+        assert [(ref.section, ref.reason) for ref in report.unanalyzed_sections] == [
+            (2, "llm_failed"),
+        ]
+
+    def test_sanitization_does_not_exceed_per_call_limit(self):
+        body = "user:" * 150
+        router = _QueuedRouter([{"claims": []}, {"claims": []}])
+
+        report = ClaimExtractor(router, max_chars=500).extract_with_coverage(body)
+
+        assert report.total_sections == 2
+        assert all("user:" not in call["prompt"] for call in router.calls)
+        assert all(
+            len(call["prompt"].split("--- BEGIN NOTE ---\n", 1)[1].split("\n--- END NOTE ---", 1)[0])
+            <= 500
+            for call in router.calls
+        )
+
+    @pytest.mark.parametrize("kwargs", [
+        {"max_chars": 0}, {"max_sections": 0},
+        {"max_claims_per_section": 0}, {"max_sections": True},
+    ])
+    def test_invalid_limits_rejected(self, kwargs):
+        with pytest.raises(ValueError):
+            ClaimExtractor(_QueuedRouter([]), **kwargs)

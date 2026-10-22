@@ -269,7 +269,7 @@ def start_daemon_background(pid_file: str, log_file: str):
         os.close(fd)
 
     # Give the child a moment to either acquire the lock or fail; if it
-    # exited immediately (lock contention, import error, …) tell the user
+    # exited immediately (lock contention, import failure, …) tell the user
     # to look at the log instead of falsely reporting success.
     time.sleep(0.3)
     if process.poll() is not None:

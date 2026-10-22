@@ -69,8 +69,8 @@ class DocAdapter:
 
         antiword = shutil.which("antiword")
         if antiword is None:
-            # Surface a clear, actionable error. The caller (scan / daemon)
-            # already logs ValueError as a skipped file with the message
+            # Include a clear, actionable diagnostic. The caller (scan / daemon)
+            # logs ValueError as a skipped file with the message
             # attached, so the user sees what to do.
             raise ValueError(
                 f"cannot read {file_path}: legacy .doc support requires the "
