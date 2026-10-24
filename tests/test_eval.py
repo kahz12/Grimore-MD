@@ -1092,7 +1092,23 @@ def test_shipped_golden_loads_and_is_stratified():
     assert all(c.expected_sources for c in cases if not c.negative)
 
 
-def test_phase0_datasets_are_separate_complete_and_grounded():
+def _pinned_corpus(tmp_path):
+    """The twelve files the Phase-0 datasets declare, copied into a fresh vault.
+
+    Validating against them (not the whole local test_vault) keeps extra local
+    documents from changing title matches, and skips parsing them. Copies,
+    not symlinks: the vault guard rightly rejects links that leave the vault.
+    """
+    import shutil
+    from eval.run_phase0_baseline import CORPUS_SHA256, SOURCE_VAULT
+    vault = tmp_path / "pinned"
+    vault.mkdir()
+    for name in CORPUS_SHA256:
+        shutil.copy2(SOURCE_VAULT / name, vault / name)
+    return vault
+
+
+def test_phase0_datasets_are_separate_complete_and_grounded(tmp_path):
     """Phase-0 acceptance guard: size, holdout separation and real evidence."""
     root = Path(__file__).resolve().parents[1]
 
@@ -1133,6 +1149,21 @@ def test_phase0_datasets_are_separate_complete_and_grounded():
     assert all(case.expected_answer and case.expected_evidence for case in positives)
     assert all(case.review_criteria for case in combined)
 
-    vault = root / "test_vault" / "test_vault"
+    vault = _pinned_corpus(tmp_path)
     assert validate_golden_evidence(tuning_roots, vault) == []
     assert validate_golden_evidence(evaluation_roots, vault) == []
+
+
+def test_crosslang_tuning_set_is_grounded_and_separate_from_holdout(tmp_path):
+    """Cross-language/multi-document tuning cases never borrow held-out ids."""
+    root = Path(__file__).resolve().parents[1]
+    cases = load_golden(root / "eval" / "phase1_crosslang_tuning.yaml")
+    turns = [c for case in cases for c in (case, *case.follow_ups)]
+    assert all(c.split == "tuning" for c in turns)
+    assert {c.case_type for c in turns} >= {"direct", "comparison"}
+    assert {c.language for c in turns} == {"es", "en"}
+    assert any(len(c.expected_sources) > 1 for c in turns)
+    held_out = [c for case in load_golden(root / "eval" / "phase0_evaluation.yaml")
+                for c in (case, *case.follow_ups)]
+    assert {c.id for c in turns}.isdisjoint({c.id for c in held_out})
+    assert validate_golden_evidence(cases, _pinned_corpus(tmp_path)) == []

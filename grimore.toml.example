@@ -31,6 +31,12 @@ allow_remote = false
 # Hybrid retrieval -- fuse BM25 (FTS5) with cosine similarity via RRF.
 hybrid_search = true
 rrf_k = 60
+# Weight of the BM25 (keyword) ranking in that fusion; the dense ranking
+# weighs 1. At full weight, keyword hits in the question's language push out
+# the right note when it is written in another language. 1 restores classic
+# RRF, 0 ranks by the dense list alone. Answers, the web search and MCP all
+# use the same value.
+bm25_weight = 0.25
 
 # Minimum cosine similarity for `grimore connect` to propose a wikilink.
 connect_threshold = 0.7

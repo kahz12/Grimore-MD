@@ -43,10 +43,18 @@ class Connector:
         rerank_model: str = "BAAI/bge-reranker-base",
         reranker: Optional[Reranker] = None,
         matrix_cache_enabled: bool = True,
+        rrf_k: int = 60,
+        bm25_weight: float = 1.0,
     ):
         self.db = db
         self.embedder = embedder
         self.router = router
+        # Fusion parameters, held here so every caller of find_hybrid (answers,
+        # the API search, MCP) ranks the same way unless it overrides them.
+        # The constructor default is classic equal-weight RRF; the configured
+        # default (CognitionConfig.bm25_weight) is lower.
+        self.rrf_k = int(rrf_k)
+        self.bm25_weight = float(bm25_weight)
         # "auto" picks sqlite-vec when the extension + table are ready, else
         # numpy. "numpy" pins the matmul path even with sqlite-vec installed
         # (handy for parity tests). "sqlite-vec" tries the extension and
@@ -631,21 +639,26 @@ class Connector:
         query_text: str,
         query_vector: Optional[List[float]],
         top_k: int = 5,
-        rrf_k: int = 60,
+        rrf_k: Optional[int] = None,
         exclude_note_id: Optional[int] = None,
         rerank: bool = False,
         rerank_pool: int = 20,
         timings: Optional[dict] = None,
         filter_note_ids: "set[int] | None" = None,
         include_embedding_id: bool = False,
+        bm25_weight: Optional[float] = None,
     ) -> list[dict]:
         """
         Fuse dense retrieval and FTS5 BM25 with Reciprocal Rank Fusion.
 
         RRF is rank-based so score ranges don't need to match — each candidate
-        gets ``Σ 1 / (rrf_k + rank_in_list)`` across the two rankings. A doc
-        that appears in both lists beats one that only appears in one, which
-        is the whole point of hybrid search.
+        gets ``1 / (rrf_k + dense_rank) + w / (rrf_k + bm25_rank)``, where
+        ``w`` is ``bm25_weight``. A doc that appears in both lists beats one
+        that only appears in one, which is the whole point of hybrid search.
+        A full-weight BM25 list, though, lets keyword hits in the question's
+        language push out a note written in another language, which only
+        the (multilingual) dense list can find. ``rrf_k`` and ``bm25_weight``
+        default to the values this Connector was built with.
 
         Degrades gracefully:
 
@@ -659,6 +672,8 @@ class Connector:
         """
         if filter_note_ids is not None and not filter_note_ids:
             return []
+        rrf_k = self.rrf_k if rrf_k is None else rrf_k
+        bm25_weight = self.bm25_weight if bm25_weight is None else bm25_weight
 
         pool = max(top_k * 4, 20)
 
@@ -707,7 +722,7 @@ class Connector:
                     "note_id": item["note_id"],
                     "text": item["text"],
                     "rrf": 0.0,
-                })["rrf"] += 1.0 / (rrf_k + rank + 1)
+                })["rrf"] += bm25_weight / (rrf_k + rank + 1)
 
             ranked = [
                 {"embedding_id": v["embedding_id"], "note_id": v["note_id"],

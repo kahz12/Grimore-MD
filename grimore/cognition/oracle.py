@@ -13,6 +13,7 @@ from grimore.cognition.llm_router import LLMRouter
 from grimore.cognition.embedder import Embedder
 from grimore.cognition.connector import Connector
 from grimore.memory.db import Database
+from grimore.utils.config import CognitionConfig
 from grimore.utils.logger import get_logger
 from grimore.utils.hashing import sha256_file
 from grimore.utils.security import SecurityGuard
@@ -234,6 +235,9 @@ class Oracle:
             ),
             matrix_cache_enabled=bool(getattr(
                 config.cognition, "vec_matrix_cache", True)),
+            rrf_k=int(getattr(config.cognition, "rrf_k", 60)),
+            bm25_weight=float(getattr(
+                config.cognition, "bm25_weight", CognitionConfig.bm25_weight)),
         )
         # Snapshot the context cap once. Read via getattr so a partially
         # populated config (the SimpleNamespace stand-ins used in tests, or a

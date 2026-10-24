@@ -205,6 +205,7 @@ model_embeddings_local = "nomic-embed-text"
 allow_remote           = false  # bloquea endpoints Ollama / OpenAI que no sean loopback
 hybrid_search          = true   # BM25 + coseno vía RRF
 rrf_k                  = 60     # curva de peso por rango; menor = más pronunciada
+bm25_weight            = 0.25   # peso de la lista por palabras en la fusión; 1 = RRF clásico
 connect_threshold      = 0.7    # umbral coseno para sugerir un wikilink
 dedupe_threshold       = 0.90   # umbral coseno para un par casi-duplicado
 request_timeout_s      = 300    # /api/generate, vía JSON

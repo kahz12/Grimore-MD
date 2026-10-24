@@ -1797,7 +1797,7 @@ def export_comparison(comparison: dict, path: Path) -> None:
 # shift without a code change.
 _FINGERPRINT_KEYS = (
     "model_embeddings_local", "model_llm_local", "llm_backend",
-    "hybrid_search", "rrf_k", "rerank", "rerank_engine", "rerank_model",
+    "hybrid_search", "rrf_k", "bm25_weight", "rerank", "rerank_engine", "rerank_model",
     "rerank_pool", "vector_backend", "context_max_chars", "chunk_store_chars",
     "conditional_rewrite",
 )

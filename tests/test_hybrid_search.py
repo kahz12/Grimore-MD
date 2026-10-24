@@ -188,6 +188,32 @@ class TestHybridFusion:
         )
         assert all(h["note_id"] != 1 for h in hits)
 
+    def test_bm25_weight_lets_the_dense_ranking_decide(self, db):
+        # B is the best dense match but lacks the query word (think: a note in
+        # another language); A has the word and is second in the dense list.
+        # rrf_k=1 makes the rank arithmetic visible: equal-weight RRF ranks
+        # A first (1/3 + 1/2), a 0.25 BM25 weight ranks B first (1/2).
+        _seed(db, [
+            ("A", "needle keyword note", [0.8, 0.6, 0.0]),
+            ("B", "nota sin esa palabra", [1.0, 0.0, 0.0]),
+        ])
+        classic = Connector(db, _StubEmbedder(), rrf_k=1)
+        assert classic.find_hybrid("needle", [1.0, 0.0, 0.0], top_k=2)[0]["text"] == "needle keyword note"
+        weighted = Connector(db, _StubEmbedder(), rrf_k=1, bm25_weight=0.25)
+        assert weighted.find_hybrid("needle", [1.0, 0.0, 0.0], top_k=2)[0]["text"] == "nota sin esa palabra"
+        # A per-call value overrides the instance default.
+        assert classic.find_hybrid("needle", [1.0, 0.0, 0.0], top_k=2,
+                                   bm25_weight=0.25)[0]["text"] == "nota sin esa palabra"
+
+    def test_oracle_builds_its_connector_from_the_fusion_config(self, db):
+        from unittest.mock import MagicMock
+        from grimore.cognition.oracle import Oracle
+        from grimore.utils.config import CognitionConfig, Config
+        oracle = Oracle(Config(cognition=CognitionConfig(rrf_k=10, bm25_weight=0.5)),
+                        db, MagicMock(), _StubEmbedder())
+        assert (oracle.connector.rrf_k, oracle.connector.bm25_weight) == (10, 0.5)
+        assert Oracle(Config(), db, MagicMock(), _StubEmbedder()).connector.bm25_weight == 0.25
+
     def test_empty_corpus_returns_empty(self, db):
         conn = Connector(db, _StubEmbedder())
         assert conn.find_hybrid("anything", [1.0, 0.0, 0.0], top_k=5) == []

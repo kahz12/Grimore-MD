@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Hybrid retrieval now weighs the BM25 (keyword) ranking at 0.25 against the
+  dense ranking (`[cognition].bm25_weight`, previously an implicit 1). At
+  full weight, keyword hits in the question's language pushed out the right
+  note when it was written in another language, which only the multilingual
+  dense ranking can find. They also crowded out the right passage within a
+  note. On the bundled corpus, without generating answers:
+  - Spanish/English tuning set: the right note came first in 100% of turns
+    instead of 80%, and the expected passage reached the model in 16/20
+    cases instead of 12/20.
+  - Phase-0 tuning set: the expected passage reached the model in 43/44
+    cases instead of 39/44.
+  - Held-out set, run once with the value fixed: right note first in 100%
+    of turns instead of 96%, with no regressions.
+  Set `bm25_weight = 1` to restore the previous ranking.
+
+### Fixed
+- The web search and the MCP `grimore_search` tool ignored a configured
+  `rrf_k` and always fused with 60, so their "related passages" could
+  differ from the ones used to answer. Every caller now uses the configured
+  fusion values.
+
 ## [3.4.0] - 2026-10-22
 
 Answers you can check, a web UI that covers the whole journey without a

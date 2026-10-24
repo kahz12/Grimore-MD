@@ -4,6 +4,7 @@ This module defines the project's configuration schema using dataclasses
 and handles loading settings from 'grimore.toml' and environment variables.
 """
 import json
+import math
 import os
 import re
 import tempfile
@@ -92,6 +93,13 @@ class CognitionConfig:
     # Retrieval: fuse BM25 (FTS5) and cosine similarity via Reciprocal Rank Fusion.
     hybrid_search: bool = True
     rrf_k: int = 60
+    # Weight of the BM25 ranking in the fusion (the dense ranking weighs 1).
+    # At 1, keyword hits in the question's language pushed out the right note
+    # when it was written in another language. On the bundled Spanish/English
+    # corpus, 0.25 lifted passages delivered to the model from 51/64 to 59/64
+    # across two tuning sets, with no held-out regression. 1 restores classic
+    # RRF; 0 ranks by the dense list alone.
+    bm25_weight: float = 0.25
     # Optional second-stage re-rank: after RRF fusion, score the top
     # ``rerank_pool`` candidates and reorder them before truncating to
     # top_k. Off by default — it adds work per query. Degrades to the
@@ -190,6 +198,9 @@ class CognitionConfig:
     claim_max_claims_per_section: int = 10
 
     def __post_init__(self):
+        if (type(self.bm25_weight) not in (int, float) or not math.isfinite(self.bm25_weight)
+                or self.bm25_weight < 0):
+            raise ValueError("bm25_weight must be a non-negative number")
         if type(self.answer_sufficiency_check) is not bool:
             raise ValueError("answer_sufficiency_check must be a boolean")
         if type(self.answer_sufficiency_timeout_s) is not int or self.answer_sufficiency_timeout_s < 1:

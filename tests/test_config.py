@@ -407,3 +407,15 @@ class TestTunableDefaults:
         assert cfg.cognition.circuit_failure_threshold == 2
         assert cfg.cognition.circuit_cooldown_s == 30
         assert cfg.shell.max_turns == 10
+
+
+def test_bm25_weight_defaults_low_restores_classic_rrf_and_rejects_invalid(tmp_path):
+    """Lowered on purpose (not a historical constant): see CognitionConfig."""
+    assert load_config(str(tmp_path / "absent.toml")).cognition.bm25_weight == 0.25
+    path = tmp_path / "grimore.toml"
+    path.write_text("[cognition]\nbm25_weight = 1\n", encoding="utf-8")
+    assert load_config(str(path)).cognition.bm25_weight == 1
+    for bad in ("-0.5", "true", '"0.5"', "nan"):
+        path.write_text(f"[cognition]\nbm25_weight = {bad}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="bm25_weight"):
+            load_config(str(path))
