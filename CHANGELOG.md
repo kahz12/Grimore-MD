@@ -24,6 +24,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Set `bm25_weight = 1` to restore the previous ranking.
 
 ### Fixed
+- Follow-up questions were rewritten into search queries that added facts
+  the conversation never mentioned, so retrieval followed the model's beliefs
+  instead of the notes. About one rewrite in four did this:
+  - it answered the question inside the query ("which generals?" became
+    "e.g. Marius, Sulla, Caesar");
+  - it invented the referent ("his successor" became "Commodus" instead of
+    Trajan's successor Hadrian).
+  The rewrite prompt now forbids this and asks for plain text; Markdown and
+  quotes are stripped. A rewrite that still introduces a name or number absent
+  from the conversation is discarded, and the previous question plus the
+  follow-up is used instead. In a fresh run, none of 18 rewrites added
+  facts and none kept Markdown. Retrieval held steady: on Phase-0 tuning
+  follow-ups, right note first 22/22 (was 21/22) and passage in context
+  21/22 (unchanged); the held-out set, run once, was unchanged.
 - The web search and the MCP `grimore_search` tool ignored a configured
   `rrf_k` and always fused with 60, so their "related passages" could
   differ from the ones used to answer. Every caller now uses the configured

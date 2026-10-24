@@ -41,6 +41,52 @@ _CONTEXT_SEPARATOR = "\n\n"
 # request timeout. On hardware where a rewrite takes a second, it never fires.
 _REWRITE_TIMEOUT_S = 60
 
+# A rewrite may only rephrase the conversation. Asked loosely, the model
+# answered the follow-up inside the query ("which generals?" -> "e.g. Marius,
+# Sulla, Caesar") or invented the referent ("his successor" -> "Commodus" for
+# Trajan's successor), steering retrieval towards its own belief instead of
+# the notes. About one rewrite in four did; with the prompt and guard below,
+# none of 26 did.
+_REWRITE_INSTRUCTIONS = (
+    "Rewrite the follow-up as one self-contained search query in the language "
+    "of the follow-up. Replace pronouns and references with the words the "
+    "conversation uses for them. Use only names, numbers and terms that appear "
+    "above: do not answer the question, and do not add facts, names, dates, "
+    "examples or new questions. Plain text, no Markdown. Keep it short.\n"
+)
+_REWRITE_MARKUP_RE = re.compile(r"[*_`]+")
+# Capitalised words and numbers: the shapes an invented fact takes.
+_REWRITE_TERM_RE = re.compile(r"[A-ZÁÉÍÓÚÑÜ][\w'’-]*|\d[\d.,]*")
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _clean_rewrite(text: str) -> str:
+    """Drop Markdown emphasis and wrapping quotes the model adds to queries."""
+    text = _REWRITE_MARKUP_RE.sub("", text)
+    return " ".join(text.strip().strip("\"'“”«»").split())
+
+
+def _folded_words(text: str) -> set[str]:
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return {w for w in _WORD_RE.findall(folded) if len(w) > 1 or w.isdigit()}
+
+
+def _introduced_terms(rewritten: str, question: str, history: list[dict]) -> list[str]:
+    """Names and numbers in ``rewritten`` that the conversation never used.
+
+    The query's first word is skipped (it is capitalised by position). A term
+    counts as present when all of its words appear in the follow-up or in a
+    recent question or answer.
+    """
+    known = _folded_words(" ".join(
+        [question, *(f"{t.get('q', '')} {t.get('a', '')}" for t in history)]))
+    first = re.match(r"\W*([\w'’-]+)", rewritten)
+    return [
+        term for term in _REWRITE_TERM_RE.findall(rewritten)
+        if not (first and term == first.group(1)) and not _folded_words(term) <= known
+    ]
+
+
 # Matches a single ``[[wikilink]]`` citation; group 1 is the inner label.
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]]+)\]\]")
 # Generation-only references, never document ids or physical page numbers.
@@ -685,14 +731,14 @@ class Oracle:
         prompt = (
             f"Conversation so far:\n{convo}\n\n"
             f"Follow-up question: {question}\n\n"
-            "Rewrite the follow-up as a single self-contained search query that "
-            "resolves any pronouns or references to earlier turns. Keep it short.\n"
-            'Return ONLY JSON: {"query": "..."}'
+            + _REWRITE_INSTRUCTIONS
+            + 'Return ONLY JSON: {"query": "..."}'
         )
         try:
             resp = self.router.complete(
                 prompt=prompt,
-                system_prompt="You rewrite follow-up questions into standalone search queries.",
+                system_prompt=("You rewrite follow-up questions into standalone search "
+                               "queries using only words from the conversation."),
                 json_format=True,
                 timeout_s=self.rewrite_timeout_s,
                 # Best-effort work on a tight deadline: its timeouts say
@@ -705,13 +751,25 @@ class Oracle:
             return question
         if isinstance(resp, dict):
             rewritten = resp.get("query")
-            if isinstance(rewritten, str) and rewritten.strip():
+            if isinstance(rewritten, str) and _clean_rewrite(rewritten):
+                rewritten = _clean_rewrite(rewritten)
+                introduced = _introduced_terms(rewritten, question, history[-3:])
+                if introduced:
+                    # Never let a fact only the model "knows" steer retrieval:
+                    # the previous question carries the topic instead.
+                    logger.info(
+                        "oracle_query_rewrite_rejected",
+                        original=question,
+                        rewritten=rewritten,
+                        introduced=introduced,
+                    )
+                    return f"{(history[-1].get('q') or '').strip()} {question}".strip()
                 logger.info(
                     "oracle_query_rewritten",
                     original=question,
-                    rewritten=rewritten.strip(),
+                    rewritten=rewritten,
                 )
-                return rewritten.strip()
+                return rewritten
         return question
 
     def _format_history(self, history) -> str:

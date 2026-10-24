@@ -116,6 +116,35 @@ class TestRewriteWiring:
         assert out == "Which company created Kotlin?"
         o.router.complete.assert_called_once()
 
+    def test_markdown_and_quotes_are_stripped_from_the_query(self):
+        o = _oracle()
+        o.router.complete.return_value = {"query": '"**Which company created Kotlin?**"'}
+        assert o._rewrite_query("Which company created it?", _HISTORY) == \
+            "Which company created Kotlin?"
+
+    @pytest.mark.parametrize("query", [
+        "Which company, Google or Oracle, created Kotlin?",   # names nobody said
+        "Which company created Kotlin in 2011?",              # a number nobody said
+    ])
+    def test_a_rewrite_that_adds_facts_falls_back_to_the_conversation(self, query):
+        o = _oracle()
+        o.router.complete.return_value = {"query": query}
+        assert o._rewrite_query("Which company created it?", _HISTORY) == \
+            "What is Kotlin? Which company created it?"
+
+    def test_names_from_an_earlier_answer_are_not_inventions(self):
+        o = _oracle()
+        o.router.complete.return_value = {"query": "Which company, JetBrains, created Kotlin?"}
+        assert o._rewrite_query("Which company created it?", _HISTORY) == \
+            "Which company, JetBrains, created Kotlin?"
+
+    def test_the_prompt_forbids_answering_or_adding_facts(self):
+        o = _oracle()
+        o.router.complete.return_value = {"query": "Which company created Kotlin?"}
+        o._rewrite_query("Which company created it?", _HISTORY)
+        prompt = o.router.complete.call_args.kwargs["prompt"]
+        assert "do not answer the question" in prompt and "no Markdown" in prompt
+
     def test_disabling_the_flag_restores_rewrite_everywhere(self):
         o = _oracle(conditional=False)
         o.router.complete.return_value = {"query": "rewritten"}
