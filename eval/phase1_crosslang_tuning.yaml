@@ -1,0 +1,340 @@
+version: 2
+set: tuning
+corpus_version: phase0-test-vault-2026-09-22
+# Tuning cases for cross-language and multi-document retrieval. The Phase-0
+# tuning set asks every question in its note's language and never across two
+# notes, so it cannot exercise either failure. Never reuse a fact or note pair
+# from eval/phase0_evaluation.yaml here: that set stays held out.
+questions:
+- id: xl-es-kotlin-jetbrains
+  question: ¿Qué empresa diseñó el lenguaje Kotlin y qué máquina virtual tiene como objetivo principal?
+  expected_sources:
+  - Kotlin Fundamentals
+  expected_keywords:
+  - JetBrains
+  - JVM
+  expected_answer: Lo diseñó JetBrains y apunta principalmente a la Java Virtual Machine (JVM).
+  expected_evidence:
+  - source: Kotlin Fundamentals
+    passage: Kotlin is a modern, cross-platform, statically typed programming language designed by JetBrains. Primarily targeting the Java Virtual Machine (JVM)
+    locator: Kotlin Fundamentals
+  review_criteria: 'Debe comunicar correctamente: JetBrains y la JVM.'
+  category: cross-language
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-es-apple-volatiles
+  question: ¿Cuántos compuestos orgánicos volátiles forman el aroma de una manzana?
+  expected_sources:
+  - Apples Malus
+  expected_keywords:
+  - '300'
+  expected_answer: Más de 300 compuestos orgánicos volátiles, sobre todo ésteres, alcoholes y aldehídos.
+  expected_evidence:
+  - source: Apples Malus
+    passage: a complex mixture of over 300 volatile organic compounds, dominated by esters, alcohols, and aldehydes
+    locator: Volatile Organic Compounds
+  review_criteria: 'Debe comunicar correctamente: más de 300 compuestos volátiles.'
+  category: cross-language
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-es-gothic-notre-dame
+  question: ¿En qué año comenzó la construcción de Notre-Dame de París?
+  expected_sources:
+  - gothic_architecture
+  expected_keywords:
+  - '1163'
+  expected_answer: En 1163.
+  expected_evidence:
+  - source: gothic_architecture
+    passage: '1163: Construction starts on Notre-Dame de Paris.'
+    locator: Detailed Timeline of Gothic Architecture
+  review_criteria: 'Debe comunicar correctamente: 1163.'
+  category: cross-language
+  language: es
+  case_type: direct
+  document_formats:
+  - txt
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-es-social-email-auth
+  question: ¿Qué protocolos de autenticación de correo recomienda la guía para mitigar el phishing?
+  expected_sources:
+  - Social Engineering
+  expected_keywords:
+  - SPF
+  - DKIM
+  - DMARC
+  expected_answer: SPF, DKIM y DMARC, junto con protección anti-phishing en el navegador.
+  expected_evidence:
+  - source: Social Engineering
+    passage: Email authentication protocols (SPF, DKIM, DMARC) and browser-based anti-phishing protection
+    locator: Digital and Communication Vectors
+  review_criteria: 'Debe comunicar correctamente: SPF, DKIM y DMARC.'
+  category: cross-language
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-es-ai-alexnet
+  question: ¿En qué año ganó AlexNet el desafío de reconocimiento visual ImageNet?
+  expected_sources:
+  - Artificial Intelligence
+  expected_keywords:
+  - '2012'
+  expected_answer: En 2012.
+  expected_evidence:
+  - source: Artificial Intelligence
+    passage: won the ImageNet Large Scale Visual Recognition Challenge in 2012
+    locator: The AlexNet Catalyst
+  review_criteria: 'Debe comunicar correctamente: 2012.'
+  category: cross-language
+  language: es
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-en-frogs-anura
+  question: What share of living amphibian species belongs to the order Anura?
+  expected_sources:
+  - Ranas
+  expected_keywords:
+  - '88'
+  expected_answer: About 88% of living amphibian species.
+  expected_evidence:
+  - source: Ranas
+    passage: abarcando aproximadamente el 88% de todas las especies de anfíbios vivos
+    locator: Clasificación Taxonómica y Diversidad
+  review_criteria: 'Must state correctly: about 88%.'
+  category: cross-language
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-en-astro-kuiper
+  question: How far from the Sun does the Kuiper Belt extend, in astronomical units?
+  expected_sources:
+  - Astronomía General
+  expected_keywords:
+  - '30'
+  - '50'
+  expected_answer: Beyond Neptune, from 30 to 50 AU.
+  expected_evidence:
+  - source: Astronomía General
+    passage: se extiende más allá de Neptuno (30 a 50 UA)
+    locator: Cuerpos Menores y Zonas Periféricas
+  review_criteria: 'Must state correctly: 30 to 50 AU.'
+  category: cross-language
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-en-arch-microservices
+  question: How do microservices communicate with each other according to the architecture guide?
+  expected_sources:
+  - Arquitectura de Software
+  expected_keywords:
+  - gRPC
+  expected_answer: Through HTTP/gRPC APIs or events.
+  expected_evidence:
+  - source: Arquitectura de Software
+    passage: uso de APIs HTTP/gRPC o eventos para comunicarse
+    locator: Microservicios
+  review_criteria: 'Must state correctly: HTTP/gRPC APIs or events.'
+  category: cross-language
+  language: en
+  case_type: direct
+  document_formats:
+  - md
+  user_task: find-fact
+  difficulty: long-document
+  split: tuning
+- id: xl-en-wetland-birds
+  question: How many bird species had been confirmed in the La Esperanza wetland by June 2025?
+  expected_sources:
+  - Humedal La Esperanza
+  expected_keywords:
+  - '16'
+  expected_answer: 16 bird species (and 5 amphibian species).
+  expected_evidence:
+  - source: Humedal La Esperanza
+    passage: Se habían confirmado 16 especies de aves y 5 de anfibios
+    locator: p.3
+  review_criteria: 'Must state correctly: 16 bird species by June 2025.'
+  category: cross-language
+  language: en
+  case_type: direct
+  document_formats:
+  - pdf
+  user_task: find-fact
+  difficulty: standard
+  split: tuning
+- id: xl-es-compare-apple-frogs
+  question: Compara el porcentaje del peso fresco de una manzana madura que es agua con el porcentaje de especies de anfibios vivos que son anuros.
+  expected_sources:
+  - Apples Malus
+  - Ranas
+  expected_keywords:
+  - '84'
+  - '88'
+  expected_answer: El agua es entre el 84 % y el 86 % del peso fresco de la manzana; los anuros son cerca del 88 % de los anfibios vivos.
+  expected_evidence:
+  - source: Apples Malus
+    passage: Water accounts for approximately 84% to 86% of the fresh weight of a mature apple
+    locator: Water and Turgor Pressure
+  - source: Ranas
+    passage: abarcando aproximadamente el 88% de todas las especies de anfíbios vivos
+    locator: Clasificación Taxonómica y Diversidad
+  review_criteria: 'Debe comunicar ambas cifras: 84-86 % de agua y cerca del 88 % de anuros.'
+  category: multi-document
+  language: es
+  case_type: comparison
+  document_formats:
+  - md
+  user_task: compare-documents
+  difficulty: long-document
+  split: tuning
+- id: xl-es-compare-notre-dame-dartmouth
+  question: ¿Qué ocurrió antes, el inicio de la construcción de Notre-Dame de París o el proyecto de Dartmouth que dio nombre a la inteligencia artificial?
+  expected_sources:
+  - gothic_architecture
+  - Artificial Intelligence
+  expected_keywords:
+  - '1163'
+  - '1956'
+  expected_answer: Notre-Dame, iniciada en 1163; el proyecto de Dartmouth fue en 1956.
+  expected_evidence:
+  - source: gothic_architecture
+    passage: '1163: Construction starts on Notre-Dame de Paris.'
+    locator: Detailed Timeline of Gothic Architecture
+  - source: Artificial Intelligence
+    passage: The field of AI was officially christened at the Dartmouth Summer Research Project on Artificial Intelligence in 1956
+    locator: The Birth and Golden Years
+  review_criteria: 'Debe dar ambos años (1163 y 1956) y concluir que Notre-Dame fue antes.'
+  category: multi-document
+  language: es
+  case_type: comparison
+  document_formats:
+  - txt
+  - md
+  user_task: compare-documents
+  difficulty: long-document
+  split: tuning
+- id: xl-en-compare-saint-denis-alexnet
+  question: Which happened first, the completion of the choir of Saint-Denis or AlexNet's ImageNet win? Give both years.
+  expected_sources:
+  - gothic_architecture
+  - Artificial Intelligence
+  expected_keywords:
+  - '1144'
+  - '2012'
+  expected_answer: The choir of Saint-Denis was completed in 1144; AlexNet won ImageNet in 2012.
+  expected_evidence:
+  - source: gothic_architecture
+    passage: '1144: Completion of the choir of Saint-Denis, the birth of Gothic.'
+    locator: Detailed Timeline of Gothic Architecture
+  - source: Artificial Intelligence
+    passage: won the ImageNet Large Scale Visual Recognition Challenge in 2012
+    locator: The AlexNet Catalyst
+  review_criteria: 'Must give both years (1144 and 2012) and say Saint-Denis came first.'
+  category: multi-document
+  language: en
+  case_type: comparison
+  document_formats:
+  - txt
+  - md
+  user_task: compare-documents
+  difficulty: long-document
+  split: tuning
+- id: xl-en-compare-anura-kuiper
+  question: What two figures do my notes give for the share of amphibian species that are anurans and for the Kuiper Belt's distance in AU?
+  expected_sources:
+  - Ranas
+  - Astronomía General
+  expected_keywords:
+  - '88'
+  - '30'
+  expected_answer: About 88% of living amphibian species are anurans; the Kuiper Belt lies 30 to 50 AU from the Sun.
+  expected_evidence:
+  - source: Ranas
+    passage: abarcando aproximadamente el 88% de todas las especies de anfíbios vivos
+    locator: Clasificación Taxonómica y Diversidad
+  - source: Astronomía General
+    passage: se extiende más allá de Neptuno (30 a 50 UA)
+    locator: Cuerpos Menores y Zonas Periféricas
+  review_criteria: 'Must give both figures: about 88% and 30 to 50 AU.'
+  category: multi-document
+  language: en
+  case_type: comparison
+  document_formats:
+  - md
+  user_task: compare-documents
+  difficulty: long-document
+  split: tuning
+- id: xl-es-compare-kotlin-microservices
+  question: Compara quién diseñó Kotlin con cómo se comunican los microservicios según la guía de arquitectura.
+  expected_sources:
+  - Kotlin Fundamentals
+  - Arquitectura de Software
+  expected_keywords:
+  - JetBrains
+  - gRPC
+  expected_answer: Kotlin lo diseñó JetBrains; los microservicios se comunican con APIs HTTP/gRPC o eventos.
+  expected_evidence:
+  - source: Kotlin Fundamentals
+    passage: Kotlin is a modern, cross-platform, statically typed programming language designed by JetBrains
+    locator: Kotlin Fundamentals
+  - source: Arquitectura de Software
+    passage: uso de APIs HTTP/gRPC o eventos para comunicarse
+    locator: Microservicios
+  review_criteria: 'Debe comunicar ambos datos: JetBrains y APIs HTTP/gRPC o eventos.'
+  category: multi-document
+  language: es
+  case_type: comparison
+  document_formats:
+  - md
+  user_task: compare-documents
+  difficulty: long-document
+  split: tuning
+  follow_ups:
+  - id: xl-es-kotlin-target-followup
+    question: ¿Y a qué máquina virtual apunta principalmente el primero?
+    expected_sources:
+    - Kotlin Fundamentals
+    expected_keywords:
+    - JVM
+    expected_answer: A la Java Virtual Machine (JVM).
+    expected_evidence:
+    - source: Kotlin Fundamentals
+      passage: Primarily targeting the Java Virtual Machine (JVM)
+      locator: Kotlin Fundamentals
+    review_criteria: 'Debe comunicar correctamente: la JVM.'
+    category: multi-document
+    language: es
+    case_type: follow-up
+    document_formats:
+    - md
+    user_task: compare-documents
+    difficulty: long-document
+    split: tuning

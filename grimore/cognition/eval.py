@@ -322,6 +322,12 @@ class EvalReport:
         agg["cited_evidence_hits"] = sum(
             bool(check["cited"]) for t in evidence_turns for check in t.evidence_checks
         )
+        # Hits whose heading locator no delivered fragment could confirm
+        # (Markdown/plain text carry no section anchor); the passage placed them.
+        agg["evidence_locator_unverified_n"] = sum(
+            check.get("locator_verified") is False
+            for t in evidence_turns for check in t.evidence_checks
+        )
         selected_turns = [t for t in evidence_turns if t.selected_evidence_recall is not None]
         agg["selected_evidence_recall"] = _present_mean(t.selected_evidence_recall for t in selected_turns)
         agg["selection_assessed_n"] = len(selected_turns)
@@ -1248,12 +1254,16 @@ def judge_claim_support(router, question: str, answer: str,
 
 
 def _literal_evidence(text: str) -> str:
-    """Only case, Unicode composition and whitespace are insignificant.
+    """Only case, Unicode composition, whitespace and inline markup are insignificant.
 
     Keep accents, numbers and punctuation: papá is not papa; 37,5 is not 375.
-    This tests reference presence, never semantic entailment of the answer.
+    Markdown emphasis/code markers (`` ` ``, ``*``, ``_``) are dropped on both
+    sides, as dataset validation does: delivered Markdown fragments keep their
+    markup (``**`val` (Value):**``) while expected passages are written without
+    it. This tests reference presence, never semantic entailment of the answer.
     """
-    return " ".join(unicodedata.normalize("NFC", text).casefold().split())
+    unmarked = re.sub(r"[`*_]+", "", unicodedata.normalize("NFC", text))
+    return " ".join(unmarked.casefold().split())
 
 
 def expected_evidence_checks(
@@ -1263,7 +1273,12 @@ def expected_evidence_checks(
     """Match each reference within ONE delivered passage at its exact locator.
 
     Missing legacy details are unassessed; an explicitly empty context fails.
-    Bare-title citations do not satisfy a page/heading-specific reference.
+    Bare-title citations do not satisfy a page/heading-specific reference
+    when the passage carries that anchor. Fragments without a section anchor
+    (Markdown and plain text are indexed without headings) cannot confirm a
+    heading locator: the literal passage alone places them, the bare title
+    is the most precise citation available, and ``locator_verified`` is
+    ``False`` so reports can count them apart. Page locators stay strict.
     """
     if not expected or source_details is None:
         return []
@@ -1274,6 +1289,7 @@ def expected_evidence_checks(
         locator = reference.get("locator", "").strip()
         needle = _literal_evidence(reference["passage"])
         context_labels, cited_labels, selected_details = [], [], []
+        verified_match = False
         for index, detail in enumerate(source_details):
             label = str(detail.get("label") or "")
             title = (detail.get("document") or {}).get("title") or label.split("#", 1)[0]
@@ -1283,17 +1299,26 @@ def expected_evidence_checks(
             if not needle or needle not in _literal_evidence(passage):
                 continue
             anchor = detail.get("locator") or {}
+            unverifiable = False
             if re.fullmatch(r"p\.\d+", locator):
                 page = anchor.get("page")
                 if type(page) is not int or page <= 0 or locator != f"p.{page}":
                     continue
-            elif locator and _literal_evidence(anchor.get("heading") or "") != _literal_evidence(locator):
-                continue
+            elif locator and anchor.get("heading"):
+                if _literal_evidence(anchor["heading"]) != _literal_evidence(locator):
+                    continue
+            elif locator:
+                unverifiable = True
+            verified_match = verified_match or not unverifiable
             context_labels.append(label)
             # Validate the emitted anchor as well as the passage's metadata.
             # Never grant credit to a label inconsistent with the physical page.
             label_anchor = label.partition("#")[2]
-            anchor_matches = not locator or _literal_evidence(label_anchor) == _literal_evidence(locator)
+            anchor_matches = (
+                not locator
+                or _literal_evidence(label_anchor) == _literal_evidence(locator)
+                or (unverifiable and not label_anchor)
+            )
             if label in citations and anchor_matches:
                 cited_labels.append(label)
                 if index in selected_indices:
@@ -1301,6 +1326,9 @@ def expected_evidence_checks(
         checks.append({**reference, "in_context": bool(context_labels),
                        "cited": bool(cited_labels), "context_labels": context_labels,
                        "cited_labels": cited_labels,
+                       "locator_verified": (
+                           verified_match if context_labels and locator else None
+                       ),
                        "selected": bool(selected_details) if citation_selections is not None else None,
                        "selected_detail_indices": selected_details})
     return checks

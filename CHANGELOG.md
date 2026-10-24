@@ -108,6 +108,15 @@ meaning.
 ### Fixed
 - A failed note write or index step is retried on the next scan instead of
   being recorded as done.
+- Eval scored "expected passage in context" (and the cited and selected
+  variants) as zero for every Markdown or plain-text source. Those fragments
+  carry no heading anchor, and the check demanded one. Delivered fragments also
+  keep their Markdown markup (bold, inline code), while expected passages are
+  written without it. On the Phase-0 tuning set, with an unchanged system,
+  the metric goes from 3/44 to 39/44. Heading locators that a fragment cannot
+  confirm are now placed by the literal passage and counted in
+  `evidence_locator_unverified_n`. Page locators and present headings stay
+  strict.
 - A model that returned nothing (for example Ollama restarting after an
   out-of-memory kill) was indistinguishable from an abstention in eval
   reports: the "The Oracle is silent." sentinel earned negative-case credit

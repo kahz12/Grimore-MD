@@ -39,6 +39,13 @@ def test_no_fuzzy_numeric_or_accent_match(text):
     assert not expected_evidence_checks([REFERENCE], [detail(text)], "[[Humedal#p.3]]")[0]["cited"]
 
 
+def test_markdown_markup_in_the_fragment_does_not_hide_the_passage():
+    reference = {"source": "Kotlin", "passage": "val (Value): Defines a read-only variable"}
+    fragment = {"label": "Kotlin", "document": {"title": "Kotlin"}, "locator": {},
+                "passage": {"text": "*   **`val` (Value):** Defines a read-only variable."}}
+    assert expected_evidence_checks([reference], [fragment], "")[0]["in_context"]
+
+
 def test_cannot_stitch_evidence_across_passages():
     details = [detail("El área es de"), detail("37,5 hectáreas")]
     assert not expected_evidence_checks([REFERENCE], details, "[[Humedal#p.3]]")[0]["in_context"]
@@ -58,6 +65,37 @@ def test_heading_and_legacy_detail_without_locator():
     assert not expected_evidence_checks([reference], [source], "[[A#Sampling]]")[0]["in_context"]
     reference["locator"] = ""
     assert expected_evidence_checks([reference], [source], "[[A#Sampling]]")[0]["cited"]
+
+
+def test_heading_locator_on_a_fragment_without_section_anchor_is_placed_by_the_passage():
+    """Markdown/plain-text fragments carry no heading: the passage places them."""
+    reference = {"source": "A", "passage": "Exact passage", "locator": "Sampling"}
+    md = {"label": "A", "document": {"title": "A"},
+          "locator": {"chunk_index": 3, "page": None, "heading": None},
+          "passage": {"text": "### 2. Sampling\nExact passage here"}}
+    check = expected_evidence_checks([reference], [md], "Fact [[A]]")[0]
+    assert check["in_context"] and check["cited"]
+    assert check["locator_verified"] is False
+    # A page locator never relaxes, and an unrelated heading still fails.
+    assert not expected_evidence_checks([{**reference, "locator": "p.2"}], [md], "[[A]]")[0]["in_context"]
+    anchored = {**md, "locator": {"heading": "Other"}}
+    assert not expected_evidence_checks([reference], [anchored], "[[A]]")[0]["in_context"]
+    verified = {**md, "label": "A#Sampling", "locator": {"heading": "Sampling"}}
+    assert expected_evidence_checks([reference], [verified], "[[A#Sampling]]")[0]["locator_verified"] is True
+
+
+def test_report_counts_unverified_locators_apart():
+    session = MagicMock()
+    session.turns = []
+    session.oracle.ask.return_value = {
+        "answer": "Fact [[A]]", "sources": ["A"],
+        "source_details": [{"label": "A", "document": {"title": "A"},
+                            "locator": {"heading": None}, "passage": {"text": "Exact passage"}}]}
+    case = EvalCase(id="md", question="Q?", expected_sources=["A"],
+                    expected_evidence=[{"source": "A", "passage": "Exact passage", "locator": "Sampling"}])
+    agg = run_eval(session, [case], judge=False).summary()["aggregate"]
+    assert agg["context_evidence_hits"] == 1
+    assert agg["evidence_locator_unverified_n"] == 1
 
 
 @pytest.mark.parametrize("payload,generate,negative,assessed", [

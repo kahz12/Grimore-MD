@@ -157,8 +157,14 @@ claims in `phase4_unanswerable_answers.yaml` apply only to the copied control
 PDF, never to all of `test_vault`; keep this manifest separate from the three
 positive cases and from held-out evaluation.
 
-Passage presence normalizes case, Unicode composition and whitespace only;
-numbers, punctuation and accents remain significant. It never joins fragments
+Passage presence normalizes case, Unicode composition, whitespace and inline
+Markdown markers (`` ` ``, `*`, `_`, which delivered fragments keep and expected
+passages omit); numbers, punctuation and accents remain significant. A `p.N`
+locator always needs that physical page. A heading locator needs that heading
+when the fragment carries one; Markdown and plain-text fragments carry none,
+so the literal passage places them, a bare-title citation counts, and the
+check records `locator_verified: false` (counted in
+`evidence_locator_unverified_n`). It never joins fragments
 or searches the full corpus. Missing legacy details are unassessed (`null`);
 an explicitly empty delivered context scores zero. Reports expose assessed
 turns, reference counts and hits. These diagnostics do not change historical
