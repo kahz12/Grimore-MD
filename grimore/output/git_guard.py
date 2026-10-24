@@ -25,8 +25,8 @@ class GitGuard:
         except git.NoSuchPathError:
             # The vault directory does not exist at all. Callers already
             # report that themselves -- preflight has a check for it with a
-            # remediation hint, so raising here only replaced a clear message with a
-            # traceback, which is what a new user hit on their first command.
+            # remediation hint -- so raising here would only replace that clear
+            # message with a traceback.
             logger.warning("git_vault_missing", path=str(self.vault_path))
             self.repo = None
 

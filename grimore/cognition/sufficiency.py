@@ -105,7 +105,8 @@ def assess(router, question, context, details, coverage_note, *, timeout_s=180):
         audit["selected_context_chars"] = len(selected_context)
         return selected_context, selected_details, audit
     except Exception:
-        # Do not expose endpoint exceptions or source contents in error logs.
+        # Only a fixed marker is recorded: endpoint exceptions and source
+        # contents are kept out of the audit record and the error logs.
         audit["error"] = "checker_failed"
         return "", [], audit
     finally:

@@ -504,7 +504,7 @@ def test_models_when_backend_unreachable_reports_error(
     assert shell._running is True
 
 
-# ── redesign: slash dispatch + @-mentions + new commands ───────────────
+# ── slash dispatch + @-mentions + conversational commands ─────────────
 
 
 def test_slash_routes_to_same_handler_as_word(shell_config, patched_services, capsys):

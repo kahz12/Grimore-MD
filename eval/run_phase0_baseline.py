@@ -1,7 +1,8 @@
-"""Plan by default; --execute builds the Phase-0 baseline in an isolated workspace.
+"""Plan by default; --execute builds the baseline in an isolated workspace.
 
-The workspace receives a copy of exactly the twelve files the Phase-0 datasets
-declare (corpus_version phase0-test-vault-2026-09-22), verified by SHA-256, plus
+The workspace receives a copy of exactly the twelve files the tuning and
+evaluation datasets (eval/phase0_*.yaml) declare (corpus_version
+phase0-test-vault-2026-09-22), verified by SHA-256, plus
 the given grimore.toml and an index of its own. The reference vault, the
 developer's database and earlier reports are never written. Each step runs in
 a fresh `grimore` process from the workspace. Full-model steps use
@@ -29,8 +30,9 @@ if str(REPO_ROOT) not in sys.path:
 from grimore.utils.config import load_config
 
 SOURCE_VAULT = REPO_ROOT / "test_vault" / "test_vault"
-# The corpus the Phase-0 datasets were validated against. A changed file is a
-# different corpus: re-pin deliberately (and say so) instead of measuring it.
+# The corpus the tuning and evaluation datasets were validated against. A
+# changed file is a different corpus: re-pin the hashes deliberately instead of
+# measuring against it.
 CORPUS_SHA256 = {
     "acta_revision_humedal.md": "c439acb2c109028aa275f2f9f582828206c9feabfce63f4e7ab3bf3771441972",
     "ai_evolution.md": "71bff23c898e1a3c79a3f52864bc549012953947883e607589a91e50fa0a0fc1",

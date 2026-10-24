@@ -357,12 +357,12 @@ class TestProfiles:
 
 
 class TestTunableDefaults:
-    """Magic constants promoted to config keys.
+    """Tunables exposed as config keys.
 
-    The contract is that a TOML written before these keys existed behaves
-    exactly as it did, so every default is asserted against the literal value
-    that used to be hard-coded, not against the dataclass field (which would
-    make the test tautological and pass even if a default were changed).
+    A TOML that omits these keys must get the shipped values, so every default
+    is asserted against a literal number, not against the dataclass field
+    (which would make the test tautological and pass even if a default were
+    changed).
     """
 
     def test_defaults_match_the_previously_hardcoded_values(self, tmp_path):
@@ -410,7 +410,7 @@ class TestTunableDefaults:
 
 
 def test_bm25_weight_defaults_low_restores_classic_rrf_and_rejects_invalid(tmp_path):
-    """Lowered on purpose (not a historical constant): see CognitionConfig."""
+    """Defaults to 0.25 on purpose (not classic equal-weight RRF): see CognitionConfig."""
     assert load_config(str(tmp_path / "absent.toml")).cognition.bm25_weight == 0.25
     path = tmp_path / "grimore.toml"
     path.write_text("[cognition]\nbm25_weight = 1\n", encoding="utf-8")

@@ -1,5 +1,5 @@
-"""End-to-end tests for the v2.1 retrieval-quality features against a live
-Ollama server.
+"""End-to-end tests for the retrieval-quality features (query rewrite,
+re-rank, conversation-aware retrieval) against a live Ollama server.
 
 These cover what the mocked tests in ``test_retrieval_upgrades.py`` can't:
 that the actual local LLM honours the query-rewrite JSON contract, that the

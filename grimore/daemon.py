@@ -76,7 +76,9 @@ class GrimoreDaemon:
         self.backup = BackupManager(config.memory.db_path)
         self.maintenance = MaintenanceRunner(self.db, config.maintenance)
 
-        # Initialize cognitive components
+        # Cognition stack used when indexing a changed file: router for the
+        # tagger's LLM calls, the vault taxonomy the tagger reconciles against,
+        # and an embedder that caches through the database.
         self.router = LLMRouter(config)
         self.vault_tax = load_taxonomy_from_vault(Path(config.vault.path))
         self.tagger = Tagger(config, self.router, self.vault_tax)
@@ -150,8 +152,8 @@ class GrimoreDaemon:
         self.event_log.write("daemon_started", vault=self.config.vault.path, pid=str(_os_getpid()))
         self.index_progress.start(total=None, dry_run=self.config.output.dry_run)
         # Pull the debounce + polling knobs from DaemonConfig so users can
-        # tune them via grimore.toml without editing source. The defaults
-        # match the v2.1 behaviour (45s debounce, native inotify/FSEvents).
+        # tune them via grimore.toml without editing source. Defaults: a 45 s
+        # debounce and the native watcher (inotify/FSEvents), no polling.
         self.observer = VaultObserver(
             vault_path=self.config.vault.path,
             callback=self.process_file,

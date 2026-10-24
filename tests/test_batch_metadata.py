@@ -1,11 +1,11 @@
 """The Oracle's per-chunk metadata lookups, collapsed into batches.
 
-``_build_context`` used to call ``get_note_title`` once per retrieved chunk
-and ``get_chunk_anchors`` once per cited chunk. These tests pin the two batch
-replacements to the singular methods they stand in for: same results, same
-tie-breaking, same treatment of misses — and, for the anchors query, no
-cross-contamination from the ``IN x IN`` selection it uses to stay on the
-note_id index.
+``_build_context`` needs a title per retrieved chunk and anchors per cited
+chunk; the batch methods answer both in a handful of queries instead of one
+per chunk. These tests pin each batch method to the singular method it stands
+in for: same results, same tie-breaking, same treatment of misses — and, for
+the anchors query, no cross-contamination from the ``IN x IN`` selection it
+uses to stay on the note_id index.
 """
 import struct
 

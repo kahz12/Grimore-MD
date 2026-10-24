@@ -80,7 +80,9 @@ def _json_object(data: bytes) -> dict:
 
 
 def _read_file(path: Path, limit: int) -> bytes:
-    # Do not follow links into installed settings or unrelated private files.
+    # Symlinks (and paths with symlinked ancestors) are rejected so the
+    # packager cannot be steered into installed settings or other private
+    # files.
     if path.is_symlink() or path.absolute() != path.resolve() or not path.is_file():
         raise ValueError("Source/package must be a regular file without symlink ancestors")
     with path.open("rb") as stream:

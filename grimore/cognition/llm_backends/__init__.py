@@ -1,22 +1,22 @@
 """LLM backend protocol + factory.
 
-Decouples :class:`grimore.cognition.llm_router.LLMRouter` from Ollama's
-wire format. Backends implement a tiny Protocol that mirrors the
-router's existing public surface (so the rest of the codebase doesn't
-change shape) while the router itself stays the single home of the
-circuit-breaker and the JSON extraction fallback.
+Decouples :class:`grimore.cognition.llm_router.LLMRouter` from any one
+wire format. Backends implement a tiny Protocol that mirrors the router's
+public surface (so callers never see which backend is active) while the
+router itself stays the single home of the circuit-breaker and the JSON
+extraction fallback.
 
 Two backends ship today:
 
 * :class:`grimore.cognition.llm_backends.ollama.OllamaBackend` — the
-  v2.x default. Talks to ``OLLAMA_HOST/api/{generate,tags,embeddings}``.
+  default. Talks to ``OLLAMA_HOST/api/{generate,tags,embeddings}``.
 * :class:`grimore.cognition.llm_backends.openai.OpenAICompatibleBackend`
   — anything that speaks ``POST /v1/chat/completions``: llama.cpp
   server, vLLM, LM Studio, OpenRouter, OpenAI proper.
 
 The Protocol is intentionally minimal: backends return strings (or
-parsed dicts for the JSON path) and yield strings on stream, so
-existing callers — Oracle, tagger, eval, reranker — stay unchanged.
+parsed dicts for the JSON path) and yield strings on stream, so callers —
+Oracle, tagger, eval, reranker — only ever deal with plain text and dicts.
 """
 from __future__ import annotations
 
@@ -27,10 +27,10 @@ from typing import Any, Iterator, Optional, Protocol, runtime_checkable
 class LLMBackend(Protocol):
     """The contract every chat backend must implement.
 
-    Designed to mirror the public surface of the v2.x LLMRouter so
-    callers like ``Oracle.ask`` don't change. The router wraps each
-    method with the circuit-breaker; backends themselves don't have to
-    know the breaker exists.
+    The methods mirror the public surface of :class:`LLMRouter`, which
+    delegates to them, so callers like ``Oracle.ask`` are backend-agnostic.
+    The router wraps each method with the circuit-breaker; backends
+    themselves don't have to know the breaker exists.
     """
 
     name: str
@@ -80,8 +80,8 @@ class LLMBackend(Protocol):
 def build_backend(config) -> LLMBackend:
     """Build the backend selected by ``config.cognition.llm_backend``.
 
-    Defaults to Ollama for backwards compatibility — a vault upgrading
-    from v2.x sees zero behaviour change until they flip the knob.
+    Defaults to Ollama when ``llm_backend`` is unset, so a config that
+    never mentions it keeps talking to a local Ollama.
 
     Unknown backend names degrade to Ollama with a warning rather than
     raising: a typo in ``grimore.toml`` shouldn't break the CLI before

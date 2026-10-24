@@ -276,8 +276,8 @@ class TestOpenAICompatibleBackend:
 
     def test_streaming_tolerates_spaceless_data_prefix(self):
         # The SSE spec permits ``data:`` with no space after the colon; the
-        # The backend must strip either form so valid spaceless frames are
-        # not discarded.
+        # backend must strip either form so valid spaceless frames are not
+        # discarded.
         b = _openai(llm_base_url="http://localhost:8080")
         resp = MagicMock()
         resp.__enter__.return_value = resp

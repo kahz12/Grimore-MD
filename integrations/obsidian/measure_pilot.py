@@ -1,8 +1,9 @@
-"""Offline, structured phase-5 comparisons. No vault access or telemetry.
+"""Offline, structured comparisons of recorded pilot trials. No vault access or telemetry.
 
-This repository helper is separate from the plugin and from the phase-0 pilot
-intake. Humans agree tasks and record observations; this tool never certifies
-consent, real usage, usefulness or acceptance from self-reported counts.
+This repository helper is separate from the plugin and from the pilot intake
+and observation tool (``grimore pilot``). Humans agree tasks and record
+observations; this tool never certifies consent, real usage, usefulness or
+acceptance from self-reported counts.
 """
 from __future__ import annotations
 
@@ -49,7 +50,8 @@ def template(participant_count: int = 5) -> dict:
 
 def _fields(value, names, label):
     if not isinstance(value, dict) or set(value) != set(names):
-        # Never echo unexpected fields or values containing private content.
+        # The message stays generic on purpose: unexpected field names or
+        # values could contain private content, so they are not echoed.
         raise ValueError(f"{label}: missing or unsupported fields")
 
 
@@ -275,7 +277,8 @@ def write_template(path: Path, participant_count: int = 5) -> None:
     if path.parent != path.parent.resolve():
         raise ValueError("The output parent must not have symlink aliases")
     payload = (json.dumps(data, indent=2) + "\n").encode("utf-8")
-    # Never overwrite, including a symlink or an empty existing file.
+    # O_EXCL fails if the path exists in any form (a symlink, an empty file,
+    # ...), so an existing output is never overwritten.
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(payload)

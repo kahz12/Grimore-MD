@@ -529,16 +529,21 @@ def _do_migrate_embeddings(
             "Just edit [cyan]grimore.toml[/] to switch models.",
             title="migrate-embeddings",
         ))
-        # Still mark the row complete so the bookkeeping is clean.
+        # Nothing to re-embed, so skip the shadow-table swap and only switch the
+        # configured model. The ``migrations`` row opened above stays
+        # ``running``: only swap_embedding_migration marks one ``complete``.
         if write_config:
             update_cognition_models(embedding_model=target_model)
         return row
 
-    # Build a temporary Embedder targeting the new model.
+    # Build a temporary Embedder targeting the new model, from a copy of the
+    # config so the live one keeps pointing at the old model until the swap.
     from dataclasses import replace
     migrating_cog = replace(config.cognition, model_embeddings_local=target_model)
     migrating_cfg = replace(config, cognition=migrating_cog)
-    embedder = Embedder(migrating_cfg, cache=None)  # no cache reuse across models
+    # cache=None: every vector comes straight from the new model; the
+    # embedding cache is neither read nor written during the migration.
+    embedder = Embedder(migrating_cfg, cache=None)
 
     pending = db.iter_pending_migration_rows()
     if pending:

@@ -56,9 +56,9 @@ class SearchMixin(DbBase):
         # in any order/position matches, instead of only the exact phrase a
         # single quoted string would demand. Each token is individually
         # double-quoted (with internal ``"`` doubled) so FTS5 operators or
-        # punctuation in user input can't be parsed as query syntax — same
-        # injection safety as before, wider recall. Capped so a pathological
-        # query can't build a giant MATCH expression.
+        # punctuation in user input can't be parsed as query syntax (no
+        # injection). Capped so a pathological query can't build a giant
+        # MATCH expression.
         tokens = [t for t in query.split() if t][:_FTS_MAX_TERMS]
         if not tokens:
             return []

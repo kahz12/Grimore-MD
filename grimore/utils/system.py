@@ -65,10 +65,9 @@ def _is_grimore_process(pid: int) -> bool:
       2. Console-script form (foreground ``grimore daemon run``):
              [<.../grimore>, "daemon", ...]
 
-    A bare substring match for "grimore" used to be enough but had
-    false positives (e.g. an editor opened on this repo, an unrelated
-    script with "grimore" in its argv). Matching argv structure eliminates
-    that ambiguity.
+    A bare substring match for "grimore" would give false positives (e.g.
+    an editor opened on this repo, an unrelated script with "grimore" in
+    its argv). Matching argv structure avoids that ambiguity.
 
     On platforms without procfs (Windows, macOS) we cannot read another
     process's argv portably, so we trust the lock + ``os.kill(pid, 0)``

@@ -72,9 +72,10 @@ def fingerprints(cases: Path, pdf: Path, config: Path) -> dict:
 def negative_control(turns) -> dict:
     """Heuristic only, with no credit for empty/silent/no-context responses.
 
-    Do not change the historical abstention_rate, interpret status as a
-    semantic verdict, or accept a transport failure as successful abstention.
-    The exact responses and contexts remain in the human review queue.
+    It leaves the existing abstention_rate as defined, does not read the
+    status as a semantic verdict, and never counts a transport failure as a
+    successful abstention. The exact responses and contexts remain in the
+    human review queue.
     """
     observations = []
     for turn in turns:
@@ -135,7 +136,9 @@ def installed_identity(http, names: list[str]) -> dict:
         match = next((m for m in models if m.get("name") == canonical), None)
         if not match or not match.get("digest"):
             raise ValueError(f"Installed model with digest required: {canonical}; no download attempted")
-        # Do not export unrelated models or their private parent-model paths.
+        # Only the requested models are exported, reduced to name, digest, size
+        # and a few public details; other installed models and the private
+        # parent-model paths in Ollama's response are left out of the report.
         details = match.get("details") or {}
         selected[name] = {"name": match["name"], "digest": match["digest"],
                           "size_bytes": match.get("size"),

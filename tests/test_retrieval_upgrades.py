@@ -1,4 +1,4 @@
-"""Tests for the v2.1 retrieval-quality upgrades:
+"""Tests for the retrieval-quality features:
 
 * NumPy-vectorized dense scoring (with parity against the pure-Python loop
   and graceful fallback on ragged vectors / missing numpy),

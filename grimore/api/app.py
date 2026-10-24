@@ -174,9 +174,8 @@ _STATIC_DIR = _HERE / "static"
 _TEMPLATES_DIR = _HERE / "templates"
 _INDEX_HTML = _TEMPLATES_DIR / "index.html"
 
-# Read from the package rather than restated here: this constant had drifted
-# to 2.4.0 while the package was at 3.2.0, and a client reading the API version
-# has no way to notice.
+# Taken from the package so the reported API version always matches the
+# installed release; a client has no other way to tell them apart.
 from grimore import __version__ as _API_VERSION  # noqa: E402
 
 

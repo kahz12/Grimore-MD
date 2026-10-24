@@ -273,10 +273,10 @@ class FrontmatterWriter:
         if "title" not in merged or not merged["title"]:
             merged["title"] = note.title
 
-        # Preserve any human-edited body below the auto-generated header
-        # so a user can scribble notes on a PDF and not lose them on the
-        # next scan. We rewrite only the header line + any prior
-        # ## Suggested Connections section is left for LinkInjector.
+        # The sidecar body holds the extracted text between start/end markers;
+        # only that block is regenerated. Text a human wrote around it (notes
+        # scribbled on a PDF) survives the next scan, and so does the
+        # ``## Suggested Connections`` section, which LinkInjector owns.
         body = self._merge_extracted_body(existing_body, note)
 
         sidecar_path.parent.mkdir(parents=True, exist_ok=True)

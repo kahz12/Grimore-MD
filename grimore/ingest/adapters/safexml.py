@@ -1,7 +1,7 @@
 """
 Hardened XML parsing for the zip-container adapters (docx, odt, epub).
 
-Closes audit finding **M1** (XML entity-expansion DoS / "billion laughs").
+Guards against XML entity-expansion DoS ("billion laughs") and XXE.
 The stdlib ``xml.etree.ElementTree`` expands *internal* entities, so a
 tiny crafted XML member inside a ``.docx`` / ``.odt`` / ``.epub`` can blow
 up to gigabytes of in-memory strings at parse time and OOM-kill the

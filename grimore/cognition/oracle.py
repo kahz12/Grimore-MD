@@ -41,12 +41,13 @@ _CONTEXT_SEPARATOR = "\n\n"
 # request timeout. On hardware where a rewrite takes a second, it never fires.
 _REWRITE_TIMEOUT_S = 60
 
-# A rewrite may only rephrase the conversation. Asked loosely, the model
-# answered the follow-up inside the query ("which generals?" -> "e.g. Marius,
-# Sulla, Caesar") or invented the referent ("his successor" -> "Commodus" for
-# Trajan's successor), steering retrieval towards its own belief instead of
-# the notes. About one rewrite in four did; with the prompt and guard below,
-# none of 26 did.
+# A rewrite may only rephrase the conversation. Asked loosely, the model can
+# answer the follow-up inside the query ("which generals?" -> "e.g. Marius,
+# Sulla, Caesar") or invent the referent ("his successor" -> "Commodus" for
+# Trajan's successor), which steers retrieval towards its own belief instead
+# of the notes. The instructions below restrict it to words already in the
+# conversation, and _introduced_terms backs that up by rejecting any rewrite
+# that brings in a name or number the conversation never used.
 _REWRITE_INSTRUCTIONS = (
     "Rewrite the follow-up as one self-contained search query in the language "
     "of the follow-up. Replace pronouns and references with the words the "
@@ -120,8 +121,10 @@ def _answer_template(template: str, *, streaming: bool = False) -> str:
     if marker and closed:
         return before + ("" if streaming else block) + after
     if streaming:
-        # Compatibility for the historical template: its JSON rule and
-        # example were the final instructions before the Context placeholder.
+        # Templates without <json-output-format> markers (e.g. an older custom
+        # template): cut from its numbered "Return ONLY ..." JSON rule up to
+        # the "Context:" placeholder, which is where that rule and its example
+        # sit.
         rule = re.search(r"(?m)^\d+\.\s+Return ONLY\b", template)
         if rule:
             context = template.find("Context:", rule.end())
@@ -177,8 +180,9 @@ def answer_status(answer: str, sources, declared=None) -> str:
     if not sources or not text:
         return "insufficient_evidence"
     # A model can obey citation formatting while omitting the actual answer.
-    # Do not let its declared "supported" disguise a citation-only response.
-    # Preserve meaningful symbols (e.g. an emoji), numbers and ordinary prose.
+    # A citation-only response is therefore insufficient evidence even when the
+    # model declares "supported". Only citations and punctuation count as
+    # empty: meaningful symbols (e.g. an emoji), numbers and prose do not.
     if _citation_only(text):
         return "insufficient_evidence"
     raw = str(declared or "").strip().lower()
@@ -197,8 +201,8 @@ def _format_source_label(title: str, page, heading) -> str:
     """Render a wikilink-style source label with the best available anchor.
 
     Page wins over heading (more precise) when both are present.
-    Returns just ``title`` when neither anchor is available so MD / TXT
-    citations stay exactly what they were in v2.0.
+    Returns just ``title`` when neither anchor is available, so MD / TXT
+    citations stay a bare ``[[Title]]``.
     """
     if page:
         return f"{title}#p.{page}"
@@ -287,7 +291,7 @@ class Oracle:
         )
         # Snapshot the context cap once. Read via getattr so a partially
         # populated config (the SimpleNamespace stand-ins used in tests, or a
-        # TOML written before this key existed) still yields the historical
+        # TOML written before this key existed) still yields the default
         # 16 KB rather than an AttributeError.
         self.context_max_chars = int(getattr(
             config.cognition, "context_max_chars", _ORACLE_CONTEXT_MAX_CHARS
@@ -610,11 +614,12 @@ class Oracle:
 
         ``history`` arrives from the HTTP API / MCP caller (or the shell's
         own turn log) and is interpolated into both the retrieval-rewrite
-        prompt and the system prompt. Unlike retrieved note content and
-        ``extra_sources`` it previously skipped the injection guard, so a
-        caller could otherwise smuggle role markers or chat-template tokens
-        through it. A non-list value would also crash the ``history[-3:]``
-        iteration and turn malformed input into a server error.
+        prompt and the system prompt. Retrieved note content and
+        ``extra_sources`` are sanitised on their own paths; history needs the
+        same injection guard here, otherwise a caller could smuggle role
+        markers or chat-template tokens through it. A non-list value would
+        also break the ``history[-3:]`` iteration and turn malformed input
+        into a server error.
 
         Returns a list of ``{"q", "a"}`` dicts with both fields run through
         :meth:`SecurityGuard.sanitize_prompt`. Anything that isn't a list of
@@ -653,9 +658,9 @@ class Oracle:
 
     # Matched *before* accent folding, because folding destroys the only thing
     # that separates them from an everyday word: "él" (pronoun) becomes "el"
-    # (definite article), which appears in almost any Spanish sentence. That
-    # collision made "¿Qué es el método mayéutico de Sócrates?" -- a fully
-    # self-contained question -- look like a follow-up needing resolution.
+    # (definite article), which appears in almost any Spanish sentence. After
+    # folding, a fully self-contained question such as "¿Qué es el método
+    # mayéutico de Sócrates?" would look like a follow-up needing resolution.
     _REFERENTIAL_ACCENTED = frozenset({"él", "aquí", "ahí", "allí", "allá"})
 
     # A question opening with a coordinating conjunction is a continuation of
@@ -755,8 +760,9 @@ class Oracle:
                 rewritten = _clean_rewrite(rewritten)
                 introduced = _introduced_terms(rewritten, question, history[-3:])
                 if introduced:
-                    # Never let a fact only the model "knows" steer retrieval:
-                    # the previous question carries the topic instead.
+                    # A rewrite carrying a fact only the model "knows" would
+                    # steer retrieval away from the notes, so it is discarded
+                    # and the previous question carries the topic instead.
                     logger.info(
                         "oracle_query_rewrite_rejected",
                         original=question,
@@ -814,9 +820,9 @@ class Oracle:
                                filter_note_ids: "set[int] | None" = None):
         """Run retrieval and return context plus structured source details.
 
-        Returns ``(context, sources, retrieved, source_details)``.  The public
-        compatibility wrapper below keeps the historical three-tuple for
-        callers that use this helper directly.
+        Returns ``(context, sources, retrieved, source_details)``.  The
+        compatibility wrapper below returns only the first three, for callers
+        that use this helper directly.
 
         ``extra_sources`` is a list of ``(title, raw_body)`` pairs from
         user-explicit attachments (``@note``, ``/pin``). They are prepended
@@ -1043,7 +1049,7 @@ class Oracle:
                        retrieval_k: "int | None" = None,
                        timings: "dict | None" = None,
                        filter_note_ids: "set[int] | None" = None):
-        """Compatibility wrapper returning the historical three-tuple."""
+        """Compatibility wrapper returning ``(context, sources, retrieved)``."""
         context, sources, retrieved, _details = self._build_context_payload(
             question, top_k, extra_sources=extra_sources,
             retrieval_k=retrieval_k, timings=timings,

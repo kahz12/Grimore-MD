@@ -49,10 +49,10 @@ _NS = {
     "dcterms": "http://purl.org/dc/terms/",
 }
 
-# A paragraph styled "Heading 1" (or "Heading1", "Heading 2", etc.)
-# starts a new section. Match any digit suffix so localisations like
-# "Heading 1", "heading1", "Titre1" — wait, no, Word stores English
-# style ids regardless of UI language, so this catches every case.
+# A paragraph styled "Heading 1" (or "Heading1", "Heading 2", etc.) starts a
+# new section; any digit suffix matches. Only the id on the paragraph's own
+# ``w:pStyle`` is tested (styles.xml is not read), so a heading whose style id
+# is anything other than Heading<n> is treated as ordinary body text.
 _HEADING_STYLE_RE = re.compile(r"^Heading\s*(\d+)$", re.IGNORECASE)
 
 

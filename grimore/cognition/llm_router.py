@@ -2,16 +2,13 @@
 
 The router itself is backend-agnostic: it owns the circuit-breaker,
 the JSON-extraction fallback for non-strict servers, and the public
-API that the rest of the codebase has used since v2.x.
+API the rest of the codebase calls
+(``oracle.router.complete(...)``, ``tagger.router.complete(...)``,
+``router.complete_streaming(...)``, ``router.list_installed_models()``).
 The actual wire format lives in
 :mod:`grimore.cognition.llm_backends.ollama` and
-:mod:`grimore.cognition.llm_backends.openai`.
-
-Backwards compat note: existing call sites
-(``oracle.router.complete(...)``, ``tagger.router.complete(...)``,
-``router.complete_streaming(...)``, ``router.list_installed_models()``)
-keep working unchanged. Tests that mock ``LLMRouter`` continue to mock
-the same public surface.
+:mod:`grimore.cognition.llm_backends.openai`. Tests that mock
+``LLMRouter`` mock that same public surface.
 """
 import json
 import re
@@ -139,9 +136,8 @@ class LLMRouter:
         # interval. The lock preserves the invariant on free-threaded builds
         # and is negligible on a path dominated by network calls.
         self._breaker_lock = threading.Lock()
-        # Instance-level breaker settings, defaulting to the class constants
-        # so the historical behaviour is unchanged and the class attributes
-        # stay valid as the documented defaults. Floored at 1 failure: a
+        # Instance-level breaker settings, defaulting to the class constants,
+        # which remain the documented defaults. Floored at 1 failure: a
         # threshold of 0 would trip the breaker before any call was made.
         cognition = getattr(config, "cognition", None)
         self.failure_threshold = max(1, int(getattr(

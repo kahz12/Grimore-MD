@@ -1,5 +1,5 @@
-"""I1 regression: build_session pins loopback HTTP backends to the validated
-IP and sends the original hostname in the Host header."""
+"""build_session pins loopback HTTP backends to the validated IP and sends the
+original hostname in the Host header."""
 import pytest
 import requests
 from requests.adapters import HTTPAdapter

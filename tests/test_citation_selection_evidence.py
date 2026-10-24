@@ -33,7 +33,9 @@ def test_same_page_distractor_cannot_earn_exact_selection_credit(raw, selected):
     assert check["selected"] is selected
     assert check["selected_detail_indices"] == ([1] if selected else [])
     if "[[Humedal#p.3]]" in answer:
-        assert check["cited"]  # Historical page metric intentionally unchanged.
+        # ``cited`` is the page-level metric: the label counts as cited even
+        # though it cannot pick one passage (that is what ``selected`` tracks).
+        assert check["cited"]
     if trace and raw.endswith("[[Humedal#p.3]]"):
         assert trace[0]["selection"] == "ambiguous"
 

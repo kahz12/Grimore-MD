@@ -211,7 +211,8 @@ def scan(
     # file hits the LLM. Uses the effective auto_commit setting for git check.
     _preflight_or_exit(config)
 
-    # Initialize core services
+    # Build the services one scan shares across every file. The embedder gets
+    # the database as its cache so unchanged text is never embedded twice.
     git_guard = GitGuard(str(actual_vault_path))
     if not git_guard.is_repo_ready():
         console.print(ui.warn_panel(
@@ -335,7 +336,9 @@ def scan(
                 note.metadata, note.format, mtime_ns=disk_stat.st_mtime_ns,
             )
 
-            # Respect privacy policy in frontmatter
+            # A note can opt out of processing with ``privacy: never_process``
+            # in its frontmatter. It is skipped before any content reaches
+            # the scanner, the LLM or the embedder.
             if note.metadata.get("privacy") == "never_process":
                 stats["skipped"] += 1
                 index_progress.record("skipped", rel_label, reason="privacy")
@@ -412,7 +415,9 @@ def scan(
                 progress.advance(task)
                 continue
 
-            # Security: Scan for PII/Secrets
+            # Flag PII and secrets (API keys, tokens...). A hit is logged and
+            # makes ingest_services hand this note only loopback clients, so
+            # sensitive text is never sent to a remote backend.
             sensitive_findings = security.scan_for_sensitive_data(note.content)
             if sensitive_findings:
                 logger.warning("sensitive_data_detected", path=str(file), types=sensitive_findings)
@@ -653,8 +658,8 @@ def connect(
     )
     injector = LinkInjector()
 
-    # One row per note -- the note's first chunk, which is the vector the
-    # per-note loop used to pick up as it walked the table.
+    # One row per note -- the note's first chunk, which stands in for the
+    # note as a whole when comparing notes against each other.
     note_vectors = db.get_first_chunk_vectors()
     if not note_vectors:
         console.print(ui.warn_panel(
@@ -701,8 +706,8 @@ def connect(
         for s in hits if s["score"] > effective_threshold
     }
     titles = db.get_note_titles(wanted_titles)
-    # path / title / format / sidecar for every note, in one query rather than
-    # the two per note the loop used to make.
+    # path / title / format / sidecar for every note, fetched in one query
+    # rather than two lookups per note.
     targets = db.get_note_targets(note_ids)
 
     total_links = 0
@@ -719,7 +724,8 @@ def connect(
                 continue
             # Format-aware writeback target: .md hits the source file,
             # everything else lands in its sidecar. Rows whose ``format``
-            # column is NULL come back as "md", the historical behaviour.
+            # column is NULL come back as "md" (notes indexed before the
+            # column existed are all Markdown).
             path, title, note_format, sidecar = target
             note_sidecar = Path(sidecar) if sidecar else None
 
@@ -920,7 +926,8 @@ def daemon(
     ui.command_header("daemon", action)
 
     if action == "run":
-        # Run daemon in foreground
+        # Foreground: this process becomes the daemon and blocks in
+        # instance.start() until Ctrl-C.
         setup_logger(json_format=json_logs)
         config = load_config()
         from grimore.daemon import GrimoreDaemon
@@ -937,7 +944,9 @@ def daemon(
         instance = GrimoreDaemon(config, pid_file=pid_file)
         instance.start()
     elif action == "start":
-        # Start daemon in background
+        # Background: spawn a detached `python -m grimore daemon` process and
+        # return. The daemon writes its own PID file, which `stop` and
+        # `status` use to find it again.
         if is_running(pid_file):
             console.print(ui.warn_panel(
                 f"A daemon is already running. PID file: [cyan]{pid_file}[/].",
@@ -953,7 +962,8 @@ def daemon(
             title="Started",
         ))
     elif action == "stop":
-        # Stop background daemon
+        # Ask the process named in the PID file to exit; stop_daemon
+        # escalates to a hard kill if it does not stop in time.
         if not is_running(pid_file):
             console.print(ui.info_panel("No daemon running.", title="Nothing to stop"))
             return
@@ -1166,7 +1176,8 @@ def prune(
         ui.tip("Dry run complete. Run [cyan]grimore prune --no-dry-run[/] to delete.")
         return
 
-    # Delete records from DB
+    # Drop the index rows (and their chunks/embeddings) for notes missing on
+    # disk, then the tags that no remaining note references.
     removed = db.prune_missing_notes(existing_paths)
     purged = db.purge_unused_tags()
 
@@ -2004,9 +2015,9 @@ def mcp(
     """
     setup_logger(json_format=json_logs, stream=sys.stderr)
     config = load_config()
-    # Metadata/source/review queries need neither chat nor embeddings.
-    # Do not probe model services before an editor checks vault identity and
-    # remote-query consent. Only validate the local library at startup.
+    # Metadata/source/review queries need neither chat nor embeddings, so
+    # model services are not probed at startup: an editor first checks vault
+    # identity and remote-query consent. Only the local library is validated.
     vault_root = Path(config.vault.path)
     if not vault_root.is_dir() or not os.access(vault_root, os.R_OK | os.X_OK):
         sys.stderr.write("MCP: the configured vault is not an accessible directory. Check grimore.toml.\n")

@@ -31,7 +31,6 @@ class TestRegistry:
 
     def test_register_is_idempotent_for_same_adapter(self):
         adapter = MarkdownAdapter()
-        # Re-registering the same class for the same extension is a no-op
         # Re-registering the same class for the same extension is a no-op,
         # so the registry remains usable after repeated imports.
         register(adapter)
@@ -64,7 +63,7 @@ class TestMarkdownAdapterRoundTrip:
         assert doc.file_hash and len(doc.file_hash) == 64
         assert doc.content_hash != doc.file_hash  # one hashes text, the other bytes
         assert doc.size_bytes > 0
-        assert doc.sections == []  # Markdown adapter doesn't segment yet
+        assert doc.sections == []  # Markdown has no structural anchors
 
     def test_parser_dispatches_through_registry(self, tmp_path):
         f = tmp_path / "n.md"

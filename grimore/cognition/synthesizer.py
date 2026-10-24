@@ -163,7 +163,8 @@ class Synthesizer:
                 review_status="unavailable",
             )
 
-        # Filter out generated notes (feedback-loop prevention, per Q4).
+        # Exclude Synthesizer output from the sources: distilling a previous
+        # distillation would feed the model its own text back (feedback loop).
         usable: list[tuple[int, str, str]] = []
         excluded = 0
         for nid, npath, ntitle in candidate_notes:

@@ -56,9 +56,9 @@ class Embedder:
         )
         self.cache = cache
         # Sub-batch size for /api/embed. getattr keeps stand-in configs and
-        # pre-existing TOMLs on the historical 32. Floored at 1: a zero or
-        # negative value would make the batching loop below advance by zero
-        # and spin forever.
+        # TOMLs that omit the key on the default (_EMBED_BATCH_SIZE, 32).
+        # Floored at 1: a zero or negative value would make the batching loop
+        # below advance by zero and spin forever.
         self.batch_size = max(1, int(getattr(
             config.cognition, "embed_batch_size", _EMBED_BATCH_SIZE
         )))
@@ -126,7 +126,8 @@ class Embedder:
             logger.warning("embed_input_truncated", original=len(text), kept=EMBED_MAX_CHARS)
             text = text[:EMBED_MAX_CHARS]
 
-        # Check cache before calling the API
+        # Serve repeated text from the cache (keyed on model + text) instead
+        # of calling Ollama again.
         key = self._cache_key(text) if self.cache is not None else None
         if key is not None:
             cached = self.cache.get_cached_embedding(key)
@@ -144,10 +145,9 @@ class Embedder:
             if not raw:
                 return None
 
-            # Unit-normalize the vector to allow dot-product similarity
+            # Store unit-length vectors so a dot product equals cosine
+            # similarity downstream; the cached copy is normalized too.
             vector = self.normalize(raw)
-
-            # Store result in cache
             self._cache_store(text, vector)
             return vector
         except Exception as e:
@@ -172,13 +172,13 @@ class Embedder:
         failed embeds), so callers can ``zip`` the result straight back onto
         their inputs. Cache hits are served locally; the remaining misses go
         to Ollama's batch endpoint (``/api/embed`` with an ``input`` array)
-        in bounded sub-batches. This replaces the per-item ``embed()`` loop
-        the chunker and re-embed paths used to run — a 100-sentence document
-        drops from 100 sequential requests to a handful.
+        in bounded sub-batches. The chunker and re-embed paths use it instead
+        of a per-item ``embed()`` loop, so a 100-sentence document costs a
+        handful of requests rather than 100 sequential ones.
 
         A sub-batch that the server can't satisfy (e.g. an Ollama too old to
         expose ``/api/embed``) transparently falls back to serial ``embed()``
-        for that slice, so behaviour is never worse than the old path.
+        for that slice, so it is never worse than embedding text by text.
         """
         results: list[Optional[list[float]]] = [None] * len(texts)
         pending_idx: list[int] = []

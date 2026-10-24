@@ -62,9 +62,10 @@ class SchemaMixin(DbBase):
         # plus one writer, so this gives a concurrent index operation time to
         # finish before a query reports that the database is locked.
         conn.execute("PRAGMA busy_timeout=5000")
-        # 16 MB page cache and a 256 MB mmap window. Both are per-connection
-        # and were pointless when every query opened its own connection --
-        # a cache that is discarded microseconds later never gets a hit.
+        # 16 MB page cache and a 256 MB mmap window. Both are per-connection,
+        # so they only pay off because each thread keeps one long-lived
+        # connection; on a connection opened per query the cache would be
+        # discarded microseconds later and never get a hit.
         conn.execute("PRAGMA cache_size=-16000")
         conn.execute("PRAGMA mmap_size=268435456")
         # Load sqlite-vec so its virtual tables and MATCH operator are visible.
@@ -134,20 +135,20 @@ class SchemaMixin(DbBase):
         """Yields this thread's SQLite connection, wrapped in a transaction.
 
         Context manager: commit on clean exit, rollback on exception — the
-        same transactional semantics as sqlite3's own ``with conn:``. What
-        changed is that the connection is no longer opened and closed per
-        call. It used to be: every one of the 73 data-access methods paid a
-        ``sqlite3.connect`` plus ``PRAGMA journal_mode=WAL`` (which rewrites
-        the DB header) plus a fresh ``sqlite_vec.load``. ``store_embedding``
-        runs once per chunk, so indexing 2000 notes opened 66396 connections
-        and paid a WAL fsync on each commit -- the dominant cost of a scan.
+        same transactional semantics as sqlite3's own ``with conn:``. The
+        connection is long-lived and per-thread, not opened per call: opening
+        one costs a ``sqlite3.connect`` plus ``PRAGMA journal_mode=WAL``
+        (which rewrites the DB header) plus a fresh ``sqlite_vec.load``, and
+        ``store_embedding`` runs once per chunk, so a connection per call
+        would mean tens of thousands of opens (each commit paying a WAL
+        fsync) to index a 2000-note vault -- the dominant cost of a scan.
 
         Reusing the connection is only safe because ``_get_connection`` is
         never re-entered while already held: nesting would let the inner
         ``with conn:`` commit the outer block's transaction early. That
         invariant is enforced by tests/test_connection_reuse.py.
 
-        Lifetime is now explicit rather than automatic: whoever builds the
+        Lifetime is explicit rather than automatic: whoever builds the
         Database must call :meth:`close` (Session.close and daemon.stop do).
         """
         conn = self._thread_conn()
@@ -248,7 +249,7 @@ class SchemaMixin(DbBase):
 
     @staticmethod
     def _migrate_embedding_migration_table(conn) -> None:
-        """Bookkeeping table for in-flight embedding-model swaps (v2.3).
+        """Bookkeeping table for in-flight embedding-model swaps.
 
         The table is always present so a resumed migration after an
         interrupted run finds a place to land. The per-attempt
@@ -399,10 +400,11 @@ class SchemaMixin(DbBase):
             conn.execute("ALTER TABLE embeddings ADD COLUMN page INTEGER")
         if "heading" not in emb_cols:
             conn.execute("ALTER TABLE embeddings ADD COLUMN heading TEXT")
-        # Chunk-level incremental re-embedding (v2.3) keys each row by a
+        # Chunk-level incremental re-embedding keys each row by a
         # content+model hash so an unchanged chunk skips a network round-trip
-        # on re-scan. Legacy rows have NULL here and are treated as stale on
-        # first contact, which back-fills naturally without an explicit pass.
+        # on re-scan. Rows stored before the column existed have NULL here and
+        # are treated as stale on first contact, which back-fills naturally
+        # without an explicit pass.
         if "chunk_hash" not in emb_cols:
             conn.execute("ALTER TABLE embeddings ADD COLUMN chunk_hash TEXT")
         # The search/rerank column may deliberately keep only a short prefix,

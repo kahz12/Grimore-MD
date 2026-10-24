@@ -1,8 +1,9 @@
-"""Two things that only bite at the edges, and both had already shipped broken.
+"""Behaviours that only matter at the edges of a run:
 
-`daemon stop` exited non-zero with a traceback after successfully stopping the
-daemon, and the version a client reads from the API or MCP had drifted two
-minor releases behind the package.
+* `daemon stop` must succeed quietly even when the daemon has already removed
+  its own PID file;
+* the version a client reads from the API or MCP must be the package's own;
+* `grimore preflight` must report a missing vault instead of raising.
 """
 import os
 
@@ -14,7 +15,7 @@ from grimore.utils import system
 class TestStopClearsThePidFile:
     """The daemon unlinks its own PID file on the way out, so by the time
     stop_daemon sees the process gone the file is usually already missing.
-    Treating that as an error made a successful stop look like a failure.
+    That is not an error: a successful stop must not look like a failure.
     """
 
     def _pid_file(self, tmp_path, pid=4242):
@@ -76,8 +77,8 @@ class TestStopClearsThePidFile:
 
 
 class TestVersionIsSingleSourced:
-    """The API and MCP both report a version to clients. Restating it as a
-    literal let it sit at 2.4.0 while the package shipped 3.2.0.
+    """The API and MCP both report a version to clients. It must be the
+    package's own, never a restated literal that can drift from the release.
     """
 
     def test_api_matches_the_package(self):
@@ -103,9 +104,9 @@ class TestVersionIsSingleSourced:
 
 class TestFirstRunOnAMissingVault:
     """`grimore preflight` is the first command the README tells a new user to
-    run, and at that point the vault often does not exist yet. It used to die
-    with a GitPython traceback instead of the check that exists precisely to
-    explain the problem.
+    run, and at that point the vault often does not exist yet. GitGuard must
+    tolerate that, so the preflight check built to explain the problem is
+    what the user sees rather than a GitPython traceback.
     """
 
     def test_git_guard_survives_a_vault_that_does_not_exist(self, tmp_path):

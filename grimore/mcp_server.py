@@ -53,8 +53,8 @@ logger = get_logger(__name__)
 # 2025; the field is informational, mismatching client/server versions
 # still work as long as both speak JSON-RPC 2.0.
 _MCP_PROTOCOL_VERSION = "2024-11-05"
-# Version comes from the package; hard-coding it here let it drift to 2.4.0
-# while the package shipped 3.2.0, and an MCP client reads this field.
+# Taken from the package so the advertised server version always matches the
+# installed release; an MCP client reads this field from the initialize reply.
 _SERVER_INFO = {"name": "grimore", "version": _pkg_version}
 _SOURCE_ID = re.compile(r"^note:([1-9][0-9]{0,18}):chunk:([0-9]{1,19}):embedding:([1-9][0-9]{0,18})$")
 _REVIEW_KINDS = ("contradiction", "duplicate_exact", "duplicate_near", "review_due")
@@ -522,10 +522,9 @@ class MCPServer:
                 path, resolved_title = loc
                 row = {"note_id": int(note_id), "path": path, "title": resolved_title}
         elif isinstance(title, str) and title.strip():
-            # Title lookup goes through the existing path-keyed table:
-            # iterate cached titles and match. For now we delegate to a
-            # direct query against ``notes`` so we don't have to add a
-            # new DB method just for the MCP path.
+            # Exact-title lookup: a direct query against ``notes`` (LIMIT 1,
+            # so duplicate titles resolve to a single row) rather than a
+            # dedicated DB method that only this MCP tool would use.
             with self.session.db._get_connection() as conn:
                 hit = conn.execute(
                     "SELECT id, path, title FROM notes WHERE title = ? LIMIT 1",

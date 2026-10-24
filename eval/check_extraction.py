@@ -145,8 +145,9 @@ def evaluate(
         extraction_error = None
         try:
             if source.suffix.casefold() == ".pdf" and legacy_pypdf_plain:
-                # Reproduce the pre-Phase-4 extraction call without reverting
-                # production code or changing the controlled source document.
+                # Reproduce plain pypdf text extraction (no layout engine, no
+                # OCR) as a comparison baseline, without reverting production
+                # code or changing the controlled source document.
                 reader = PdfReader(str(source))
                 note = SimpleNamespace(
                     format="pdf",

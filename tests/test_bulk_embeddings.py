@@ -1,9 +1,8 @@
-"""Regression: a note's chunks are written in one transaction.
+"""A note's chunks are written in one transaction.
 
-The old re-embed path called store_embedding once per chunk, and each call
-committed. In WAL mode a commit is an fsync, measured at ~7 ms across a
-2000-note scan, which made the commit -- not the SQL -- the dominant cost of
-indexing.
+Committing once per chunk (store_embedding called in a loop) would make each
+commit an fsync in WAL mode, measured at ~7 ms across a 2000-note scan, so
+the commit -- not the SQL -- would be the dominant cost of indexing.
 
 The risk the tests below guard is not speed but the ``embeddings_vec`` mirror.
 It has no trigger; it is kept in sync by explicit dual-write, so the bulk path
@@ -247,12 +246,12 @@ class TestVecTableSelfHealing:
 
     ``_vec_dim`` is set inside the transaction that creates ``embeddings_vec``.
     If that transaction rolls back, the DDL is undone but the attribute
-    survives, so later writes skip creation and insert into a table that is no
-    longer there. Before the fix that was a warning and nothing else: the
-    mirror stayed empty for the rest of the process while ``embeddings`` kept
+    survives, so later writes would skip creation and insert into a table
+    that is no longer there. Left unhandled that is only a warning: the
+    mirror stays empty for the rest of the process while ``embeddings`` keeps
     filling up, leaving a vec index that answers with a fraction of the vault.
 
-    Pre-existing behaviour -- the single-row path had it too -- so both are
+    The single-row path and the bulk path share this hazard, so both are
     covered here.
     """
 

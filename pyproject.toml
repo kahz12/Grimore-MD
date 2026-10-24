@@ -44,7 +44,7 @@ dependencies = [
     # Python dep here.
     "striprtf>=0.0.27",
     # Hardened XML parsing for the zip-container adapters (docx/odt/epub).
-    # Blocks entity-expansion ("billion laughs") and XXE — audit M1.
+    # Blocks entity-expansion ("billion laughs") and XXE.
     # Pure-Python wheel — Termux-safe, no native build.
     "defusedxml>=0.7.1",
 ]

@@ -1,4 +1,4 @@
-"""Build a mixed text/scan PDF without touching the Phase-0 reference corpus.
+"""Build a mixed text/scan PDF without touching the reference corpus in test_vault/.
 
 Physical pages are: original digital page 2, scanned page 1, digital page 3.
 Printed folios deliberately differ from PDF page ordinals on the first two

@@ -1,12 +1,10 @@
 """
-Markdown adapter — the original Grimore ingest path, now behind the
-multi-format dispatcher.
+Markdown adapter — the native Grimore format, the only one whose source file
+is edited in place (see ``mutable_frontmatter``).
 
-Behaviour is byte-for-byte identical to the pre-multiformat
-:class:`grimore.ingest.parser.MarkdownParser`: YAML frontmatter is
-separated from body, the title falls back through frontmatter → first
-H1 → filename stem, and a 2 MB hard cap protects against accidental
-binary blobs hiding under a ``.md`` extension.
+YAML frontmatter is separated from the body, the title falls back through
+frontmatter → first H1 → filename stem, and a 2 MB hard cap protects against
+accidental binary blobs hiding under a ``.md`` extension.
 """
 from __future__ import annotations
 
@@ -27,9 +25,9 @@ from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
-# Same cap the old MarkdownParser enforced. Per-format caps may come
-# later via [ingest.max_bytes] — for now we keep the historical 2 MB
-# ceiling.
+# Hard cap on a Markdown note, in bytes: a larger file is rejected rather than
+# read into memory and sent through tagging and embedding. Each adapter defines
+# its own limit (plain text, HTML, DOCX... allow more).
 _MAX_MD_BYTES = 2_000_000
 
 _H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
@@ -89,7 +87,7 @@ class MarkdownAdapter:
             content_hash=calculate_content_hash(content),
             file_hash=sha256_file(file_path),
             metadata=metadata,
-            sections=[],          # MD heading segmentation may be revisited later.
+            sections=[],          # no structural anchors: Markdown is chunked as body text.
             size_bytes=size,
         )
 

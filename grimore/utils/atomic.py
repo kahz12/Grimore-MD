@@ -40,10 +40,13 @@ def atomic_write(path: Path, writer: Callable[[IO[Any]], object], *, mode: str =
             except OSError:
                 pass
 
-        # Atomic replacement
+        # os.replace swaps the file in one step (same directory, so same
+        # filesystem): a reader or a crash sees the old content or the new,
+        # never a half-written file.
         os.replace(tmp_path, path)
     except Exception:
-        # Cleanup temporary file on failure
+        # Any failure before the replace leaves the original untouched; just
+        # remove the temp file and re-raise.
         try:
             os.unlink(tmp_path)
         except OSError:

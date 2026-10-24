@@ -89,8 +89,8 @@ class TestMetrics:
         assert keyword_recall("The Socrates method.", ["Sócrates"]) == 1.0
 
     def test_keyword_recall_no_midword_false_positive(self):
-        # The substring test used to count 'art' inside 'Sparta'/'start'; the
-        # leading word boundary now rejects both.
+        # 'art' inside 'Sparta'/'start' must not match: the keyword needs a
+        # leading word boundary.
         assert keyword_recall("Sparta had a strong start.", ["art"]) == 0.0
         # …but a real occurrence at a word boundary still counts.
         assert keyword_recall("Gothic art endured.", ["art"]) == 1.0
@@ -846,8 +846,9 @@ class TestGenerationFailures:
         session.router.complete.assert_not_called()
         agg = report.summary()["aggregate"]
         assert agg["generation_failure_n"] == 1
-        # The historical definition is untouched: the sentinel still reads as
-        # an abstention cue. The count above is what flags the contamination.
+        # abstention_rate keeps its definition: the sentinel still reads as an
+        # abstention cue. The failure count above is what flags the run as
+        # contaminated.
         assert agg["abstention_rate"] == 1.0
 
     def test_raised_ask_is_a_generation_failure(self):
@@ -1093,7 +1094,7 @@ def test_shipped_golden_loads_and_is_stratified():
 
 
 def _pinned_corpus(tmp_path):
-    """The twelve files the Phase-0 datasets declare, copied into a fresh vault.
+    """The twelve files the tuning/evaluation datasets declare, copied into a fresh vault.
 
     Validating against them (not the whole local test_vault) keeps extra local
     documents from changing title matches, and skips parsing them. Copies,
@@ -1109,7 +1110,7 @@ def _pinned_corpus(tmp_path):
 
 
 def test_phase0_datasets_are_separate_complete_and_grounded(tmp_path):
-    """Phase-0 acceptance guard: size, holdout separation and real evidence."""
+    """Dataset acceptance guard: size, holdout separation and real evidence."""
     root = Path(__file__).resolve().parents[1]
 
     def flatten(cases):

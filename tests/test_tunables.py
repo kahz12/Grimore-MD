@@ -1,10 +1,10 @@
-"""Regression: the promoted config keys actually reach their consumers.
+"""The tunable config keys actually reach their consumers.
 
 tests/test_config.py proves the keys load and default correctly. That is not
 enough on its own: it would pass unchanged if a consumer were never wired up
-and kept reading its old module constant. These tests assert the observable
+and kept reading its module-level constant. These tests assert the observable
 behaviour each key controls, so removing a wiring line fails a test rather
-than silently reverting the feature.
+than silently ignoring the setting.
 """
 from unittest.mock import MagicMock
 
@@ -81,8 +81,8 @@ class TestOracleContextCap:
 
     def test_bare_instance_falls_back_to_the_class_default(self):
         # Oracle.__new__ with no attributes set at all: the class-level
-        # default is what keeps _build_context working for the isolation
-        # tests that predate this key.
+        # default is what keeps _build_context working for isolation tests
+        # that build the instance without __init__.
         assert Oracle.__new__(Oracle).context_max_chars == _ORACLE_CONTEXT_MAX_CHARS
 
 
@@ -99,7 +99,7 @@ class TestEmbedderBatchSize:
 
     def test_embed_batch_splits_requests_at_the_configured_size(self):
         # Asserting the attribute alone is not enough: it passes even if
-        # embed_batch keeps stepping by the old module constant. Counting the
+        # embed_batch keeps stepping by the module-level default. Counting the
         # sub-batches is what proves the value is actually consumed.
         embedder = Embedder(_config(embed_batch_size=4))
         seen: list[int] = []

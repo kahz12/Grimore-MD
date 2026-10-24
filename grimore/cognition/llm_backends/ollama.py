@@ -1,9 +1,7 @@
-"""Ollama backend — the v2.x default.
+"""Ollama backend — the default.
 
-Talks the legacy ``/api/generate`` + ``/api/tags`` shape via the
-``OLLAMA_HOST`` environment variable. Behaviour is exactly the v2.1
-LLMRouter — the body was lifted into this class verbatim so the
-extraction is a refactor and not a rewrite.
+Talks the ``/api/generate`` + ``/api/tags`` shape of a local Ollama server,
+located through the ``OLLAMA_HOST`` environment variable.
 
 JSON parsing failures and stream errors don't raise here — they return
 ``None`` or yield nothing so the router's circuit breaker can advance.
@@ -26,8 +24,8 @@ class OllamaBackend:
 
     Reads the host from ``OLLAMA_HOST`` (default ``http://localhost:11434``)
     once at construction and validates it through
-    :func:`SecurityGuard.validate_llm_host` — same gate the v2.x router
-    used, so loopback-only enforcement is preserved.
+    :func:`SecurityGuard.validate_llm_host`, the same gate the OpenAI-compatible
+    backend uses, so loopback-only enforcement applies to both.
     """
 
     name = "ollama"

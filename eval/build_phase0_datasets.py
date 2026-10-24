@@ -1,4 +1,4 @@
-"""Build the Phase-0 tuning and held-out evaluation fixtures.
+"""Build the tuning and held-out evaluation fixtures (eval/phase0_*.yaml).
 
 The compact tuples below are the reviewable source of truth. Generated YAML is
 checked in so running ``grimore eval`` never depends on this script.

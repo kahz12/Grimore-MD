@@ -1,4 +1,4 @@
-"""Offline phase-5 measurements never fabricate consent, usage or acceptance."""
+"""Offline Obsidian-pilot measurements never fabricate consent, usage or acceptance."""
 from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256

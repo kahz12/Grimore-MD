@@ -1,4 +1,4 @@
-"""Plan/workspace/subprocess contracts of the Phase-0 runner; never contact Ollama."""
+"""Plan/workspace/subprocess contracts of the baseline runner; never contact Ollama."""
 import hashlib
 import json
 from pathlib import Path

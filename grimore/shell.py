@@ -111,9 +111,9 @@ class GrimoreShell:
     def __init__(self, session: Session) -> None:
         self.session = session
         self._running = True
-        # Legacy word commands — first token matches one of these → run it.
-        # Preserve word-command compatibility with the pre-redesign shell.
-        # New users should reach for ``/<name>`` instead.
+        # Bare word commands ("scan", "status", ...): when the first token
+        # matches one of these the line runs that command directly. The
+        # ``/<name>`` slash namespace below is the preferred form.
         self.commands: dict[str, Callable[[Sequence[str]], None]] = {
             "ask": self._cmd_ask,
             "status": self._cmd_status,
@@ -132,10 +132,11 @@ class GrimoreShell:
             "quit": self._cmd_exit,
             "clear": self._cmd_clear,
         }
-        # Slash namespace. Mirrors every legacy command and adds the new
+        # Slash namespace. Mirrors every bare command and adds the
         # conversational helpers (/again, /why, /pin, /unpin, /save,
-        # /history). The slash dispatcher uses difflib to suggest close
-        # matches when the user mistypes.
+        # /history, /forget, /thread, /resume, /threads). The slash
+        # dispatcher uses difflib to suggest close matches when the user
+        # mistypes.
         self.slash_commands: dict[str, Callable[[Sequence[str]], None]] = {
             **self.commands,
             "again": self._cmd_again,
@@ -914,7 +915,7 @@ class GrimoreShell:
             dry_run=args.dry_run,
         )
 
-    # ── new conversational commands ────────────────────────────────────
+    # ── conversational commands ────────────────────────────────────────
 
     def _cmd_again(self, argv: Sequence[str]) -> None:
         """Re-run the previous question with the same flags as default."""

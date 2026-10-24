@@ -1,15 +1,13 @@
 """
 Semantically-aware document chunker.
 
-Originally Markdown-only. As of v2.1 this module also exposes a
-section-aware path: :func:`chunk_sections` takes a list of
-:class:`ExtractedSection` (the format-neutral output of every adapter)
-and emits :class:`Chunk` instances that carry the parent section's
-page / heading anchors, so the embedding layer can persist them and
-the Oracle can render precise citations like ``[[Title#p.42]]``.
-
-The text-only :func:`chunk_markdown` keeps its signature and behaviour
-so the existing Markdown call path is untouched.
+Two entry points. :func:`chunk_markdown` packs plain text (Markdown / TXT)
+into paragraph-sized pieces with no anchors. :func:`chunk_sections` is the
+section-aware path: it takes a list of :class:`ExtractedSection` (the
+format-neutral output of every adapter) and emits :class:`Chunk` instances
+that carry the parent section's page / heading anchors, so the embedding
+layer can persist them and the Oracle can render precise citations like
+``[[Title#p.42]]``.
 """
 from __future__ import annotations
 
@@ -50,7 +48,7 @@ class Chunk:
 
     ``page`` is set for paginated formats (PDF); ``heading`` for
     structured formats (DOCX, HTML, EPUB). Both are ``None`` for
-    Markdown / TXT so the v2.0 storage shape stays exactly what it was.
+    Markdown / TXT, which have no structural anchors to store.
     """
     text: str
     page: Optional[int] = None
@@ -87,14 +85,18 @@ def chunk_markdown(
             buffer_len = 0
 
     for para in paragraphs:
-        # Handling oversized paragraphs
+        # A single paragraph larger than the budget can never fit in a packed
+        # chunk: close whatever is buffered and split it on its own into
+        # overlapping windows.
         if len(para) > max_chars:
             flush()
             chunks.extend(_sliding_window(para, max_chars, overlap))
             continue
 
-        # Check if adding this paragraph exceeds the budget
-        sep = 2 if buffer else 0 # Accounting for "\n\n" separator
+        # Close the buffered chunk when this paragraph would push it past the
+        # budget. ``sep`` is the "\n\n" the join will add between paragraphs
+        # (nothing before the first one).
+        sep = 2 if buffer else 0
         if buffer_len + sep + len(para) > max_chars and buffer:
             flush()
             sep = 0
@@ -120,9 +122,9 @@ def build_candidate_chunks(
     the same input produces the same chunks regardless of which path
     enters the function.
 
-    Markdown is the default and matches v2.1 byte-for-byte. Semantic
-    needs the embedder because it scores sentence similarity to find
-    topic boundaries.
+    Markdown is the default: deterministic and free of embedding calls.
+    Semantic needs the embedder because it scores sentence similarity to
+    find topic boundaries.
     """
     engine = getattr(config.ingest, "chunker", "markdown")
     max_chars = getattr(config.ingest, "chunk_max_chars", DEFAULT_MAX_CHARS)

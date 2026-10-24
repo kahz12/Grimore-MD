@@ -92,8 +92,10 @@ def test_transport_exception_remains_unassessed_in_control_not_vacuous_success()
 
 
 def test_supported_status_does_not_override_cue_and_cue_does_not_prove_no_hallucination():
-    # The historic detector's known mixed-answer limitation is made visible,
-    # not 'fixed' by adding a phrase after observing actual model responses.
+    # The detector's known limitation with mixed answers (an abstention cue
+    # followed by an invented value) is asserted as-is. The cue list is not
+    # extended with phrases chosen after reading real model responses, since
+    # that would tune the control to the outputs it is meant to judge.
     report = evaluate("No se menciona la hora, pero el muestreo será a las 09:00.",
                       answer_status="supported")
     assert negative_control(report.turns)["abstention_cue_rate"] == 1.0

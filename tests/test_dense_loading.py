@@ -1,10 +1,10 @@
 """The dense scoring matrix is built without dragging text_content along.
 
-``_load_dense`` used to select ``id, note_id, text_content, vector`` for every
-row and keep all of it cached, so the 500 chars stored per chunk were carried
-through a pass that only ever reads the vectors. These tests pin the split:
-the matrix comes from a vector-only load, the text comes back for the winners
-alone, and the results are identical to what the combined load produced.
+Selecting ``id, note_id, text_content, vector`` for every row and caching all
+of it would carry the 500 chars stored per chunk through a pass that only
+ever reads the vectors. These tests pin the split: the matrix comes from a
+vector-only load, the text comes back for the winners alone, and the results
+are identical to what a combined load would produce.
 """
 import struct
 
@@ -243,8 +243,8 @@ class TestConnectorParity:
 
 class TestWithTextFlag:
     """connect and the graph's suggested edges read only note_id and score.
-    Since chunk text no longer rides along with the scoring matrix, fetching it
-    for them would cost one query per note across the whole vault.
+    Chunk text is not part of the scoring matrix, so fetching it for them
+    would cost one query per note across the whole vault.
     """
 
     def _connector(self, db):

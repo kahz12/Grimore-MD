@@ -1,7 +1,7 @@
 """
 Sidecar / inline routing tests for FrontmatterWriter and LinkInjector.
 
-Pins down: Markdown notes keep their v2.0 inline behaviour; every other
+Pins down: Markdown notes are written inline in the source file; every other
 format routes through a mirrored sidecar tree at
 ``<vault>/<sidecar_dir>/<rel>.md``; ``write_sidecars=false`` is a clean
 no-op; dry-run never touches disk; reruns merge cleanly without losing

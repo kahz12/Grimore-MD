@@ -237,12 +237,14 @@ class CategoryTree:
         if not path or path not in self._children:
             return False
 
-        # Remove node + descendants
-        to_drop = [p for p in self._children if p == path or p.startswith(path + self.SEP)]
+        # Paths are "/"-joined, so a node's descendants are exactly the
+        # entries prefixed with ``path + SEP`` (the separator keeps "Art"
+        # from also matching "Artificial").
+        to_drop =[p for p in self._children if p == path or p.startswith(path + self.SEP)]
         for node in to_drop:
             self._children.pop(node, None)
 
-        # Unlink from parent's children list
+        # The removed node must also stop being listed as a child of its parent.
         parent = path.rsplit(self.SEP, 1)[0] if self.SEP in path else ""
         siblings = self._children.get(parent)
         if siblings and path in siblings:
@@ -321,7 +323,8 @@ def load_taxonomy_from_vault(vault_path: Path) -> VaultTaxonomy:
         logger.warning("taxonomy_schema_invalid", path=str(candidate))
         return VaultTaxonomy()
 
-    # Tags
+    # Tag vocabulary: keep only string/int entries, stringified and non-empty;
+    # a missing or malformed ``vocabulary`` key yields an empty vocabulary.
     vocab_raw = data.get("vocabulary")
     if isinstance(vocab_raw, list):
         vocabulary = [str(x).strip() for x in vocab_raw if isinstance(x, (str, int))]

@@ -1,16 +1,15 @@
 """
 Document parsing for Project Grimore.
 
-Originally Markdown-only. As of v2.1 this module is a thin dispatcher in
-front of the per-format adapters in :mod:`grimore.ingest.adapters`: it
-picks the right :class:`DocumentExtractor` for the file's extension,
-calls it, and wraps the result in the historical :class:`ParsedNote`
-struct so every downstream consumer (cli.scan, daemon.process_file,
-shell mentions) keeps working unchanged.
+This module is a thin dispatcher in front of the per-format adapters in
+:mod:`grimore.ingest.adapters`: it picks the right
+:class:`DocumentExtractor` for the file's extension, calls it, and wraps
+the result in the :class:`ParsedNote` struct that every downstream
+consumer (cli.scan, daemon.process_file, shell mentions) works with.
 
-The :class:`MarkdownParser` name is preserved for the same reason — the
-rest of the codebase still imports it. Internally it has nothing
-Markdown-specific in it any more; it's the dispatcher.
+The class is still called :class:`MarkdownParser` because the rest of the
+codebase imports it under that name. Internally it has nothing
+Markdown-specific in it; it is the dispatcher.
 """
 from __future__ import annotations
 
@@ -32,10 +31,9 @@ from grimore.utils.security import SecurityGuard
 
 logger = get_logger(__name__)
 
-# Historical public constant. Kept as a re-export of the Markdown adapter's
-# limit so v2.0 imports (`from grimore.ingest.parser import MAX_NOTE_BYTES`)
-# keep resolving. Per-format caps for non-MD documents are config-driven in
-# as adapters are registered.
+# Public alias of the Markdown adapter's size cap, so
+# `from grimore.ingest.parser import MAX_NOTE_BYTES` keeps resolving. It only
+# describes Markdown: every other adapter enforces its own module-level limit.
 MAX_NOTE_BYTES = _MAX_MD_BYTES
 
 
@@ -122,11 +120,10 @@ def iter_vault_documents(
 class ParsedNote:
     """A fully parsed document with its metadata and idempotency keys.
 
-    Pre-v2.1 fields (``path``, ``title``, ``metadata``, ``content``,
-    ``content_hash``) are kept positional so existing tests that build
-    ``ParsedNote(...)`` literals continue to work. The multi-format
-    additions (``format``, ``file_hash``, ``sections``, ``size_bytes``)
-    are keyword-only with sensible defaults.
+    ``path``, ``title``, ``metadata``, ``content`` and ``content_hash`` are
+    positional, so a plain ``ParsedNote(path, title, metadata, content,
+    content_hash)`` literal is valid. The multi-format fields (``format``,
+    ``file_hash``, ``sections``, ``size_bytes``, ``issues``) have defaults.
     """
     path: Path
     title: str
@@ -141,7 +138,7 @@ class ParsedNote:
 
     @classmethod
     def from_extracted(cls, doc: ExtractedDocument) -> "ParsedNote":
-        """Adapt the format-neutral payload into the historical struct."""
+        """Adapt the format-neutral adapter payload into a ``ParsedNote``."""
         return cls(
             path=doc.source_path,
             title=doc.title,
@@ -173,11 +170,9 @@ def extraction_diagnostics(note: ParsedNote) -> dict | None:
 class MarkdownParser:
     """Dispatcher over the per-format adapter registry.
 
-    Name and public signature are preserved from the v2.0 Markdown-only
-    implementation so every existing call site (``MarkdownParser().parse_file(...)``)
-    keeps working. When no adapter is registered for an extension the
-    parser falls back to :class:`MarkdownAdapter` — that matches the
-    pre-v2.1 behaviour where everything was assumed to be Markdown.
+    Call sites use ``MarkdownParser().parse_file(...)`` whatever the file
+    format. When no adapter is registered for an extension the parser falls
+    back to :class:`MarkdownAdapter`, i.e. the file is treated as Markdown.
 
     Vault-scope contract
     --------------------
@@ -190,8 +185,8 @@ class MarkdownParser:
     forgotten outer check cannot turn into a path-traversal bug.
     """
 
-    # Kept as a class attribute so callers / tests that monkeypatch the
-    # fallback (rare, but used by the new adapter tests) can do so cleanly.
+    # Adapter used when the registry has none for a file's extension (see
+    # parse_file); a shared instance, since adapters hold no per-file state.
     _fallback_adapter = MarkdownAdapter()
 
     def parse_file(

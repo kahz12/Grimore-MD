@@ -192,8 +192,11 @@ def _extract_with_pdfplumber(
                                 raise LayoutUnavailable("layout_text_mismatch")
                             text = candidate
                         except Exception as e:
-                            # Never throw away readable text because layout
-                            # detection failed. Keep the fallback auditable.
+                            # Layout detection is best-effort: on failure the
+                            # engine's own readable text is kept, and the
+                            # reason is recorded (layout_fallbacks, later a
+                            # page_layout_fallback issue) so the fallback can
+                            # be audited.
                             reason = str(e) if isinstance(e, LayoutUnavailable) else "layout_failed"
                             layout_fallbacks[idx + 1] = reason
                             logger.warning("pdf_layout_fallback", page=idx + 1,
@@ -406,8 +409,9 @@ class PdfAdapter:
         extracted = extractor(file_path)
         layout_fallbacks = {}
         if len(extracted) == 2:
-            # Keep small embedders/test doubles using the original engine
-            # contract valid; real engines now also return failed page IDs.
+            # Two-tuple form: just (metadata, pages), which small test doubles
+            # return. Real engines return (metadata, pages, failed_pages[,
+            # layout_fallbacks]), handled in the branch below.
             metadata, raw_pages = extracted
             failed_pages: set[int] = set()
         else:

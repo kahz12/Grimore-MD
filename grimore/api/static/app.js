@@ -2679,7 +2679,9 @@ async function openNoteByLabel(label, citationIndex = null) {
         return;
     }
     // A trace was supplied but this occurrence cannot be bound to a delivered
-    // record. Do not turn a search result into its supposed selected passage.
+    // record. Show the "unverifiable" state rather than falling through to a
+    // title search, which would present a search hit as if it were the
+    // passage the model actually selected.
     if (citationIndex !== null && state.citationSelections !== null) {
         openSourceChoices(label, [], 'unverifiableSelection');
         return;

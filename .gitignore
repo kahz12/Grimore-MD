@@ -55,7 +55,8 @@ grimore.log
 backups/
 
 # Runtime state under the developer's test vault is local. The reference corpus
-# itself is versioned so Phase-0 evidence checks are reproducible on a clone.
+# itself is versioned so the evaluation datasets' evidence checks are
+# reproducible on a clone.
 test_vault/*
 !test_vault/test_vault/
 !test_vault/test_vault/*

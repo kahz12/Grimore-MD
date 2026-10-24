@@ -49,7 +49,7 @@ class Session:
         self._router: Optional[LLMRouter] = None
         self._embedder: Optional[Embedder] = None
         self._oracle: Optional[Oracle] = None
-        # Conversational state used by the redesigned shell. None of this
+        # Conversational state used by the interactive shell. None of this
         # touches disk — it's per-session only.
         self.question_log: list[str] = []
         self.last_question: Optional[str] = None
@@ -61,7 +61,7 @@ class Session:
         # Rolling conversation memory for the shell: the last few
         # ``{"q", "a", "sources"}`` turns. Feeds the Oracle's query-rewrite
         # and answer-coherence context so follow-ups resolve. The one-shot
-        # CLI never populates this, so its behaviour is unchanged.
+        # CLI never populates this, so each CLI ask runs without history.
         self.turns: list[dict] = []
         # Per-session window, overridable via [shell].max_turns. The class
         # attribute below stays the default and the public constant: callers

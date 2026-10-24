@@ -5,13 +5,13 @@ Why the benchmark must not talk to a real Ollama
 The baseline has to be reproducible to within +-5%
 between runs. Live LLM generation cannot meet that: token throughput drifts
 with model residency, thermal state and whatever else shares the GPU. Worse,
-`scan` calls `tagger.tag_note()` once per changed note (cli.py:279, before the
-dry-run check), so on a real backend LLM latency is ~90% of scan wall-clock --
-which would bury the very thing the persistence optimisations target. A -30%
-improvement in the SQLite layer is invisible when SQLite is 5% of the total.
+`scan` calls the tagger (`tag_document` in cli.py) once per changed note, so
+on a real backend LLM latency is ~90% of scan wall-clock -- which would bury
+the persistence layer this harness exists to measure. A -30% change in the
+SQLite layer is invisible when SQLite is 5% of the total.
 
 So the stub answers instantly and deterministically, and the harness measures
-the layer under optimisation: parsing, chunking, SQL and numpy. What this
+the layer under test: parsing, chunking, SQL and numpy. What this
 deliberately does NOT measure is answer quality or real end-to-end latency;
 those belong to `grimore eval` against real models, which is a separate gate.
 

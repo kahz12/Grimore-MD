@@ -324,8 +324,9 @@ class Mirror:
             note_path, ref.section, ref.part, ref.page, ref.heading, ref.reason,
         ) for ref in extraction.unanalyzed_sections]
         if extraction.failed:
-            # Do not erase earlier claims or stamp a successful extraction
-            # timestamp when the model failed on a selected source part.
+            # The model failed on a selected source part, so the result is
+            # incomplete: return without touching the stored claims or
+            # recording a successful-extraction timestamp.
             logger.warning("mirror_claim_extraction_incomplete", path=note_path)
             return 0, gaps
         extracted = extraction.claims

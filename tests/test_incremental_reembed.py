@@ -1,11 +1,11 @@
 """
 Chunk-level incremental re-embedding.
 
-The old code did ``DELETE FROM embeddings WHERE note_id = ?`` before
-re-indexing on every content change, which forced a full re-embed even
-when one paragraph of a 200-page doc was touched. The new path keys
-each chunk by ``Embedder.chunk_hash(text, model)`` and only re-embeds
-indices whose content actually changed.
+Deleting a note's embeddings (``DELETE FROM embeddings WHERE note_id = ?``) on
+every content change would force a full re-embed even when one paragraph of a
+200-page doc was touched. Instead each chunk is keyed by
+``Embedder.chunk_hash(text, model)`` and only indices whose content actually
+changed are re-embedded.
 """
 from __future__ import annotations
 
@@ -117,7 +117,8 @@ class TestDbHelpers:
     def test_get_chunk_hashes_returns_none_for_legacy_rows(self, tmp_path):
         db = _make_db(tmp_path)
         note_id = _seed_note(db)
-        # Legacy call shape (pre-chunk_hash) omits the new kwarg.
+        # Omitting chunk_hash (as rows stored before the column existed did)
+        # leaves it NULL.
         db.store_embedding(note_id, 0, "a", b"\x00" * 4)
         assert db.get_chunk_hashes(note_id) == {0: None}
 

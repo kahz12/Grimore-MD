@@ -229,8 +229,9 @@ _ZERO_WIDTH = "​"  # U+200B inserted by SecurityGuard.sanitize_prompt
 
 
 def test_normalize_history_rejects_non_list():
-    # A non-list value (e.g. a bare string) used to crash history[-3:]
-    # iteration with an AttributeError → 500; now it degrades to "".
+    # A non-list value (e.g. a bare string) cannot be iterated as turns: it
+    # degrades to no history instead of raising (which the API would surface
+    # as a 500).
     assert Oracle._normalize_history(None) == []
     assert Oracle._normalize_history("expand on that") == []
     assert Oracle._normalize_history(123) == []

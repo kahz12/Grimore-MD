@@ -4,7 +4,7 @@ Link Injector.
 Injects semantic connections (wikilinks) into the right Markdown target:
 
 * For native Markdown notes the section is appended (or replaced in place)
-  on the source file itself, exactly as in v2.0.
+  on the source file itself.
 * For non-Markdown documents the section lands in the sidecar ``.md``
   that :class:`FrontmatterWriter` has already materialised under the
   vault's sidecar tree. The original binary is never touched.

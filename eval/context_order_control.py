@@ -1,8 +1,9 @@
 """Explicit, temporary presentation perturbation, never a retrieval policy.
 
-Reconstruct whole trusted blocks from delivered records and verify equality
-before permuting. Do not split on headers contained in untrusted documents,
-consult expected evidence, promote deeper ranking candidates or change budgets.
+Whole trusted blocks are reconstructed from the delivered records, and their
+equality with the original context is verified before permuting. The control
+never splits on headers contained in untrusted documents, consults expected
+evidence, promotes deeper ranking candidates or changes budgets.
 """
 from contextlib import contextmanager
 import hashlib

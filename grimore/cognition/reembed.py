@@ -1,17 +1,15 @@
 """
 Chunk-level incremental re-embedding.
 
-Both ``grimore scan`` and the file-watcher daemon used to delete every
-embedding for a note and re-embed it from scratch on any change. For a
-200-page PDF where one paragraph was tweaked that's hundreds of needless
-Ollama round-trips. This module shares one diff-and-embed routine
-between both call sites so a re-scan only re-embeds what actually
-changed, keyed on ``Embedder.chunk_hash(text, model)``.
+Deleting every embedding for a note and re-embedding it from scratch on any
+change would cost hundreds of needless Ollama round-trips for a 200-page PDF
+where one paragraph was tweaked. Both ``grimore scan`` and the file-watcher
+daemon therefore share one diff-and-embed routine, so a re-scan only
+re-embeds what actually changed, keyed on ``Embedder.chunk_hash(text, model)``.
 
-Legacy rows (pre-v2.3) have ``chunk_hash = NULL``. They're treated as
-unconditionally stale so the column back-fills naturally on the first
-re-scan after upgrade — no explicit migration command needed for the
-typical user.
+Rows with ``chunk_hash = NULL`` (stored before hashes were recorded) are
+treated as unconditionally stale, so the column back-fills naturally on the
+first re-scan — no explicit migration command needed for the typical user.
 """
 from __future__ import annotations
 
@@ -64,10 +62,10 @@ def reembed_note(
       for indices whose content changed.
     * Embed only the new / changed chunks and insert them.
 
-    A failed ``embed()`` (Ollama down, etc.) skips that chunk — same
-    policy as the legacy "delete all then re-embed" path. ``text_truncation``
-    matches the historical 500-char column store; the *hash* is computed
-    over the full chunk text because that's what gets sent to Ollama.
+    A failed ``embed()`` (Ollama down, etc.) skips that chunk; the next scan
+    retries it. ``text_truncation`` caps the stored text (callers pass
+    ``chunk_store_chars``, 500 by default); the *hash* is computed over the
+    full chunk text because that's what gets sent to Ollama.
     """
     chunk_list = list(chunks)
     existing = db.get_chunk_records(note_id)   # {idx: (hash, page, heading)}
@@ -141,8 +139,8 @@ def reembed_note(
             })
 
         # One transaction for the whole note instead of one per chunk. Falls
-        # back to the per-chunk path for stand-in databases (the test doubles
-        # that implement only the v2.0 surface), so this stays additive.
+        # back to the per-chunk path for stand-in databases (test doubles
+        # that don't implement store_embeddings_bulk).
         _bulk = getattr(db, "store_embeddings_bulk", None)
         if callable(_bulk):
             embedded += _bulk(note_id, pending)

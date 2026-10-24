@@ -305,9 +305,9 @@ def check_pilot_study(data: dict[str, Any]) -> PilotCheck:
 
         journey = participant.get("journey")
         if journey is None:
-            # Backwards-compatible with intake files created before journey
-            # observation was introduced. The first `pilot observe` command
-            # materialises the structure.
+            # Intake-only participants have no ``journey`` block yet; it is
+            # optional here and counted as missing. The first `pilot observe`
+            # command materialises the structure.
             missing_journeys += 1
             continue
         journey_map = _as_mapping(journey, f"{label}.journey", errors)

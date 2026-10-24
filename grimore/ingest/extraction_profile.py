@@ -27,14 +27,17 @@ def pdf_extraction_profile(config) -> str:
         language = validate_ocr_language(
             "eng" if options.ocr_language is None else options.ocr_language,
         )
-        # Explicit English is equivalent to the historical Tesseract default.
+        # English is Tesseract's default and the config default, so it adds
+        # nothing to the profile: an explicit "eng" and an unset language
+        # produce the same string, and so do not trigger a re-extraction.
         if language != "eng":
             profile += f":language={language}"
         max_pages = validate_ocr_max_pages(
             0 if options.ocr_max_pages is None else options.ocr_max_pages,
         )
-        # Unlimited keeps the historical profile; changing a real budget
-        # must re-extract unchanged PDFs, including previously omitted pages.
+        # Unlimited (0) adds nothing to the profile; any real budget does, so
+        # changing it re-extracts unchanged PDFs, including pages the previous
+        # budget omitted.
         if max_pages:
             profile += f":max_pages={max_pages}"
     return profile

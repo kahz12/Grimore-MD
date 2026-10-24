@@ -1,8 +1,8 @@
 """Benchmark harness for the persistence and retrieval paths.
 
-Measures the four paths the persistence and retrieval optimisations touch --
+Measures the four paths that dominate persistence and retrieval cost --
 scan, ask, connect and dense-matrix load -- plus a direct count of SQLite
-connection opens, which is the smoking gun for bottleneck B1.
+connection opens, which exposes any code that opens a connection per call.
 
 Everything runs in-process against a stubbed LLM (see stub_llm.py for why).
 In-process is not a convenience: counting `sqlite3.connect` calls requires
@@ -74,12 +74,11 @@ dry_run = false
 class ConnectionCounter:
     """Counts SQLite connections opened AND statements executed.
 
-    Two distinct costs, and they stopped moving together once connection reuse
-    landed. Connections are what per-thread reuse removes; statements are what
-    an N+1 shows up in. Before the reuse, the connection count doubled as a
-    query proxy because there was one connection per query; afterwards it reads
-    ~1 for a whole scan and no longer discriminates, so the statement count is
-    the metric that survives.
+    Two distinct costs. Connections are what per-thread reuse removes;
+    statements are what an N+1 shows up in. With one connection per thread the
+    connection count reads ~1 for a whole scan, so it only flags a return to
+    connection-per-call; the statement count is the metric that tells query
+    patterns apart.
 
     The obvious alternative is `strace -e trace=openat` for the connection half.
     Counting at the sqlite3 layer instead is portable (strace needs ptrace
@@ -213,7 +212,7 @@ def bench_scan(work: Path) -> dict:
 def bench_ask(session, warm_samples: int = 5) -> dict:
     """Ask timings, split into a cold and a warm measurement.
 
-    The two model the two real callers, and conflating them was measuring
+    The two model the two real callers, and blending them would describe
     neither. A one-shot `grimore ask` builds the dense matrix inside its only
     query, so its retrieve stage carries the full load_dense cost; the shell
     keeps a Session warm, so every query after the first hits the connector's
@@ -223,7 +222,8 @@ def bench_ask(session, warm_samples: int = 5) -> dict:
     has to be readable if a drop in retrieve_s is to be provable.
 
     The Oracle already instruments embed/retrieve/rerank/generate separately
-    (oracle.py:346-348), so these are its own numbers, not the harness's.
+    (the ``timings`` dict filled by ``Oracle.ask``), so these are its own
+    numbers, not the harness's.
     """
     connector = session.oracle.connector
 
@@ -266,9 +266,9 @@ def bench_ask(session, warm_samples: int = 5) -> dict:
 def bench_connect(work: Path) -> dict:
     """`connect` in dry-run: measures the O(notes x N) scan without the writes.
 
-    Dry-run on purpose -- B4 is about the similarity sweep, and letting it
-    inject links would mix in a vault-wide rewrite that no optimisation in the
-    plan touches.
+    Dry-run on purpose -- the quantity of interest is the similarity sweep,
+    and letting `connect` inject links would mix in a vault-wide rewrite that
+    has nothing to do with it.
     """
     counter = ConnectionCounter()
     start = time.perf_counter()
@@ -439,10 +439,10 @@ def main() -> None:
     ConnectionCounter.trace_statements = args.count_queries
 
     with StubServer() as stub:
-        # Both the router and the embedder read OLLAMA_HOST at construction
-        # (llm_backends/ollama.py:37, embedder.py:46), so pointing the env var
-        # at the stub is enough -- no config surgery, and SecurityGuard's
-        # loopback validation still runs exactly as in production.
+        # Both the router (OllamaBackend) and the Embedder read OLLAMA_HOST at
+        # construction, so pointing the env var at the stub is enough -- no
+        # config surgery, and SecurityGuard's loopback validation still runs
+        # exactly as in production.
         os.environ["OLLAMA_HOST"] = stub.url
 
         runs = []

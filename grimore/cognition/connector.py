@@ -224,7 +224,7 @@ class Connector:
         # A dimension mismatch lands here with a matrix but no blobs, since
         # those are only fetched when the matrix itself is missing. Cache the
         # read: without it every query re-runs a full SELECT over the vector
-        # column, which is what the pre-split code avoided by keeping the rows.
+        # column.
         if not blobs:
             if self._cache_blobs is None:
                 self._cache_blobs = self.db.get_embedding_vectors()
@@ -338,8 +338,8 @@ class Connector:
         chunks of the same note can all feed the context window.
 
         ``with_text=False`` returns ``""`` for every ``text`` and skips the
-        lookup that fills it. Chunk text no longer rides along with the scoring
-        matrix, so it costs one query per call — which the callers that only
+        lookup that fills it. Chunk text is not part of the scoring matrix, so
+        fetching it costs one query per call — which the callers that only
         read ``note_id`` and ``score`` (``connect``, the graph's suggested
         edges) would otherwise pay once per note across the whole vault.
         """
@@ -514,14 +514,13 @@ class Connector:
         share the ranking helper and the assembly step, so parity is
         structural rather than a coincidence to be re-checked.
 
-        ``connect`` used to call the single-query method once per note, and
-        each of those calls multiplied the query against every chunk in the
-        vault: O(notes x chunks) products issued one at a time. Here the whole
-        sweep is ``Q @ C.T``, which BLAS does in far fewer, far larger
-        operations.
+        Calling the single-query method once per note would multiply each
+        query against every chunk in the vault: O(notes x chunks) products
+        issued one at a time. Here the whole sweep is ``Q @ C.T``, which BLAS
+        does in far fewer, far larger operations.
 
-        Blocked from the start rather than as a later refinement: the full
-        score matrix is ``len(queries) x chunks`` floats, which for a big vault
+        The work is blocked: the full score matrix is
+        ``len(queries) x chunks`` floats, which for a big vault
         is larger than the embeddings themselves. ``block_rows`` defaults to
         whatever keeps one block near
         :py:attr:`_BLOCK_TARGET_BYTES`, and is exposed so tests can force
@@ -743,7 +742,7 @@ class Connector:
         survivors = ranked[:top_k]
         self._log_rrf_inputs(dense, sparse, survivors)
         # Embedding identity is opt-in for the Oracle's structured evidence
-        # contract. Existing search consumers retain the historical shape.
+        # contract; other search consumers get the plain result shape.
         return [
             (
                 dict(item)

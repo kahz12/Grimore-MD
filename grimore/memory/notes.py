@@ -119,11 +119,11 @@ class NotesMixin(DbBase):
     ) -> dict[int, tuple[str, str, str, Optional[str]]]:
         """``{note_id: (path, title, format, sidecar_path)}`` in one query.
 
-        ``connect`` needs all four per note and used to take them from
+        ``connect`` needs all four per note. Taking them from
         :py:meth:`get_note_location` and
-        :py:meth:`get_note_writeback_target` -- two statements per note over
-        the whole vault, both keyed on the same id and both selecting ``path``.
-        The singular methods stay for the callers that want one note.
+        :py:meth:`get_note_writeback_target` would be two statements per note
+        over the whole vault, both keyed on the same id and both selecting
+        ``path``. The singular methods remain for callers that want one note.
 
         ``format`` is normalised to ``"md"`` when NULL, matching
         :py:meth:`get_note_writeback_target`: rows predating the multiformat
@@ -188,9 +188,8 @@ class NotesMixin(DbBase):
     def get_note_titles(self, note_ids: Iterable[int]) -> dict[int, str]:
         """Batch form of :py:meth:`get_note_title`: ``{note_id: title}``.
 
-        The Oracle used to call ``get_note_title`` once per retrieved chunk,
-        which is one query (and, before the per-thread connection, one
-        connection) per result. This collapses the whole pool into a single
+        Calling ``get_note_title`` once per retrieved chunk costs one query
+        per result. This collapses the whole pool into a single
         ``IN (...)``.
 
         Ids missing from the ``notes`` table are simply absent from the result
@@ -255,10 +254,9 @@ class NotesMixin(DbBase):
     ) -> Optional[int]:
         """Inserts or updates a note record. Returns the internal note ID.
 
-        The multi-format kwargs are keyword-only with safe defaults so v2.0
-        callers (``upsert_note(path, title, hash)``) keep working unchanged
-        — they implicitly tag their notes as Markdown, which is what they
-        always were.
+        The multi-format kwargs are keyword-only with safe defaults, so the
+        plain form ``upsert_note(path, title, hash)`` still works — it tags
+        the note as Markdown.
         """
         with self._get_connection() as conn:
             now = datetime.now().isoformat()

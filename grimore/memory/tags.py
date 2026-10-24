@@ -15,12 +15,15 @@ class TagsMixin(DbBase):
         Ensures the 'tags' table has the tag names and updates 'note_tags' association.
         """
         with self._get_connection() as conn:
-            # Clear old associations
+            # Replace, don't merge: drop the note's existing associations so
+            # tags it no longer carries disappear (unused tags are purged
+            # separately by maintenance).
             conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
             for name in tag_names:
                 if not name:
                     continue
-                # Ensure the tag exists globally
+                # Tag names are unique across the vault: insert if new, then
+                # read the id back whether it was just created or already there.
                 conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
                 row = conn.execute(
                     "SELECT id FROM tags WHERE name = ?", (name,)

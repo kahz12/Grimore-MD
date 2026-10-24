@@ -125,10 +125,10 @@ class CognitionConfig:
     # dedupe wants "practically the same note".
     dedupe_threshold: float = 0.90
     # Per-call HTTP timeouts (seconds) for Ollama. Prompt eval dominates on
-    # CPU: qwen2.5:3b on a 4-core laptop read an 817-token answer prompt in
-    # 57 s (72 s per answer), so the old 60 s default failed a new user's
-    # first question. Bigger models (ministral-3:8b: 319 s per tagging call
-    # on the same machine) need 600+.
+    # CPU: qwen2.5:3b on a 4-core laptop reads an 817-token answer prompt in
+    # 57 s (72 s per answer), so a timeout near 60 s would abort a first
+    # question. Bigger models (ministral-3:8b: 319 s per tagging call on the
+    # same machine) need 600+.
     request_timeout_s: int = 300  # /api/generate, JSON path
     stream_timeout_s: int = 300   # /api/generate, streaming path
     embed_timeout_s: int = 30     # /api/embeddings
@@ -139,8 +139,8 @@ class CognitionConfig:
     # (handy for parity tests). "sqlite-vec" is the strict opt-in — Connector
     # logs and falls back to numpy if the extension probe fails.
     vector_backend: str = "auto"
-    # LLM backend. ``"ollama"`` (default) keeps the v2.x
-    # behaviour: reads ``OLLAMA_HOST``, talks ``/api/generate``.
+    # LLM backend. ``"ollama"`` (default) reads ``OLLAMA_HOST`` and talks
+    # ``/api/generate``.
     # ``"openai"`` switches the router to ``POST /v1/chat/completions``
     # against any OpenAI-compatible server (llama.cpp server, vLLM, LM
     # Studio, OpenRouter, OpenAI). The backend reads its base URL from
@@ -167,13 +167,13 @@ class CognitionConfig:
     embed_batch_size: int = 32
     # Persist the dense scoring matrix as a .npy beside the database so a
     # one-shot `grimore ask` reloads it (memory-mapped) instead of rebuilding
-    # it from the whole embeddings table. Set false to restore the previous
-    # always-rebuild behaviour.
+    # it from the whole embeddings table. Set false to rebuild it every time
+    # (and to delete any cache file a previous run left behind).
     vec_matrix_cache: bool = True
     # Only rewrite a follow-up into a standalone search query when it actually
     # points at the previous turn (pronouns, demonstratives, an opening
     # conjunction, or too few words to retrieve on). False rewrites every
-    # question that arrives with history, which is the older behaviour.
+    # question that arrives with history.
     conditional_rewrite: bool = True
     # Budget for the follow-up query rewrite alone. It runs before retrieval,
     # so the user waits for it with nothing on screen; inheriting
@@ -232,7 +232,8 @@ class IngestConfig:
     """
     pdf_engine: str = "pypdf"
     ocr: bool = False
-    # Tesseract model identifiers; retain the historical English default.
+    # Tesseract language identifiers, e.g. "eng", "spa" or "spa+eng". English
+    # by default.
     ocr_language: str = "eng"
     # Positive timeout applied separately to rasterisation and recognition
     # for each page. Saves the daemon from wedged external PDF/OCR processes.
@@ -240,7 +241,7 @@ class IngestConfig:
     # Maximum OCR page attempts per PDF; 0 preserves unlimited processing.
     # Digital pages do not consume this budget; failed attempts do.
     ocr_max_pages: int = 0
-    # Chunker engine. "markdown" is the v2.1 baseline:
+    # Chunker engine. "markdown" (default) is
     # paragraph-packed, deterministic, no embed cost during scan. The
     # "semantic" engine embeds each sentence and splits on topic shifts
     # (cosine drop below ``semantic_threshold``) — better retrieval

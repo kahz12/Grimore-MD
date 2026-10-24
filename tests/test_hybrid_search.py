@@ -93,8 +93,8 @@ class TestFTSSearch:
 
     def test_multiword_query_matches_words_out_of_order(self, db):
         # Bag-of-words recall: the query words are all in the document but in a
-        # different order and not adjacent. The old single-quoted-phrase MATCH
-        # demanded the exact phrase and missed this; OR-ing the tokens preserves
+        # different order and not adjacent. A single quoted-phrase MATCH would
+        # demand the exact phrase and miss this; OR-ing the tokens keeps
         # normal BM25 recall.
         _seed(db, [
             ("A", "the ribbed vault and the pointed arch of the cathedral", [1.0, 0.0]),

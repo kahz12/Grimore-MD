@@ -1,5 +1,5 @@
 """
-Tests for the v2.1 cross-platform daemon plumbing:
+Tests for the cross-platform daemon plumbing:
 
   * grimore.utils.paths   — platformdirs-backed cache paths
   * grimore.utils.system  — cross-platform PID lock + procfs fallback
@@ -212,8 +212,9 @@ class TestDaemonConfig:
         assert isinstance(cfg.daemon, DaemonConfig)
 
     def test_phase0_observer_fields_have_sensible_defaults(self):
-        # The observer knobs are present, off/sane by default so the v2.1
-        # behaviour is unchanged for users who don't touch [daemon].
+        # The observer knobs are present with conservative defaults (45 s
+        # debounce, native watcher, polling off) for users who don't touch
+        # [daemon].
         cfg = DaemonConfig()
         assert cfg.debounce_seconds == 45
         assert cfg.poll_fallback is False

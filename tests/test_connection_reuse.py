@@ -1,18 +1,18 @@
-"""Regression: the Database reuses one SQLite connection per thread.
+"""The Database keeps one SQLite connection per thread and reuses it.
 
-Before this change every data-access method opened its own connection, ran
-PRAGMA journal_mode=WAL (which rewrites the DB header) and reloaded
-sqlite-vec. store_embedding runs once per chunk, so indexing 2000 notes cost
-66396 connections and a WAL fsync per commit.
+A connection per data-access call would run PRAGMA journal_mode=WAL (which
+rewrites the DB header) and reload sqlite-vec every time. store_embedding runs
+once per chunk, so indexing 2000 notes would cost tens of thousands of
+connections and a WAL fsync per commit.
 
 Three properties have to hold for the reuse to be safe, and each has a test
 here:
 
 * one connection per thread, reused across calls, never shared between threads;
-* the connection is genuinely released on close() -- the inverse of the v3.2.0
-  fix, which added the close() this optimisation removes from the hot path;
+* the connection is genuinely released on close(), not left to garbage
+  collection;
 * concurrent readers and a writer do not raise "database is locked", which is
-  what busy_timeout buys, and is the gate this change had to clear.
+  what busy_timeout buys.
 """
 import os
 import sqlite3
@@ -199,8 +199,8 @@ class TestDeadThreadReaping:
         # connection is opened, so touch the DB from one fresh thread to run
         # the sweep, then assert on the registry rather than on the process
         # descriptor count: how many descriptors a live pool holds mid-flight
-        # varies with scheduling, which made the FD form of this assertion
-        # flaky. The registry is the invariant that actually matters.
+        # varies with scheduling, so an FD-based assertion would be flaky.
+        # The registry is the invariant that actually matters.
         sweeper = threading.Thread(target=lambda: db.get_note_title(1), daemon=True)
         sweeper.start()
         sweeper.join(timeout=30)
@@ -243,13 +243,13 @@ class TestDeadThreadReaping:
 
 
 class TestConcurrency:
-    """The gate this change had to clear: daemon writing while the CLI reads."""
+    """The daemon writing while the CLI reads must not surface lock errors."""
 
     def test_writer_and_readers_do_not_hit_database_is_locked(self, db):
         # Mirrors the real shape: the daemon indexes on the watchdog observer
         # thread while CLI/API queries read from another. WAL allows N readers
-        # plus one writer; the loser of a race used to surface as an immediate
-        # "database is locked" because no busy_timeout was set.
+        # plus one writer, and busy_timeout makes the loser of a race wait
+        # instead of failing at once with "database is locked".
         errors: list[Exception] = []
         stop = threading.Event()
         start = threading.Barrier(4)

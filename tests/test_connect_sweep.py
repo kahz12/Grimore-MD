@@ -1,9 +1,8 @@
 """`connect` scores every note against every chunk in one blocked matmul.
 
-The old pass called ``find_similar_notes`` once per note, and each of those
-multiplied the query against every chunk in the vault. The batched form issues
-the same arithmetic as a handful of large BLAS calls instead of thousands of
-small ones.
+Calling ``find_similar_notes`` once per note multiplies each query against
+every chunk in the vault. The batched form issues the same arithmetic as a
+handful of large BLAS calls instead of thousands of small ones.
 
 The gate is parity: for the suggested links to be unchanged, the batch has to
 reproduce the single-query path exactly -- including the parts that look like
@@ -227,9 +226,9 @@ class TestFirstChunkVectors:
         assert pairs == [(int(n), v) for n, v in expected]
 
     def test_matches_what_the_old_scan_order_picked(self, db):
-        """The old loop kept the first chunk it met per note while walking the
-        table. Under a full scan that is the lowest id, which is what this
-        selects -- now explicitly rather than by luck of the scan order.
+        """Keeping the first chunk met per note while walking the table picks
+        the lowest id. get_first_chunk_vectors selects that explicitly, so the
+        result does not depend on SQLite's scan order.
         """
         _vault(db, notes=4, chunks_per_note=3)
         seen: dict[int, bytes] = {}

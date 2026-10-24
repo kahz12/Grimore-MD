@@ -1,10 +1,11 @@
 """
 Multi-format DB migration tests.
 
-The migration must be idempotent: running it on a v2.0 schema (notes
-table without ``format`` / ``file_hash`` / ``sidecar_path`` / ``size_bytes``,
-embeddings without ``page`` / ``heading``) must add the columns without
-losing data, and running it again on the upgraded schema must be a no-op.
+The migration must be idempotent: running it on a pre-multi-format schema
+(notes table without ``format`` / ``file_hash`` / ``sidecar_path`` /
+``size_bytes``, embeddings without ``page`` / ``heading``) must add the
+columns without losing data, and running it again on the upgraded schema
+must be a no-op.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ def _columns(conn, table: str) -> set[str]:
 
 
 def _make_v2_schema(db_path: Path) -> None:
-    """Re-create the v2.0 schema by hand so the migration has work to do."""
+    """Re-create the pre-multi-format schema by hand so the migration has work to do."""
     with closing(sqlite3.connect(db_path)) as conn, conn:
         conn.executescript(
             """

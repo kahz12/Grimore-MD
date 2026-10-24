@@ -240,9 +240,9 @@ class TurnResult:
     sufficiency: Optional[dict[str, Any]] = None
     evidence_checks: list[dict[str, Any]] = field(default_factory=list)
     # Why no answer could be generated (transport failure, missing answer
-    # field, raised ask), or None. The historical metrics still score the
-    # silent sentinel as before; this flag makes the contamination countable
-    # and lets a checkpointed run retry the case instead of keeping it.
+    # field, raised ask), or None. The metrics are computed from the silent
+    # sentinel as usual; this flag makes the contamination countable and
+    # lets a checkpointed run retry the case instead of keeping it.
     generation_error: Optional[str] = None
 
 
@@ -283,8 +283,8 @@ class EvalReport:
                 _mean(1.0 if t.total_citations > 0 else 0.0 for t in generated_positives)
                 if generated_positives else None
             ),
-            # Deprecated compatibility alias. Citation-free answers now
-            # contribute None, never a vacuous 1.0.
+            # Deprecated compatibility alias of citation_validity. Citation-free
+            # answers contribute None, never a vacuous 1.0.
             "faithfulness": citation_validity,
             "keyword_recall": _present_mean(t.keyword_recall for t in self.turns),
             "latency_p50": _quantile([t.latency_s for t in self.turns], 0.50),
@@ -873,9 +873,9 @@ def _norm_tokens(title: str) -> frozenset[str]:
     emphasis don't affect matching. This lets a short, stable golden title
     (``"roman empire"``) match the note's decorated H1 (``"🏛️ The Roman
     Empire: An Exhaustive…"``) and a stem title (``"gothic_architecture"``,
-    → ``{gothic, architecture}``) alike. It also fixes the prior exact-string
-    match, which silently failed whenever a note's stored title wasn't
-    byte-identical to the golden entry.
+    → ``{gothic, architecture}``) alike. Comparing token sets rather than
+    exact strings keeps a golden entry matching even when the note's stored
+    title isn't byte-identical to it.
     """
     bare = title.split("#", 1)[0]
     return frozenset(_TOKEN_RE.findall(_fold(bare)))
@@ -900,8 +900,8 @@ def ranked_sources(result: dict) -> list[str]:
     """Note titles in true retrieval-rank order for a single ``ask`` result.
 
     Prefers ``result["retrieved"]`` (the rank-ordered, note-deduped list the
-    Oracle now exposes) and falls back to ``result["sources"]`` for callers
-    that predate it. Titles come back bare; downstream metrics anchor-strip
+    Oracle exposes) and falls back to ``result["sources"]`` for callers whose
+    results lack it. Titles come back bare; downstream metrics anchor-strip
     again, which is harmless. The fallback is order-destroyed, so rank metrics
     over it are only trustworthy when a single source is expected.
     """
@@ -957,8 +957,8 @@ def citation_validity(answer: str, dropped_citations: int) -> tuple[Optional[flo
 
     A citation-free answer returns ``None``. It has no invalid reference, but
     it also provides no evidence that its claims are supported; scoring it as
-    1.0 used to inflate the old ``faithfulness`` aggregate. This metric only
-    validates reference membership. It does not establish that a cited passage
+    1.0 would inflate the aggregate. This metric only validates reference
+    membership. It does not establish that a cited passage
     entails the claim next to it.
     """
     kept = len(_WIKILINK_RE.findall(answer or ""))
@@ -982,9 +982,9 @@ def _keyword_pattern(keyword: str) -> Optional[re.Pattern[str]]:
 
     Matches against the accent-folded answer with:
 
-    * a **leading** word boundary, so ``art`` no longer spuriously matches
-      ``Sparta``/``start`` — the substring test's biggest false-positive source
-      on short keywords;
+    * a **leading** word boundary, so ``art`` does not match
+      ``Sparta``/``start`` — a plain substring test's biggest false-positive
+      source on short keywords;
     * **no trailing** boundary, so simple inflection still counts: ``frog``
       matches ``frogs``, ``cell`` matches ``cells``;
     * **separator-flexible** joins for multi-word keywords, so ``machine
@@ -1311,8 +1311,8 @@ def expected_evidence_checks(
                 unverifiable = True
             verified_match = verified_match or not unverifiable
             context_labels.append(label)
-            # Validate the emitted anchor as well as the passage's metadata.
-            # Never grant credit to a label inconsistent with the physical page.
+            # Validate the emitted anchor as well as the passage's metadata:
+            # a label inconsistent with the physical page earns no credit.
             label_anchor = label.partition("#")[2]
             anchor_matches = (
                 not locator
@@ -2166,7 +2166,7 @@ def _by_category(turns: list["TurnResult"]) -> dict[str, dict[str, Any]]:
 
 
 def _by_dimension(turns: list["TurnResult"], field_name: str) -> dict[str, dict[str, Any]]:
-    """Ranking metrics grouped by a scalar Phase-0 case dimension."""
+    """Ranking metrics grouped by a scalar case field (``language``, ``case_type``)."""
     groups: dict[str, list["TurnResult"]] = {}
     for turn in turns:
         value = str(getattr(turn, field_name, "unspecified") or "unspecified")

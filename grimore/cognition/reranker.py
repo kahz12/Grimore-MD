@@ -11,7 +11,7 @@ protocol so the Connector can pick one at construction time:
 
 * :class:`LLMReranker` — wraps the local Ollama chat model. Zero extra
   install, but each query costs one full LLM generation (15-30 s on a
-  qwen2.5:3b-class model). Was the only option in v2.1.
+  qwen2.5:3b-class model).
 * :class:`CrossEncoderReranker` — opt-in via the ``reranker`` extra.
   Loads a sentence-transformers cross-encoder (default
   ``BAAI/bge-reranker-base``) and scores in one batched forward pass.
@@ -86,7 +86,7 @@ class LLMReranker:
             return []
 
         # Default unscored entries to -inf so they sink below any real
-        # score on a stable sort, matching the v2.1 inline behaviour.
+        # score on a stable sort.
         scores: list[float] = [float("-inf")] * len(passages)
         any_scored = False
         for entry in resp["scores"]:

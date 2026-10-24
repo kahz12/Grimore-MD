@@ -113,7 +113,8 @@ def test_repeated_excerpts_cite_the_retrieved_chunk_not_the_first_text_match(
         ids = [key[0] for key in db.get_embedding_keys()]
         records = db.get_evidence_records(ids)
         # Deliberately rank the later occurrence first. Both returned excerpts
-        # are identical, so the old (note_id, excerpt) lookup selects page 1.
+        # are identical, so a (note_id, excerpt) lookup alone would select
+        # page 1; the embedding_id is what identifies the right occurrence.
         oracle.connector.find_similar_notes.return_value = [
             {"embedding_id": embedding_id, "note_id": note_id,
              "text": first_full[:500], "score": 0.99}

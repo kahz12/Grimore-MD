@@ -122,8 +122,9 @@ class ChunksMixin(DbBase):
         is the content+model fingerprint used by the incremental re-embed
         path. ``full_text_content`` preserves the complete indexed passage
         while ``text_content`` remains the bounded search/rerank excerpt.
-        Legacy callers may omit both additions. All newer fields are
-        keyword-only so the v2.0 four-arg call shape keeps working.
+        Callers may omit all of these: they are keyword-only, so the plain
+        four-argument form ``(note_id, chunk_index, text_content, vector_blob)``
+        still works.
         """
         with self._get_connection() as conn:
             cur = conn.execute("""
@@ -142,16 +143,15 @@ class ChunksMixin(DbBase):
     def store_embeddings_bulk(self, note_id: int, rows: list[dict]) -> int:
         """Insert every chunk of a note in ONE transaction. Returns rows written.
 
-        The per-chunk :meth:`store_embedding` is kept for the callers (and the
-        many tests) that write a single row, and as the rollback path; this is
-        purely additive.
+        The per-chunk :meth:`store_embedding` remains for callers (and tests)
+        that write a single row, and as the rollback path.
 
-        Why it matters: in WAL mode each commit costs an fsync, and the old
-        re-embed loop committed once per chunk. Measured at 7.17 ms per
-        connection-and-commit across a 2000-note scan, that fsync -- not the
-        SQL -- was the dominant cost of indexing. Collapsing N transactions
-        into one is the whole optimisation; ``executemany`` on top of it just
-        removes the per-row Python overhead.
+        Why it matters: in WAL mode each commit costs an fsync, so committing
+        once per chunk makes that fsync -- not the SQL -- the dominant cost of
+        indexing (measured at 7.17 ms per connection-and-commit across a
+        2000-note scan). Collapsing N transactions into one is the whole
+        optimisation; ``executemany`` on top of it just removes the per-row
+        Python overhead.
 
         Each row is a dict with chunk_index, text_content, vector, page,
         heading and chunk_hash. ``note_id`` is passed once rather than repeated
@@ -308,11 +308,11 @@ class ChunksMixin(DbBase):
 
         ``_vec_dim`` is Python state set inside the transaction that creates
         ``embeddings_vec``. If that transaction later rolls back, the DDL is
-        undone but the attribute survives, so every subsequent write skips
-        creation and inserts into a table that no longer exists. Previously
-        that surfaced as a warning and nothing else: the mirror stayed silently
-        empty for the rest of the process while ``embeddings`` kept filling up,
-        leaving a vault whose vec index answers with a fraction of its chunks.
+        undone but the attribute survives, so every subsequent write would skip
+        creation and insert into a table that no longer exists. Left alone
+        that only surfaces as a warning: the mirror stays silently empty for
+        the rest of the process while ``embeddings`` keeps filling up, leaving
+        a vault whose vec index answers with a fraction of its chunks.
 
         Recovery happens inside the same call rather than on the next write,
         because the vectors of the failing batch would otherwise be lost for
@@ -595,16 +595,14 @@ class ChunksMixin(DbBase):
     def get_first_chunk_vectors(self) -> list[tuple[int, bytes]]:
         """``(note_id, vector)`` for the lowest-id chunk of every note.
 
-        This is the query vector ``connect`` uses per note. It looks like an
-        arbitrary choice, and historically it was: the old loop walked every
-        chunk row and kept the first one it happened to meet for each note,
-        which under a full table scan is the lowest id. Selecting it
-        explicitly makes deterministic what used to depend on SQLite's scan
-        order, and lets the sweep skip loading the other chunks (and all their
-        text) just to throw them away.
+        This is the query vector ``connect`` uses per note. Picking the
+        lowest-id chunk is a convention, not a ranking: it makes the choice
+        deterministic instead of depending on SQLite's scan order, and lets the
+        sweep skip loading the other chunks (and all their text) just to throw
+        them away.
 
-        ``ORDER BY id`` keeps notes in the same sequence the old loop produced,
-        so the console output and the order links are injected are unchanged.
+        ``ORDER BY id`` keeps notes in table order, so the console output and
+        the order in which links are injected are stable.
         """
         with self._get_connection() as conn:
             return [
