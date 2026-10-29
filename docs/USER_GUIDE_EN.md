@@ -67,7 +67,9 @@ into a queryable knowledge base. Markdown is the first-class citizen, but
 **PDF, EPUB, DOCX, ODT, RTF, HTML and TXT** are extracted by the same
 pipeline. For every document it:
 
-- extracts **tags** and a one-paragraph **summary** with a local LLM,
+- extracts **tags** and a one-paragraph **summary** with a local LLM (the
+  summary in the document's language, the tags always in English so one
+  vocabulary covers a mixed-language library),
 - files it under one **category** in a hierarchical tree,
 - splits the body into **chunks**, embeds each chunk into a **vector**,
 - proposes **wikilinks** between semantically related notes,

@@ -9,6 +9,9 @@ Rules:
 - Return ONLY a valid JSON object.
 - Required keys: "tags" (list of strings), "summary" (string), "category" (string).
 - "tags" should be specific and useful for cross-referencing; 3-8 items is ideal.
+- Write "summary" in the language of the note, as stated after the content.
+- Write "tags" in English whatever the note's language, so one vocabulary
+  covers the whole library.
 - "category" must be a slash-separated path chosen from the TAXONOMY below.
   Pick the most specific node that still fits. If nothing fits, use "".
 - Do NOT invent new category paths; stick to the menu.

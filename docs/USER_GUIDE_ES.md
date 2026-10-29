@@ -69,7 +69,9 @@ lo convierte en una base de conocimiento consultable. Markdown es el
 ciudadano de primera clase, pero **PDF, EPUB, DOCX, ODT, RTF, HTML y
 TXT** se extraen con el mismo pipeline. Para cada documento:
 
-- extrae **etiquetas** y un **resumen** de un párrafo con un LLM local,
+- extrae **etiquetas** y un **resumen** de un párrafo con un LLM local (el
+  resumen en el idioma del documento y las etiquetas siempre en inglés, para
+  que una biblioteca con varios idiomas comparta un único vocabulario),
 - la archiva bajo una **categoría** dentro de un árbol jerárquico,
 - divide el cuerpo en **fragmentos** y embebe cada uno como un **vector**,
 - propone **wikilinks** entre notas semánticamente relacionadas,

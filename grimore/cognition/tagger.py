@@ -29,6 +29,50 @@ _TAGGER_INPUT_MAX = 4000
 _LONG_NOTE_MAX_PARTS = 12
 _MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
+# Function words that identify Spanish or English prose. With an English
+# prompt and example, summaries of Spanish notes came back in English, so
+# the tagger names the note's language; small models follow an explicit
+# language far better than "the same language as the note". Words shared
+# by both languages ("a", "no") are left out.
+_FUNCTION_WORDS = {
+    "Spanish": frozenset(
+        "el la los las de del que y en un una por para con es se su al lo como más "
+        "pero sus ya este esta entre cuando muy sin sobre también hasta hay donde "
+        "desde son fue o ni".split()),
+    "English": frozenset(
+        "the of and to in is that for it as was with be by on this are or from at "
+        "which but have an they were there been all their can has more would its "
+        "also than what when who will into".split()),
+}
+_PROSE_WORD = re.compile(r"[a-záéíóúüñ]+")
+
+
+def _note_language(text: str) -> Optional[str]:
+    """Name the note's language when its function words clearly say so."""
+    words = _PROSE_WORD.findall(text.lower())
+    counts = {name: sum(w in vocab for w in words) for name, vocab in _FUNCTION_WORDS.items()}
+    best = max(counts, key=counts.__getitem__)
+    others = sum(counts.values()) - counts[best]
+    if counts[best] < 5 or counts[best] < 2 * others:
+        return None
+    return best
+
+
+def _language_rule(language: Optional[str]) -> str:
+    """Summary in the note's language; tags in English for every note.
+
+    Tags are one vocabulary across a mixed-language library: a Spanish note
+    tagged "ranas" would never meet an English one tagged "frogs" in tag
+    filters, distillation or connections. The language is given per field in
+    a JSON template: naming only the summary language turned the tags
+    Spanish, and one sentence naming both pulled qwen2.5:3b's summaries back
+    to English (0/4), while the template held both (Spanish summaries for 4/4
+    Spanish notes, English tags).
+    """
+    lang = language or "the note's language"
+    return ('Fill this JSON: {"tags": [3-8 keywords in English], '
+            f'"summary": "<one line in {lang}>", "category": "<path from the TAXONOMY>"}}')
+
 
 @dataclass(frozen=True)
 class _AnalysisPart:
@@ -141,10 +185,13 @@ class Tagger:
         menu = _render_category_menu(self.vault_tax.categories)
         return self.system_prompt_template.replace("{categories}", menu)
 
-    def tag_note(self, content: str) -> dict:
+    def tag_note(self, content: str, language: Optional[str] = None) -> dict:
         """
         Returns a dict with ``tags`` (list[str]), ``summary`` (str) and
         ``category`` (str or "" if the LLM's pick wasn't recognised).
+
+        ``language`` names the note's language for the summary; when it is
+        omitted it is detected from ``content``.
         """
         logger.info("tagging_note_start")
 
@@ -154,7 +201,8 @@ class Tagger:
                 kept=_TAGGER_INPUT_MAX,
                 original=len(content),
             )
-        prompt = f"Content:\n---\n{content[:_TAGGER_INPUT_MAX]}\n---"
+        rule = _language_rule(language or _note_language(content))
+        prompt = f"Content:\n---\n{content[:_TAGGER_INPUT_MAX]}\n---\n{rule}"
         result = self.router.complete(prompt, system_prompt=self._system_prompt())
 
         if not result or "tags" not in result:
@@ -193,6 +241,8 @@ class Tagger:
         parts = _analysis_parts(note, content)
         if not parts:
             return {"tags": [], "summary": "", "category": ""}
+        # Detected once over the whole document: a part can be all code.
+        language = _note_language(content)
 
         count = min(len(parts), _LONG_NOTE_MAX_PARTS)
         indices = (
@@ -212,7 +262,7 @@ class Tagger:
             source_id = f"s{index + 1}"
             heading = SecurityGuard.sanitize_prompt(part.heading or "")[:160]
             context = f"Heading: {heading}\n" if heading else ""
-            result = self.tag_note(context + part.text)
+            result = self.tag_note(context + part.text, language=language)
             successful = bool(result["tags"] or result["summary"] or result["category"])
             evidence.append({
                 "id": source_id,
@@ -243,7 +293,8 @@ class Tagger:
             )
             response = self.router.complete(
                 "Combine the section summaries below into one concise summary "
-                "(under 150 characters). Use only facts present in them. "
+                f"(under 150 characters) in {language or 'the language of the summaries'}. "
+                "Use only facts present in them. "
                 "Return JSON with keys summary (string) and sources (list of "
                 "section IDs used). Do not add unsupported facts.\n\n" + lines,
                 system_prompt="You summarize source-labeled document sections. Return only JSON.",

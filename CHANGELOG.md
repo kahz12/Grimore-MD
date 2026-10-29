@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Set `bm25_weight = 1` to restore the previous ranking.
 
 ### Fixed
+- Summaries of Spanish notes came back in English. The tagger's prompt and
+  example are English, and nothing named the note's language. The tagger now
+  detects Spanish or English from function words and asks for the summary in
+  that language through a per-field JSON template. Tags stay in English for
+  every note, so a mixed-language library keeps one vocabulary for tag
+  filters, distillation and connections. Naming only the summary language had
+  turned the tags Spanish; one sentence naming both pulled qwen2.5:3b's
+  summaries back to English. Over four Spanish notes, the summary came back
+  in Spanish for 3/4 with qwen2.5:3b (was 0/4) and 4/4 with ministral-3:8b
+  (was 2/4). English notes were unchanged. Tags were in English for 15 of 16.
 - Follow-up questions were rewritten into search queries that added facts
   the conversation never mentioned, so retrieval followed the model's beliefs
   instead of the notes. About one rewrite in four did this:

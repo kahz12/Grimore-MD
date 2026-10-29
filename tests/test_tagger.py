@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from grimore.ingest.adapters.base import ExtractedSection
 from grimore.cognition.tagger import (
     Tagger,
+    _note_language,
     _render_category_menu,
     _sanitize_category,
     _sanitize_summary,
@@ -204,3 +205,43 @@ class TestLongNoteTagging:
 
         assert result["summary"] == "Opening; Middle"
         assert result["section_analysis"]["summary_sources"] == ["s1", "s2"]
+
+
+class TestSummaryLanguage:
+    """Summaries follow the note's language; the prompt names it explicitly."""
+
+    SPANISH = ("El proyecto de restauración del humedal comenzó en marzo y la meta es "
+               "retirar el jacinto de agua de las zonas que se encuentran en la orilla.")
+    ENGLISH = ("The project began in March and the goal is to remove the water hyacinth "
+               "from the areas that are on the shore of the wetland.")
+
+    def test_function_words_name_the_language_or_abstain(self):
+        assert _note_language(self.SPANISH) == "Spanish"
+        assert _note_language(self.ENGLISH) == "English"
+        assert _note_language("val x = listOf(1, 2, 3).map { it * 2 }") is None
+        assert _note_language("") is None
+
+    def test_prompt_names_the_note_language(self):
+        router = _TagRouter()
+        Tagger(None, router, VaultTaxonomy()).tag_note(self.SPANISH)
+        assert '"summary": "<one line in Spanish>"' in router.prompts[0]
+        assert "keywords in English" in router.prompts[0]
+
+    def test_unclear_language_falls_back_to_the_generic_rule(self):
+        router = _TagRouter()
+        Tagger(None, router, VaultTaxonomy()).tag_note("val x = 1")
+        assert "<one line in the note's language>" in router.prompts[0]
+        assert "keywords in English" in router.prompts[0]
+
+    def test_long_note_parts_and_combination_use_the_document_language(self):
+        router = _TagRouter()
+        tagger = Tagger(None, router, VaultTaxonomy())
+        note = SimpleNamespace(sections=[
+            ExtractedSection(("opening " + self.SPANISH + " ") * 30, page=1),
+            ExtractedSection("middle val x = listOf(1, 2, 3) " * 120, page=2),  # code only
+        ])
+        tagger.tag_long_note(note, " ".join(s.text for s in note.sections))
+        parts = [p for p in router.prompts if not p.startswith("Combine the section summaries")]
+        combine = [p for p in router.prompts if p.startswith("Combine the section summaries")]
+        assert parts and all("<one line in Spanish>" in p for p in parts)
+        assert combine and "in Spanish" in combine[0]
