@@ -446,24 +446,59 @@ class TestDaemonSignalHandling:
     def test_sigterm_breaks_main_loop(self, tmp_path, monkeypatch, cache_redirect):
         """A SIGTERM during the run loop must set _stop_requested and unwind."""
         instance, _ = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)
-
-        def fire_signal_soon():
-            time.sleep(0.1)
-            os.kill(os.getpid(), signal.SIGTERM)
-
-        t = threading.Thread(target=fire_signal_soon)
-        # Re-install the default SIGTERM handler on the way out so the
+        # Re-install the previous SIGTERM handler on the way out so the
         # rest of the pytest session is unaffected.
         prev = signal.getsignal(signal.SIGTERM)
+
+        def fire_signal_once_installed():
+            # Before start() installs its handler, SIGTERM would kill pytest.
+            deadline = time.monotonic() + 10
+            while signal.getsignal(signal.SIGTERM) is prev and time.monotonic() < deadline:
+                time.sleep(0.01)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        t = threading.Thread(target=fire_signal_once_installed, daemon=True)
         try:
             t.start()
             instance.start()
         finally:
-            t.join()
+            t.join(timeout=10)
             signal.signal(signal.SIGTERM, prev)
+            signal.signal(signal.SIGINT, signal.default_int_handler)
         assert instance._stop_requested.is_set()
+        assert instance._signal_received == signal.SIGTERM
         # stop() ran its cleanup path.
         assert instance._pid_lock_fd is None
+
+    def test_signal_handler_takes_no_lock(self, tmp_path, monkeypatch, cache_redirect):
+        """The handler can interrupt the main thread mid-write to the event log.
+
+        Taking that lock, or the stop event's, from the handler deadlocks the
+        daemon: a SIGTERM during "daemon_started" hung CI for an hour. Spies
+        stand in for both so a regression fails instead of hanging.
+        """
+        instance, _ = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)
+        prev_term, prev_int = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT)
+        try:
+            instance._install_signal_handlers()
+            handler = signal.getsignal(signal.SIGTERM)
+        finally:
+            signal.signal(signal.SIGTERM, prev_term)
+            signal.signal(signal.SIGINT, prev_int)
+        instance.event_log = MagicMock()
+        real_stop = instance._stop_requested
+        instance._stop_requested = MagicMock(wraps=real_stop)
+
+        handler(signal.SIGTERM, None)
+        assert instance.event_log.write.call_count == 0
+        assert instance._stop_requested.method_calls == []
+        assert instance._signal_received == signal.SIGTERM
+
+        started = time.monotonic()
+        instance._wait_for_stop(10)
+        assert time.monotonic() - started < 1
+        assert real_stop.is_set()
+        instance.event_log.write.assert_called_once_with("signal", signum=int(signal.SIGTERM))
 
     def test_stop_releases_lock_and_flushes_db(self, tmp_path, monkeypatch, cache_redirect):
         instance, _ = _build_minimal_daemon(tmp_path, monkeypatch, cache_redirect)

@@ -67,6 +67,8 @@ class GrimoreDaemon:
         )
         self.index_progress = IndexProgressReporter(config.vault.path, "daemon")
         self._stop_requested = threading.Event()
+        # Set by the signal handler; see _install_signal_handlers.
+        self._signal_received: int | None = None
         self.db = Database(config.memory.db_path)
         self.parser = MarkdownParser()
         self.git_guard = GitGuard(config.vault.path)
@@ -108,13 +110,15 @@ class GrimoreDaemon:
         """Register SIGTERM/SIGINT (and SIGBREAK on Windows) for clean shutdown.
 
         Signal handlers can only be installed from the main thread, so this
-        is called once from start(). Each handler simply sets the stop event;
-        the main loop notices on its next tick and unwinds through stop().
+        is called once from start(). A handler runs in the main thread
+        between any two bytecodes, possibly while that thread holds the event
+        log's lock or the stop event's own lock, so taking either one there
+        deadlocks the daemon. The handler only records the signal;
+        _wait_for_stop logs it and sets the stop event, and the main loop
+        unwinds through stop().
         """
         def _handler(signum, _frame):
-            logger.info("daemon_signal_received", signum=int(signum))
-            self.event_log.write("signal", signum=int(signum))
-            self._stop_requested.set()
+            self._signal_received = int(signum)
 
         # SIGINT is universal (Ctrl-C); SIGTERM is POSIX; SIGBREAK is Windows
         # (matches CTRL_BREAK_EVENT sent by stop_daemon).
@@ -199,10 +203,7 @@ class GrimoreDaemon:
                         self.maintenance.run(reason="scheduled")
                         self.last_maintenance_time = now_mono
 
-                # Wake on either the timer or a stop signal — wait() returns
-                # True the moment a handler sets the event, so shutdown is
-                # responsive instead of waiting up to 10s for the next tick.
-                self._stop_requested.wait(timeout=10)
+                self._wait_for_stop(10)
         except KeyboardInterrupt:
             pass
         finally:
@@ -210,6 +211,26 @@ class GrimoreDaemon:
             # exits by exception. The kernel would release the flock on
             # process death anyway; this just keeps the on-disk file tidy.
             self.stop()
+
+    def _wait_for_stop(self, seconds: float) -> None:
+        """Sleep up to ``seconds``, waking for a stop event or a signal.
+
+        Signals are polled every half second, since their handler cannot set
+        the event itself; shutdown stays responsive instead of waiting for
+        the next 10 s tick.
+        """
+        deadline = time.monotonic() + seconds
+        while not self._stop_requested.is_set():
+            signum = self._signal_received
+            if signum is not None:
+                logger.info("daemon_signal_received", signum=signum)
+                self.event_log.write("signal", signum=signum)
+                self._stop_requested.set()
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop_requested.wait(timeout=min(0.5, remaining))
 
     def stop(self):
         """Gracefully stops the file system observer, flushes the DB and releases the lock."""

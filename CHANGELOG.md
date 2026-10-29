@@ -57,6 +57,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Set `bm25_weight = 1` to restore the previous ranking.
 
 ### Fixed
+- `grimore daemon` could hang for good on SIGTERM or Ctrl-C, ignoring further
+  signals until killed. The handler wrote to the event log and set the stop
+  event, and both take a lock. A signal runs its handler in the main thread
+  between any two instructions, so one that arrived while that thread was
+  writing to the event log, for example "daemon_started" at startup, waited
+  forever for a lock its own thread held. A CI run hung for an hour this way.
+  The handler now only records the signal. The main loop picks it up within
+  half a second, logs it and shuts down as before.
 - Summaries of Spanish notes came back in English. The tagger's prompt and
   example are English, and nothing named the note's language. The tagger now
   detects Spanish or English from function words and asks for the summary in
