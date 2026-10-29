@@ -20,9 +20,9 @@ from grimore.cognition.reembed import reembed_note
 from grimore.cognition.privacy import ingest_services
 from grimore.cognition.tagger import Tagger, tag_document
 from grimore.ingest.extraction_profile import (
-    pdf_extraction_profile, pdf_index_profile, pdf_retry_pending,
+    index_profile, markdown_layout_stale, pdf_extraction_profile, pdf_retry_pending,
 )
-from grimore.ingest.pdf_reconcile import reconcile_unchanged_pdf
+from grimore.ingest.pdf_reconcile import reconcile_unchanged_document
 from grimore.ingest.parser import MarkdownParser, extraction_diagnostics, iter_vault_documents
 from grimore.memory.classification_overrides import apply_classification_override
 from grimore.memory.db import Database
@@ -298,7 +298,10 @@ def scan(
                     stored_state and pdf_retry_pending(stored_state[4], config)
                 )
                 temporal_backfill = db.note_timeline_needs_backfill(str(file))
-                if not temporal_backfill and not profile_changed and stored_state is not None and stored_state[1:3] == (
+                # An unchanged Markdown note indexed under an older chunk
+                # layout is re-chunked below, without re-tagging.
+                rechunk = markdown_layout_stale(stored_state)
+                if not temporal_backfill and not profile_changed and not rechunk and stored_state is not None and stored_state[1:3] == (
                     disk_stat.st_size, disk_stat.st_mtime_ns,
                 ):
                     stats["unchanged"] += 1
@@ -313,7 +316,7 @@ def scan(
                 progress.advance(task)
                 continue
             stored_hash = stored_state[0] if stored_state else db.get_file_hash(str(file))
-            if stored_hash == file_hash and not temporal_backfill and not profile_changed:
+            if stored_hash == file_hash and not temporal_backfill and not profile_changed and not rechunk:
                 if not is_dry_run:
                     db.update_file_state(
                         str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
@@ -352,6 +355,10 @@ def scan(
             if ((not profile_changed or retry_pending) and
                     db.get_content_hash_by_path(str(file)) == note.content_hash):
                 extraction = extraction_diagnostics(note)
+                refresh_chunks = note.format == "pdf" or (rechunk and note.format == "md")
+                refresh_reason = (
+                    "pdf_same_text_refresh" if note.format == "pdf" else "markdown_rechunk"
+                )
                 try:
                     refreshed = (
                         writer.refresh_extraction_metadata(
@@ -364,13 +371,13 @@ def scan(
                         ) if extraction is not None else None
                     )
                     embedded_chunks = 0
-                    if note.format == "pdf" and not is_dry_run:
+                    if refresh_chunks and not is_dry_run:
                         sensitive_findings = security.scan_for_sensitive_data(note.content)
                         with ingest_services(
                             config, tagger, embedder,
                             sensitive=bool(sensitive_findings),
                         ) as (_note_tagger, note_embedder):
-                            result = reconcile_unchanged_pdf(
+                            result = reconcile_unchanged_document(
                                 db, note_embedder, note, config,
                                 clean_content=security.sanitize_prompt(note.content),
                                 file_hash=file_hash,
@@ -381,18 +388,18 @@ def scan(
                         embedded_chunks = result.embedded
                 except Exception as exc:
                     stats["errors"] += 1
-                    logger.error("pdf_same_text_refresh_failed", path=str(file), error=str(exc))
+                    logger.error(f"{refresh_reason}_failed", path=str(file), error=str(exc))
                     index_progress.record(
-                        "failed", rel_label, reason="pdf_same_text_refresh", error=str(exc),
+                        "failed", rel_label, reason=refresh_reason, error=str(exc),
                     )
                     progress.advance(task)
                     continue
-                if note.format != "pdf" and not is_dry_run:
+                if not refresh_chunks and not is_dry_run:
                     db.update_file_state(
                         str(file), file_hash, disk_stat.st_size, disk_stat.st_mtime_ns,
                     )
                     db.record_document_dates(str(file), **document_dates)
-                if note.format == "pdf":
+                if refresh_chunks:
                     stats["refreshed"] += 1
                     stats["chunks"] += embedded_chunks
                     if extraction and extraction["status"] == "partial":
@@ -406,7 +413,7 @@ def scan(
                             refreshed["target"] = Path(refreshed["target"]).name
                     index_progress.record(
                         "previewed" if is_dry_run else "processed", rel_label,
-                        reason="pdf_same_text_refresh", chunks=embedded_chunks,
+                        reason=refresh_reason, chunks=embedded_chunks,
                         changes=refreshed if is_dry_run else None,
                     )
                 else:
@@ -554,9 +561,8 @@ def scan(
                             db.complete_note_indexing(
                                 note_id, note.content_hash, file_hash,
                                 disk_stat.st_size, disk_stat.st_mtime_ns,
-                                extraction_profile=(
-                                    pdf_index_profile(config, extraction)
-                                    if note.format == "pdf" else None
+                                extraction_profile=index_profile(
+                                    config, note.format, extraction,
                                 ),
                                 extraction=extraction,
                                 **document_dates,

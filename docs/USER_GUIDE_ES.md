@@ -370,7 +370,7 @@ fragmentos de un README antiguo no romperá el CLI.
 
 | Extensión | Adaptador          | Notas                                                                       |
 |-----------|--------------------|-----------------------------------------------------------------------------|
-| `md`      | Markdown           | Primera clase. Frontmatter, wikilinks y escritura inline.                   |
+| `md`      | Markdown           | Primera clase. Frontmatter, wikilinks, escritura. Encabezados → secciones.  |
 | `txt`     | Texto plano        | Solo stdlib. La primera línea no vacía se usa como título.                  |
 | `html`    | HTML / XHTML       | `<title>`, luego el primer `<h1>` / `<h2>`. Requiere `beautifulsoup4`.      |
 | `htm`     | HTML (alias)       | Mismo adaptador que `.html`.                                                |
@@ -619,8 +619,9 @@ El Oráculo siempre cita los documentos de los que extrajo contexto. Las
 citas aparecen al final de la respuesta como enlaces `[[título]]` — y
 para formatos paginados o estructurados obtienen un ancla:
 `[[Designing Data-Intensive Applications#p.137]]` para PDFs,
-`[[Informe Anual#Capítulo 3]]` para DOCX, EPUB y ODT. Las citas de
-Markdown y TXT permanecen sin ancla.
+`[[Informe Anual#Capítulo 3]]` para Markdown, DOCX, EPUB y ODT. El texto
+anterior al primer encabezado de sección de una nota, y los archivos de
+texto plano, se citan como `[[título]]` sin ancla.
 
 Las citas alucinadas (títulos que el modelo se inventa y que no
 estaban en el contexto recuperado) se eliminan del cuerpo

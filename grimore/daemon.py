@@ -17,9 +17,9 @@ from grimore.utils.logger import get_logger
 from grimore.utils.paths import daemon_lock_path, daemon_log_path
 from grimore.ingest.observer import VaultObserver
 from grimore.ingest.extraction_profile import (
-    pdf_extraction_profile, pdf_index_profile, pdf_retry_pending,
+    index_profile, markdown_layout_stale, pdf_extraction_profile, pdf_retry_pending,
 )
-from grimore.ingest.pdf_reconcile import reconcile_unchanged_pdf
+from grimore.ingest.pdf_reconcile import reconcile_unchanged_document
 from grimore.ingest.parser import MarkdownParser, extraction_diagnostics
 from grimore.memory.classification_overrides import apply_classification_override
 from grimore.memory.db import Database
@@ -293,7 +293,10 @@ class GrimoreDaemon:
                     stored_state and pdf_retry_pending(stored_state[4], self.config)
                 )
                 temporal_backfill = self.db.note_timeline_needs_backfill(str(file_path))
-                if not temporal_backfill and not profile_changed and stored_state is not None and stored_state[1:3] == (
+                # An unchanged Markdown note indexed under an older chunk
+                # layout is re-chunked below, without re-tagging.
+                rechunk = markdown_layout_stale(stored_state)
+                if not temporal_backfill and not profile_changed and not rechunk and stored_state is not None and stored_state[1:3] == (
                     disk_stat.st_size, disk_stat.st_mtime_ns,
                 ):
                     self.event_log.write("skip", path=rel, reason="unchanged_stat")
@@ -311,7 +314,7 @@ class GrimoreDaemon:
                 stored_state[0] if stored_state
                 else self.db.get_file_hash(str(file_path))
             )
-            if stored_hash == file_hash and not temporal_backfill and not profile_changed:
+            if stored_hash == file_hash and not temporal_backfill and not profile_changed and not rechunk:
                 if not self.config.output.dry_run:
                     self.db.update_file_state(
                         str(file_path), file_hash,
@@ -351,6 +354,10 @@ class GrimoreDaemon:
             if ((not profile_changed or retry_pending) and
                     self.db.get_content_hash_by_path(str(file_path)) == note.content_hash):
                 extraction = extraction_diagnostics(note)
+                refresh_chunks = note.format == "pdf" or (rechunk and note.format == "md")
+                refresh_reason = (
+                    "pdf_same_text_refresh" if note.format == "pdf" else "markdown_rechunk"
+                )
                 refreshed = (
                     self.writer.refresh_extraction_metadata(
                         note, extraction,
@@ -385,12 +392,12 @@ class GrimoreDaemon:
                         change_journal.finish()
                         change_journal = None
                 embedded_chunks = 0
-                if note.format == "pdf" and not self.config.output.dry_run:
+                if refresh_chunks and not self.config.output.dry_run:
                     with ingest_services(
                         self.config, self.tagger, self.embedder,
                         sensitive=force_local,
                     ) as (_note_tagger, note_embedder):
-                        result = reconcile_unchanged_pdf(
+                        result = reconcile_unchanged_document(
                             self.db, note_embedder, note, self.config,
                             clean_content=self.security.sanitize_prompt(note.content),
                             file_hash=file_hash,
@@ -405,16 +412,17 @@ class GrimoreDaemon:
                         disk_stat.st_size, disk_stat.st_mtime_ns,
                     )
                     self.db.record_document_dates(str(file_path), **document_dates)
-                if note.format == "pdf":
+                if refresh_chunks:
                     logger.info(
-                        "pdf_same_text_refreshed", path=rel,
-                        embedded=embedded_chunks,
+                        "pdf_same_text_refreshed" if note.format == "pdf"
+                        else "markdown_rechunked",
+                        path=rel, embedded=embedded_chunks,
                     )
                     self.event_log.write(
                         "preview" if self.config.output.dry_run else "processed",
-                        path=rel, reason="pdf_same_text_refresh",
+                        path=rel, reason=refresh_reason,
                         chunks=embedded_chunks,
-                        extraction_status=extraction["status"],
+                        **({"extraction_status": extraction["status"]} if extraction else {}),
                     )
                     if progress is not None:
                         if self.config.output.dry_run and refreshed:
@@ -428,7 +436,7 @@ class GrimoreDaemon:
                                 refreshed["target"] = Path(refreshed["target"]).name
                         progress.record(
                             "previewed" if self.config.output.dry_run else "processed",
-                            rel, reason="pdf_same_text_refresh",
+                            rel, reason=refresh_reason,
                             chunks=embedded_chunks,
                             changes=refreshed if self.config.output.dry_run else None,
                         )
@@ -570,9 +578,8 @@ class GrimoreDaemon:
                     self.db.complete_note_indexing(
                         note_id, note.content_hash, file_hash,
                         disk_stat.st_size, disk_stat.st_mtime_ns,
-                        extraction_profile=(
-                            pdf_index_profile(self.config, extraction)
-                            if note.format == "pdf" else None
+                        extraction_profile=index_profile(
+                            self.config, note.format, extraction,
                         ),
                         extraction=extraction,
                         **document_dates,

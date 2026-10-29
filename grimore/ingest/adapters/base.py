@@ -18,14 +18,18 @@ class ExtractedSection:
     """One natural unit of a document.
 
     For paginated formats (PDF) ``page`` carries the 1-based page number;
-    for structured formats (DOCX, HTML, ePub) ``heading`` carries the
-    nearest enclosing heading. ``order`` is the stable index used to seed
+    for structured formats (Markdown, DOCX, HTML, ePub) ``heading`` carries
+    the nearest enclosing heading. ``order`` is the stable index used to seed
     chunk numbering when the adapter has already done structural work.
+    ``breadcrumb`` is the document title and the enclosing headings, outermost
+    first; when set, the chunker prefixes it to every chunk of the section so
+    a passage keeps its context ("Kotlin > Null Safety") once it stands alone.
     """
     text: str
     page: Optional[int] = None
     heading: Optional[str] = None
     order: int = 0
+    breadcrumb: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -264,7 +264,7 @@ class Embedder:
         calls are skipped (same policy as :py:meth:`embed_chunks`).
 
         Caller invariant: pass ``note.sections`` straight through. When
-        ``sections`` is empty (Markdown / TXT), this returns an empty
+        ``sections`` is empty (plain text), this returns an empty
         list and the caller falls back to :py:meth:`embed_chunks` on
         the raw body.
         """

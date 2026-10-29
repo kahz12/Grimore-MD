@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from grimore.cognition.embedder import Embedder
 from grimore.daemon import GrimoreDaemon
 from grimore.ingest.adapters.base import ExtractedSection, ExtractionIssue
-from grimore.ingest.pdf_reconcile import reconcile_unchanged_pdf
+from grimore.ingest.pdf_reconcile import reconcile_unchanged_document
 from grimore.ingest.parser import ParsedNote
 from grimore.memory.db import Database
 from grimore.output.frontmatter_writer import FrontmatterWriter
@@ -182,7 +182,7 @@ def test_changed_pdf_chunk_boundaries_retry_after_embedding_failure(tmp_path):
     ])
     with Database(str(tmp_path / "index.db")) as db:
         note_id = db.upsert_note(str(source), "Book", "", format="pdf")
-        reconcile_unchanged_pdf(
+        reconcile_unchanged_document(
             db, embedder, original, config,
             clean_content=original.content, file_hash="first", size_bytes=12,
             mtime_ns=1, document_dates={},
@@ -190,14 +190,14 @@ def test_changed_pdf_chunk_boundaries_retry_after_embedding_failure(tmp_path):
         assert db.get_chunk_records(note_id)[0][1] == 1
 
         with pytest.raises(RuntimeError, match="embedding incomplete"):
-            reconcile_unchanged_pdf(
+            reconcile_unchanged_document(
                 db, embedder, repaginated, config,
                 clean_content=repaginated.content, file_hash="second",
                 size_bytes=12, mtime_ns=2, document_dates={},
             )
         assert db.get_file_hash(str(source)) == "first"
 
-        reconcile_unchanged_pdf(
+        reconcile_unchanged_document(
             db, embedder, repaginated, config,
             clean_content=repaginated.content, file_hash="second",
             size_bytes=12, mtime_ns=2, document_dates={},

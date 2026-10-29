@@ -1266,6 +1266,22 @@ def _literal_evidence(text: str) -> str:
     return " ".join(unmarked.casefold().split())
 
 
+def _heading_words(text: str) -> set[str]:
+    """Folded words of a heading, without numbering, markup, emoji or 1-letter bits."""
+    return {w for w in _TOKEN_RE.findall(_fold(text)) if len(w) > 1 and not w.isdigit()}
+
+
+def _heading_matches(heading: str, locator: str) -> bool:
+    """A heading locator names its section by some of the heading's words.
+
+    Dataset locators are short labels ("Water and Turgor Pressure") while
+    anchored fragments carry the full heading ("1.1. Water and Turgor
+    Pressure"): every locator word must appear in the heading.
+    """
+    wanted = _heading_words(locator)
+    return bool(wanted) and wanted <= _heading_words(heading)
+
+
 def expected_evidence_checks(
     expected: list[dict[str, str]], source_details: Optional[list[dict]], answer: str,
     citation_selections: Optional[list[dict]] = None,
@@ -1274,11 +1290,13 @@ def expected_evidence_checks(
 
     Missing legacy details are unassessed; an explicitly empty context fails.
     Bare-title citations do not satisfy a page/heading-specific reference
-    when the passage carries that anchor. Fragments without a section anchor
-    (Markdown and plain text are indexed without headings) cannot confirm a
-    heading locator: the literal passage alone places them, the bare title
-    is the most precise citation available, and ``locator_verified`` is
-    ``False`` so reports can count them apart. Page locators stay strict.
+    when the passage carries that anchor. A heading locator matches when all
+    its words appear in the fragment's heading (see _heading_matches). Page
+    locators stay strict. Fragments without a section anchor (plain text,
+    and Markdown indexed before section anchors) cannot confirm a heading
+    locator: the literal passage alone places them, the bare title is the
+    most precise citation available, and ``locator_verified`` is ``False``
+    so reports can count them apart.
     """
     if not expected or source_details is None:
         return []
@@ -1305,7 +1323,7 @@ def expected_evidence_checks(
                 if type(page) is not int or page <= 0 or locator != f"p.{page}":
                     continue
             elif locator and anchor.get("heading"):
-                if _literal_evidence(anchor["heading"]) != _literal_evidence(locator):
+                if not _heading_matches(anchor["heading"], locator):
                     continue
             elif locator:
                 unverifiable = True
@@ -1314,9 +1332,12 @@ def expected_evidence_checks(
             # Validate the emitted anchor as well as the passage's metadata:
             # a label inconsistent with the physical page earns no credit.
             label_anchor = label.partition("#")[2]
+            page_locator = bool(re.fullmatch(r"p\.\d+", locator))
             anchor_matches = (
                 not locator
-                or _literal_evidence(label_anchor) == _literal_evidence(locator)
+                or (page_locator and label_anchor == locator)
+                or (not page_locator and bool(label_anchor)
+                    and _heading_matches(label_anchor, locator))
                 or (unverifiable and not label_anchor)
             )
             if label in citations and anchor_matches:

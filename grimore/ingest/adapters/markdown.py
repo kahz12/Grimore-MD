@@ -4,7 +4,8 @@ is edited in place (see ``mutable_frontmatter``).
 
 YAML frontmatter is separated from the body, the title falls back through
 frontmatter → first H1 → filename stem, and a 2 MB hard cap protects against
-accidental binary blobs hiding under a ``.md`` extension.
+accidental binary blobs hiding under a ``.md`` extension. The body is split
+into one section per ATX heading so chunks cite ``[[Title#Heading]]``.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import frontmatter
 from grimore.ingest.adapters.base import (
     AdapterOptions,
     ExtractedDocument,
+    ExtractedSection,
 )
 from grimore.ingest.adapters.registry import register
 from grimore.utils.hashing import calculate_content_hash, sha256_file
@@ -31,6 +33,50 @@ logger = get_logger(__name__)
 _MAX_MD_BYTES = 2_000_000
 
 _H1_RE = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def markdown_sections(content: str, title: str) -> list[ExtractedSection]:
+    """One section per ATX heading, outside fenced code blocks.
+
+    A section's text excludes its heading line; ``heading`` is the section's
+    own heading and ``breadcrumb`` the title plus the headings above it. Text
+    before the first heading, or directly under an H1 that repeats the title,
+    belongs to the whole note: it has no heading, so it cites as ``[[Title]]``.
+    """
+    title = " ".join(title.split())
+    sections: list[ExtractedSection] = []
+    stack: list[tuple[int, str]] = []
+    lines: list[str] = []
+    heading: str | None = None
+    in_fence = False
+
+    def flush() -> None:
+        text = "\n".join(lines).strip()
+        if text:
+            path = [h for _, h in stack]
+            if path and path[0] == title:
+                path = path[1:]
+            sections.append(ExtractedSection(
+                text=text, heading=heading, order=len(sections),
+                breadcrumb=(title, *path),
+            ))
+
+    for line in content.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+        match = None if in_fence else _HEADING_RE.match(line)
+        if match is None:
+            lines.append(line)
+            continue
+        flush()
+        lines = []
+        level, text = len(match.group(1)), " ".join(match.group(2).split())
+        stack = [(lv, h) for lv, h in stack if lv < level] + [(level, text)]
+        heading = None if level == 1 and text == title else text
+    flush()
+    return sections
 
 
 class MarkdownAdapter:
@@ -87,7 +133,7 @@ class MarkdownAdapter:
             content_hash=calculate_content_hash(content),
             file_hash=sha256_file(file_path),
             metadata=metadata,
-            sections=[],          # no structural anchors: Markdown is chunked as body text.
+            sections=markdown_sections(content, str(title)),
             size_bytes=size,
         )
 

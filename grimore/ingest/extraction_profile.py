@@ -1,4 +1,4 @@
-"""Versioned PDF extraction settings used to invalidate stale indexed text."""
+"""Versioned extraction and chunking settings used to invalidate stale indexes."""
 from __future__ import annotations
 
 from grimore.ingest.adapters.base import AdapterOptions
@@ -8,6 +8,11 @@ _RETRYABLE_OCR_REASONS = frozenset({
     "ocr_unavailable", "ocr_render_failed", "ocr_recognition_failed",
 })
 _RETRY_SUFFIX = ":retry-ocr"
+
+# Bump when Markdown chunking changes the stored chunks (text or anchors): an
+# unchanged note indexed under another layout is re-chunked and re-embedded on
+# the next scan, without re-tagging or touching the file.
+MARKDOWN_INDEX_PROFILE = "md-sections-v1"
 
 
 def pdf_extraction_profile(config) -> str:
@@ -60,3 +65,20 @@ def pdf_index_profile(config, extraction: dict | None) -> str:
 def pdf_retry_pending(stored_profile: str | None, config) -> bool:
     """A retry marker is not an extraction-settings change."""
     return stored_profile == pdf_extraction_profile(config) + _RETRY_SUFFIX
+
+
+def index_profile(config, note_format: str, extraction: dict | None) -> str | None:
+    """The profile stored with a fully indexed note of ``note_format``."""
+    if note_format == "pdf":
+        return pdf_index_profile(config, extraction)
+    if note_format == "md":
+        return MARKDOWN_INDEX_PROFILE
+    return None
+
+
+def markdown_layout_stale(stored_state) -> bool:
+    """An indexed Markdown note whose chunks predate the current layout."""
+    return bool(
+        stored_state and stored_state[3] == "md"
+        and stored_state[4] != MARKDOWN_INDEX_PROFILE
+    )

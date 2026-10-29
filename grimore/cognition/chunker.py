@@ -47,8 +47,8 @@ class Chunk:
     """A piece of body text with the source anchors that produced it.
 
     ``page`` is set for paginated formats (PDF); ``heading`` for
-    structured formats (DOCX, HTML, EPUB). Both are ``None`` for
-    Markdown / TXT, which have no structural anchors to store.
+    structured formats (Markdown, DOCX, HTML, EPUB). Both are ``None`` for
+    plain text, which has no structural anchors to store.
     """
     text: str
     page: Optional[int] = None
@@ -158,18 +158,32 @@ def chunk_sections(
     A section that exceeds ``max_chars`` is broken with the existing
     sliding-window strategy — each resulting chunk inherits the section's
     page / heading, so a PDF page that overflows the budget still cites
-    back to the same page number.
+    back to the same page number. A section with a breadcrumb prefixes it
+    to every piece, inside the same character budget.
 
     Sections with empty / whitespace-only text are silently dropped.
     """
     chunks: list[Chunk] = []
     for section in sections:
-        pieces = chunk_markdown(section.text, max_chars, overlap)
+        prefix = _breadcrumb_prefix(section)
+        pieces = chunk_markdown(section.text, _body_budget(max_chars, prefix), overlap)
         for piece in pieces:
             chunks.append(Chunk(
-                text=piece, page=section.page, heading=section.heading,
+                text=prefix + piece, page=section.page, heading=section.heading,
             ))
     return chunks
+
+
+def _breadcrumb_prefix(section: ExtractedSection) -> str:
+    """The breadcrumb joined by " > " and a blank line, or "" without one."""
+    crumbs = [" ".join(c.split()) for c in getattr(section, "breadcrumb", ()) or ()]
+    crumbs = [c for c in crumbs if c]
+    return " > ".join(crumbs) + "\n\n" if crumbs else ""
+
+
+def _body_budget(max_chars: int, prefix: str) -> int:
+    """What the prefix leaves of the budget; a runaway breadcrumb keeps half."""
+    return max(max_chars - len(prefix), max_chars // 2)
 
 
 def split_sentences(text: str) -> list[str]:
@@ -317,9 +331,12 @@ def chunk_semantic_sections(
     """
     out: list[Chunk] = []
     for section in sections:
-        pieces = chunk_semantic(section.text, embedder, max_chars, threshold, overlap)
+        prefix = _breadcrumb_prefix(section)
+        pieces = chunk_semantic(
+            section.text, embedder, _body_budget(max_chars, prefix), threshold, overlap,
+        )
         for piece in pieces:
-            out.append(Chunk(text=piece, page=section.page, heading=section.heading))
+            out.append(Chunk(text=prefix + piece, page=section.page, heading=section.heading))
     return out
 
 

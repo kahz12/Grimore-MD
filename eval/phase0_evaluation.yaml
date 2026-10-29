@@ -13,7 +13,7 @@ questions:
   - source: Artificial Intelligence
     passage: In June 2017, Vaswani et al. published the paper "Attention Is All You Need", introducing
       the Transformer
-    locator: The Generative Era
+    locator: The Transformer Architecture (2017)
   review_criteria: 'Debe comunicar correctamente: Vaswani et al.''s Attention Is All You Need.'
   category: direct
   language: en
@@ -161,7 +161,7 @@ questions:
   expected_evidence:
   - source: Sócrates
     passage: '399 a.C. : Juicio, condena e ingesta de cicuta'
-    locator: Cronología
+    locator: Contexto Histórico y Político
   - source: Roman Empire
     passage: In 476 AD, the Germanic chieftain Odoacer deposed the last Western emperor, Romulus Augustulus
     locator: Permanent Division and Fall
@@ -381,7 +381,7 @@ questions:
     expected_evidence:
     - source: Social Engineering
       passage: The authenticator permanently binds the private key to the RP ID (the domain)
-      locator: FIDO2 Origin Binding
+      locator: The Cryptographic Registration Protocol
     review_criteria: 'Debe comunicar correctamente: The authenticator binds its private key to the legitimate
       RP ID and refuses the spoofed origin.'
 - id: wetland-june-status

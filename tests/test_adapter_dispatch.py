@@ -63,7 +63,10 @@ class TestMarkdownAdapterRoundTrip:
         assert doc.file_hash and len(doc.file_hash) == 64
         assert doc.content_hash != doc.file_hash  # one hashes text, the other bytes
         assert doc.size_bytes > 0
-        assert doc.sections == []  # Markdown has no structural anchors
+        # No heading: the body belongs to the whole note and cites as [[X]].
+        assert [(s.text, s.heading, s.breadcrumb) for s in doc.sections] == [
+            ("body one", None, ("X",)),
+        ]
 
     def test_parser_dispatches_through_registry(self, tmp_path):
         f = tmp_path / "n.md"

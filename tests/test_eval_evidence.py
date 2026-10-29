@@ -130,3 +130,22 @@ def test_citation_verifier_rejects_wrong_page_and_heading_but_keeps_bare_title()
     cleaned, dropped = Oracle.verify_citations(text, ["A#p.2", "B#Section", "C"])
     assert dropped == 4
     assert cleaned == "A#p.99 A#Wrong [[A#p.2]] [[A]] B#p.2 C#Made up"
+
+
+@pytest.mark.parametrize("heading,locator,matches", [
+    ("1.1. Water and Turgor Pressure", "Water and Turgor Pressure", True),
+    ("2.3. Microservicios (Microservices)", "Microservicios", True),
+    ("1.1. Cialdini's Principles of Influence", "Cialdini Principles", True),
+    ("☕ Kotlin Fundamentals: A Comprehensive Reference Guide", "Kotlin Fundamentals", True),
+    ("2.1. Mutability: val vs var", "Immutability", False),
+    ("Other", "Sampling", False),
+    ("1. Introduction", "", False),
+])
+def test_heading_locator_matches_by_words_not_exact_text(heading, locator, matches):
+    reference = {"source": "A", "passage": "Exact passage", "locator": locator}
+    fragment = {"label": f"A#{heading}", "document": {"title": "A"},
+                "locator": {"heading": heading}, "passage": {"text": "Exact passage"}}
+    check = expected_evidence_checks([reference], [fragment], f"Fact [[A#{heading}]]")[0]
+    if locator:
+        assert check["in_context"] is matches and check["cited"] is matches
+        assert check["locator_verified"] is (True if matches else None)

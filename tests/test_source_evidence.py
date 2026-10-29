@@ -47,6 +47,10 @@ def _oracle_for_source(tmp_path: Path, *, persist_full: bool, fmt: str = "md",
     source = vault / f"note.{fmt}"
     full_text = "Evidence begins. " + "complete indexed passage " * 35 + "END-MARKER"
     source.write_text(full_text, encoding="utf-8")
+    if fmt == "md":
+        # What the chunker stores for this note, title breadcrumb included.
+        note = MarkdownParser().parse_file(source, vault_root=vault, config=_config(vault))
+        full_text = build_candidate_chunks(note, note.content, None, _config(vault))[0].text
 
     db = Database(str(tmp_path / "evidence.db"))
     stat = source.stat()

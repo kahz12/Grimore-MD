@@ -358,7 +358,7 @@ snippets won't crash the CLI.
 
 | Extension | Adapter           | Notes                                                                    |
 |-----------|-------------------|--------------------------------------------------------------------------|
-| `md`      | Markdown          | First-class. Frontmatter, wikilinks and inline writeback.                |
+| `md`      | Markdown          | First-class. Frontmatter, wikilinks, writeback. Headings → sections.     |
 | `txt`     | Plain text        | Stdlib only. First non-blank line becomes the title fallback.            |
 | `html`    | HTML / XHTML      | `<title>`, then first `<h1>` / `<h2>`. Needs `beautifulsoup4`.           |
 | `htm`     | HTML (alias)      | Same adapter as `.html`.                                                 |
@@ -577,8 +577,9 @@ The Oracle always cites the documents it pulled context from. Citations
 appear at the end of the answer as `[[title]]` links — and for
 paginated or structured formats they gain an anchor:
 `[[Designing Data-Intensive Applications#p.137]]` for PDFs,
-`[[Annual Report#Chapter 3]]` for DOCX, EPUB and ODT. Markdown and TXT
-citations stay anchor-free.
+`[[Annual Report#Chapter 3]]` for Markdown, DOCX, EPUB and ODT. Text
+before a note's first section heading, and plain-text files, cite as a
+bare `[[title]]`.
 
 Hallucinated citations (titles the model invents that weren't in the
 retrieved context) are stripped from the rendered answer and logged at

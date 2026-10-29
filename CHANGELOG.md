@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Markdown notes are now chunked per heading, so citations name the section:
+  `[[Kotlin Fundamentals#Null Safety]]` instead of a bare title. Before, a
+  Markdown note was packed into chunks that ignored its headings, which mixed
+  unrelated sections in one chunk and stored no anchor. Each chunk now also
+  starts with the note title and the headings above it
+  ("Kotlin Fundamentals > Variables > Null Safety"). This keeps the passage
+  findable once it stands alone, inside the same `chunk_max_chars` budget.
+  Text before the first section heading still cites as `[[Title]]`.
+  Headings inside fenced code blocks are ignored; plain-text files are
+  unchanged.
+  - The first scan after upgrading re-chunks and re-embeds every Markdown note
+    once. It does not re-tag, call the chat model or rewrite the notes. Later
+    scans skip unchanged notes as before.
+  - The web UI's source viewer now shows Markdown notes by section and jumps
+    to the cited one.
+  - On the bundled corpus, without generating answers:
+    - Spanish/English tuning set: the expected passage reached the model in
+      18/20 cases instead of 16/20, with the right note still first in every
+      turn.
+    - Phase-0 tuning set: 44/44 instead of 43/44.
+    - Held-out set, run once with the design fixed: 26/30 instead of 24/30.
+      The right note came first in 25 of 26 turns instead of 26. The one loss
+      is a follow-up whose rewrite dropped the conversation, so neither index
+      found its evidence.
+- `grimore eval` matches a heading locator when all its words appear in the
+  fragment's heading, ignoring numbering, case, accents, emoji and
+  punctuation: "Water and Turgor Pressure" matches "1.1. Water and Turgor
+  Pressure". Before, the comparison was exact. Six dataset locators that named
+  a parent section or a label that is not a heading now name the section that
+  holds the passage. Markdown passages now have headings to check against, so
+  a bare `[[Title]]` citation no longer counts as citing a heading-specific
+  passage. Cited-evidence figures for Markdown are therefore stricter than in
+  earlier reports.
 - Hybrid retrieval now weighs the BM25 (keyword) ranking at 0.25 against the
   dense ranking (`[cognition].bm25_weight`, previously an implicit 1). At
   full weight, keyword hits in the question's language pushed out the right

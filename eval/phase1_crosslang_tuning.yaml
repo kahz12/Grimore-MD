@@ -79,7 +79,7 @@ questions:
   expected_evidence:
   - source: Social Engineering
     passage: Email authentication protocols (SPF, DKIM, DMARC) and browser-based anti-phishing protection
-    locator: Digital and Communication Vectors
+    locator: Phishing and Spear Phishing
   review_criteria: 'Debe comunicar correctamente: SPF, DKIM y DMARC.'
   category: cross-language
   language: es

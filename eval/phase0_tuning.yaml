@@ -52,7 +52,7 @@ questions:
   expected_evidence:
   - source: Artificial Intelligence
     passage: AI techniques had failed to solve real-world problems due to "combinatorial explosion"
-    locator: The First AI Winter
+    locator: The Catalysts of Decline
   review_criteria: 'Debe comunicar correctamente: It said combinatorial explosion kept AI techniques from
     solving real-world problems.'
   category: ambiguous
@@ -75,7 +75,7 @@ questions:
     - source: Artificial Intelligence
       passage: single-layer networks could not solve non-linearly separable functions, such as the exclusive-OR
         (XOR) problem
-      locator: The First AI Winter
+      locator: The Catalysts of Decline
     review_criteria: 'Debe comunicar correctamente: The exclusive-OR (XOR) problem.'
 - id: apple-water-share
   question: What share of a mature apple's fresh weight is water?
